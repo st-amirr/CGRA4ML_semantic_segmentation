@@ -194,70 +194,70 @@ def create_segmentation_model():
     inputs = tf.keras.Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
     x = inputs
     # Initial conv (use 16 bits)
-    x = conv_block(x, 48, name='init_conv', use_16bit=True)
-    x = QConv2D(48, kernel_size=3, strides=2, padding='same',
+    x = conv_block(x, 32, name='init_conv', use_16bit=True)
+    x = QConv2D(32, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 name='downsample1')(x)
     # Stage 1
-    x = c2f_block(x, 96, n=2, name='stage1')
+    x = c2f_block(x, 64, n=2, name='stage1')
     skip1 = x
-    x = QConv2D(96, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(64, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 name='downsample2')(x)
     # Stage 2
-    x = c2f_block(x, 192, n=2, name='stage2')
+    x = c2f_block(x, 128, n=2, name='stage2')
     skip2 = x
-    x = QConv2D(192, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(128, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 name='downsample3')(x)
     # Stage 3
-    x = c2f_block(x, 384, n=1, name='stage3')
+    x = c2f_block(x, 256, n=1, name='stage3')
     x = channel_attention(x, name='ca_stage3')
     skip3 = x
-    x = QConv2D(384, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(256, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 name='downsample4')(x)
     # Stage 4
-    x = c2f_block(x, 768, n=1, name='stage4')
+    x = c2f_block(x, 512, n=1, name='stage4')
     x = channel_attention(x, name='ca_stage4')
-    x = sppf_block(x, 768, name='sppf')
+    x = sppf_block(x, 512, name='sppf')
     # Decoder (upsample and match filter counts)
-    x = c2f_block(x, 768, n=1, name='pre_up1')
-    x = QConv2DTranspose(384, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 512, n=1, name='pre_up1')
+    x = QConv2DTranspose(256, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up1_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat1')([x, skip3])
-    x = conv_block(x, 384, name='up1_conv')
-    x = c2f_block(x, 384, n=1, name='up1_c2f')
+    x = conv_block(x, 256, name='up1_conv')
+    x = c2f_block(x, 256, n=1, name='up1_c2f')
     x = channel_attention(x, name='ca_up1')
-    x = c2f_block(x, 384, n=1, name='pre_up2')
-    x = QConv2DTranspose(192, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 256, n=1, name='pre_up2')
+    x = QConv2DTranspose(128, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up2_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat2')([x, skip2])
-    x = conv_block(x, 192, name='up2_conv')
-    x = c2f_block(x, 192, n=1, name='up2_c2f')
-    x = c2f_block(x, 192, n=1, name='pre_up3')
-    x = QConv2DTranspose(96, kernel_size=2, strides=2, padding='same',
+    x = conv_block(x, 128, name='up2_conv')
+    x = c2f_block(x, 128, n=1, name='up2_c2f')
+    x = c2f_block(x, 128, n=1, name='pre_up3')
+    x = QConv2DTranspose(64, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up3_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat3')([x, skip1])
-    x = conv_block(x, 96, name='up3_conv')
-    x = c2f_block(x, 96, n=1, name='up3_c2f')
-    x = c2f_block(x, 96, n=1, name='pre_up4')
-    x = QConv2DTranspose(48, kernel_size=2, strides=2, padding='same',
+    x = conv_block(x, 64, name='up3_conv')
+    x = c2f_block(x, 64, n=1, name='up3_c2f')
+    x = c2f_block(x, 64, n=1, name='pre_up4')
+    x = QConv2DTranspose(32, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up4_transpose')(x)
-    x = conv_block(x, 48, name='up4_conv')
-    x = c2f_block(x, 48, n=1, name='up4_c2f')
+    x = conv_block(x, 32, name='up4_conv')
+    x = c2f_block(x, 32, n=1, name='up4_c2f')
     # Output layer (use 16 bits)
     outputs = QConv2D(NUM_CLASSES, (1, 1),
                      kernel_quantizer=quantized_bits(**quantized_bits_param_16),
@@ -527,6 +527,22 @@ def train_model():
     # Create data generators with memory optimization
     train_gen = CityscapesDataGenerator(train_images, train_masks, BATCH_SIZE, augment=True)
     val_gen = CityscapesDataGenerator(val_images, val_masks, BATCH_SIZE, augment=False)
+
+    # Wrap generators with tf.data for efficient pipeline
+    train_dataset = tf.data.Dataset.from_generator(
+        lambda: train_gen,
+        output_signature=(
+            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=tf.float32),
+            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=tf.float32)
+        )
+    ).prefetch(1)
+    val_dataset = tf.data.Dataset.from_generator(
+        lambda: val_gen,
+        output_signature=(
+            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=tf.float32),
+            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=tf.float32)
+        )
+    ).prefetch(1)
     
     # Add HLS4ML model saving callback
     class HLS4MLModelSaver(tf.keras.callbacks.Callback):
@@ -574,13 +590,10 @@ def train_model():
     # Train with gradient accumulation
     try:
         history = model.fit(
-            train_gen,
-            validation_data=val_gen,
+            train_dataset,
+            validation_data=val_dataset,
             epochs=EPOCHS,
             callbacks=callbacks,
-            workers=NUM_WORKERS,
-            use_multiprocessing=False,
-            max_queue_size=PREFETCH_SIZE,
             steps_per_epoch=len(train_gen) // GRADIENT_ACCUMULATION_STEPS,
             initial_epoch=initial_epoch - 1 if initial_epoch > 0 else 0
         )
