@@ -68,7 +68,10 @@ tf.config.threading.set_intra_op_parallelism_threads(n_cores)
 tf.config.set_soft_device_placement(True)
 
 # Disable eager execution for better memory tracking
-tf.compat.v1.disable_eager_execution()
+# tf.compat.v1.disable_eager_execution()  # Commented out to enable eager execution
+
+# Add a check to confirm eager execution is enabled
+print(f"Eager execution enabled: {tf.executing_eagerly()}")
 
 # Add TF memory logger
 tf.debugging.set_log_device_placement(False)  # Set to True only for debugging
@@ -78,7 +81,7 @@ quantized_bits_param = {
     'bits': 8,
     'integer': 4,
     'symmetric': True,  # For better HLS4ML compatibility
-    'alpha': 1.0,      # Keep weights in [-8,+8] range
+    'alpha': 'auto_po2',      # Use automatic power-of-two scaling
     'use_stochastic_rounding': True,  # Enable for better training stability
     'scale_axis': None
 }
@@ -94,7 +97,7 @@ quantized_bits_param_8 = {
     'bits': 8,
     'integer': 4,
     'symmetric': True,
-    'alpha': 1.0,
+    'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
@@ -103,7 +106,7 @@ quantized_bits_param_16 = {
     'bits': 16,
     'integer': 8,
     'symmetric': True,
-    'alpha': 1.0,
+    'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
@@ -482,6 +485,7 @@ def train_model():
             model = tf.keras.models.load_model('/app/models/' + latest_model,
                                            custom_objects={
                                                'QConv2D': QConv2D,
+                                               'QConv2DTranspose': QConv2DTranspose,
                                                'QBatchNormalization': QBatchNormalization,
                                                'QActivation': QActivation,
                                                'IoUMetric': IoUMetric,
@@ -530,15 +534,15 @@ def train_model():
     # Remove tf.data.Dataset.from_generator and prefetch
     # Use generators directly in model.fit
 
-    # Add HLS4ML model saving callback
-    class HLS4MLModelSaver(tf.keras.callbacks.Callback):
-        def on_epoch_end(self, epoch, logs=None):
-            if (epoch + 1) % 10 == 0:  # Save every 10 epochs
-                # Save quantized weights in HLS4ML compatible format
-                model_save_quantized_weights(
-                    self.model,
-                    f'/app/models/hls4ml_weights_epoch_{epoch+1}.h5'
-                )
+    # Remove HLS4ML model saving callback
+    # class HLS4MLModelSaver(tf.keras.callbacks.Callback):
+    #     def on_epoch_end(self, epoch, logs=None):
+    #         if (epoch + 1) % 10 == 0:  # Save every 10 epochs
+    #             # Save quantized weights in HLS4ML compatible format
+    #             model_save_quantized_weights(
+    #                 self.model,
+    #                 f'/app/models/hls4ml_weights_epoch_{epoch+1}.h5'
+    #             )
     
     callbacks = [
         ModelCheckpoint(
@@ -550,8 +554,8 @@ def train_model():
             save_weights_only=False
         ),
         ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}.h5',
-            save_freq='epoch',
+            '/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}.h5',
+            save_freq=50,
             verbose=1,
             save_weights_only=False
         ),
@@ -569,8 +573,8 @@ def train_model():
             min_lr=1e-6,
             verbose=1
         ),
-        MemoryCleanupCallback(),
-        HLS4MLModelSaver()
+        MemoryCleanupCallback()
+        # HLS4MLModelSaver()  # Do not include this callback
     ]
     
     # Train with gradient accumulation
