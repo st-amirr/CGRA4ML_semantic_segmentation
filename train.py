@@ -21,7 +21,7 @@ from pathlib import Path
 # Define constants
 INPUT_HEIGHT = 1024
 INPUT_WIDTH = 2048
-BATCH_SIZE = 4  # Keep at 1 for memory constraints
+BATCH_SIZE = 1  # Keep at 1 for memory constraints
 EPOCHS = 50
 NUM_CLASSES = 34
 DATASET_DIR = '/cityscapes'
@@ -37,7 +37,7 @@ if gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
             tf.config.set_logical_device_configuration(
                 gpu,
-                [tf.config.LogicalDeviceConfiguration(memory_limit=8000)]
+                [tf.config.LogicalDeviceConfiguration(memory_limit=20000)]
             )
             
         # Disable layout optimizer and other problematic optimizations
