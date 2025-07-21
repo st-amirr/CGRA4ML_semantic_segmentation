@@ -71,8 +71,8 @@ EPOCHS = 50
 NUM_CLASSES = 34
 DATASET_DIR = '/cityscapes'
 GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
-NUM_WORKERS = 1  # Reduced for stability
-PREFETCH_SIZE = 4  # Reduced for stability
+NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
+PREFETCH_SIZE = 2  # Reduced for stability
 
 # Define quantization parameters optimized for FPGA implementation
 quantized_bits_param = {
@@ -535,14 +535,14 @@ def train_model():
             tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=tf.float32),
             tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=tf.float32)
         )
-    ).prefetch(1)
+    ).prefetch(PREFETCH_SIZE)
     val_dataset = tf.data.Dataset.from_generator(
         lambda: val_gen,
         output_signature=(
             tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=tf.float32),
             tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=tf.float32)
         )
-    ).prefetch(1)
+    ).prefetch(PREFETCH_SIZE)
     
     # Add HLS4ML model saving callback
     class HLS4MLModelSaver(tf.keras.callbacks.Callback):
@@ -597,15 +597,18 @@ def train_model():
             steps_per_epoch=len(train_gen) // GRADIENT_ACCUMULATION_STEPS,
             initial_epoch=initial_epoch - 1 if initial_epoch > 0 else 0
         )
-        
         # Save final model in both formats
         print("\nSaving final models...")
         model.save('/app/models/final_model.h5')
         model_save_quantized_weights(model, '/app/models/final_model_hls4ml.h5')
         print("Models saved as 'final_model.h5' and 'final_model_hls4ml.h5'")
-        
         print("\nTraining completed successfully!")
-        
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user. Saving current model...")
+        model.save('/app/models/interrupted_model.h5')
+        model_save_quantized_weights(model, '/app/models/interrupted_model_hls4ml.h5')
+        print("Interrupted model saved as 'interrupted_model.h5' and 'interrupted_model_hls4ml.h5'")
+        raise
     except Exception as e:
         print(f"\nError during training: {str(e)}")
         raise
