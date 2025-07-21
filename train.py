@@ -89,23 +89,57 @@ quantized_relu_param = {
     'use_stochastic_rounding': True  # Enable for better training stability
 }
 
-def conv_block(x, filters, kernel_size=3, strides=1, name=None):
+# Update quantized_bits_param for 8-bit layers
+quantized_bits_param_8 = {
+    'bits': 8,
+    'integer': 4,
+    'symmetric': True,
+    'alpha': 1.0,
+    'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+# For first/last layers, use 16 bits
+quantized_bits_param_16 = {
+    'bits': 16,
+    'integer': 8,
+    'symmetric': True,
+    'alpha': 1.0,
+    'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+
+# Update quantized_relu_param for 8-bit layers
+quantized_relu_param_8 = {
+    'bits': 8,
+    'integer': 4,
+    'use_stochastic_rounding': True
+}
+# For first/last layers, use 16 bits
+quantized_relu_param_16 = {
+    'bits': 16,
+    'integer': 8,
+    'use_stochastic_rounding': True
+}
+
+def conv_block(x, filters, kernel_size=3, strides=1, name=None, use_16bit=False):
     """FPGA-optimized convolution block with QAT"""
+    qbits = quantized_bits_param_16 if use_16bit else quantized_bits_param_8
+    qrelu = quantized_relu_param_16 if use_16bit else quantized_relu_param_8
     x = QConv2D(filters, kernel_size, strides=strides, padding='same',
-                kernel_quantizer=quantized_bits(**quantized_bits_param),
-                bias_quantizer=quantized_bits(**quantized_bits_param),
-                kernel_initializer='glorot_uniform',  # Explicit initializer for reproducibility
+                kernel_quantizer=quantized_bits(**qbits),
+                bias_quantizer=quantized_bits(**qbits),
+                kernel_initializer='glorot_uniform',
                 name=f'{name}_conv')(x)
     x = QBatchNormalization(
-        gamma_quantizer=quantized_bits(**quantized_bits_param),
-        beta_quantizer=quantized_bits(**quantized_bits_param),
-        mean_quantizer=quantized_bits(**quantized_bits_param),
-        variance_quantizer=quantized_bits(**quantized_bits_param),
+        gamma_quantizer=quantized_bits(**qbits),
+        beta_quantizer=quantized_bits(**qbits),
+        mean_quantizer=quantized_bits(**qbits),
+        variance_quantizer=quantized_bits(**qbits),
         momentum=0.9,
         epsilon=1e-5,
         name=f'{name}_bn'
     )(x)
-    x = QActivation(quantized_relu(**quantized_relu_param), name=f'{name}_act')(x)
+    x = QActivation(quantized_relu(**qrelu), name=f'{name}_act')(x)
     return x
 
 def c2f_block(x, filters, n=1, name=None):
@@ -155,100 +189,82 @@ def channel_attention(x, ratio=16, name=''):
     return tf.keras.layers.Multiply(name=f'{name}_scale')([x, y])
 
 def create_segmentation_model():
-    # Clear any existing models and reset state
     tf.keras.backend.clear_session()
-    
     inputs = tf.keras.Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
     x = inputs
-    
-    # Initial conv
-    x = conv_block(x, 32, name='init_conv')
-    x = QConv2D(32, kernel_size=3, strides=2, padding='same',
-                kernel_quantizer=quantized_bits(**quantized_bits_param),
-                bias_quantizer=quantized_bits(**quantized_bits_param),
-                name='downsample1')(x)  # 512x1024
-    
-    # Stage 1 - 1/4 resolution
-    x = c2f_block(x, 64, n=2, name='stage1')
+    # Initial conv (use 16 bits)
+    x = conv_block(x, 48, name='init_conv', use_16bit=True)
+    x = QConv2D(48, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                name='downsample1')(x)
+    # Stage 1
+    x = c2f_block(x, 96, n=2, name='stage1')
     skip1 = x
-    x = QConv2D(64, kernel_size=3, strides=2, padding='same',
-                kernel_quantizer=quantized_bits(**quantized_bits_param),
-                bias_quantizer=quantized_bits(**quantized_bits_param),
-                name='downsample2')(x)  # 256x512
-    
-    # Stage 2 - 1/8 resolution
-    x = c2f_block(x, 128, n=2, name='stage2')
+    x = QConv2D(96, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                name='downsample2')(x)
+    # Stage 2
+    x = c2f_block(x, 192, n=2, name='stage2')
     skip2 = x
-    x = QConv2D(128, kernel_size=3, strides=2, padding='same',
-                kernel_quantizer=quantized_bits(**quantized_bits_param),
-                bias_quantizer=quantized_bits(**quantized_bits_param),
-                name='downsample3')(x)  # 128x256
-    
-    # Stage 3 - 1/16 resolution
-    x = c2f_block(x, 256, n=1, name='stage3')
-    x = channel_attention(x, name='ca_stage3')  # Add attention only at deeper layers
+    x = QConv2D(192, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                name='downsample3')(x)
+    # Stage 3
+    x = c2f_block(x, 384, n=1, name='stage3')
+    x = channel_attention(x, name='ca_stage3')
     skip3 = x
-    x = QConv2D(256, kernel_size=3, strides=2, padding='same',
-                kernel_quantizer=quantized_bits(**quantized_bits_param),
-                bias_quantizer=quantized_bits(**quantized_bits_param),
-                name='downsample4')(x)  # 64x128
-    
-    # Stage 4 - 1/32 resolution (bottleneck)
-    x = c2f_block(x, 512, n=1, name='stage4')
-    x = channel_attention(x, name='ca_stage4')  # Add attention at bottleneck
-    
-    # Add lightweight SPPF for multi-scale feature extraction
-    x = sppf_block(x, 512, name='sppf')
-    
-    # Up 1 - 1/16 resolution
-    x = c2f_block(x, 512, n=1, name='pre_up1')
-    x = QConv2DTranspose(256, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param),
-                        bias_quantizer=quantized_bits(**quantized_bits_param),
+    x = QConv2D(384, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                name='downsample4')(x)
+    # Stage 4
+    x = c2f_block(x, 768, n=1, name='stage4')
+    x = channel_attention(x, name='ca_stage4')
+    x = sppf_block(x, 768, name='sppf')
+    # Decoder (upsample and match filter counts)
+    x = c2f_block(x, 768, n=1, name='pre_up1')
+    x = QConv2DTranspose(384, kernel_size=2, strides=2, padding='same',
+                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up1_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat1')([x, skip3])
-    x = conv_block(x, 256, name='up1_conv')
-    x = c2f_block(x, 256, n=1, name='up1_c2f')
-    x = channel_attention(x, name='ca_up1')  # Keep attention for important upsampling stages
-    
-    # Up 2 - 1/8 resolution
-    x = c2f_block(x, 256, n=1, name='pre_up2')
-    x = QConv2DTranspose(128, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param),
-                        bias_quantizer=quantized_bits(**quantized_bits_param),
+    x = conv_block(x, 384, name='up1_conv')
+    x = c2f_block(x, 384, n=1, name='up1_c2f')
+    x = channel_attention(x, name='ca_up1')
+    x = c2f_block(x, 384, n=1, name='pre_up2')
+    x = QConv2DTranspose(192, kernel_size=2, strides=2, padding='same',
+                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up2_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat2')([x, skip2])
-    x = conv_block(x, 128, name='up2_conv')
-    x = c2f_block(x, 128, n=1, name='up2_c2f')
-    
-    # Up 3 - 1/4 resolution
-    x = c2f_block(x, 128, n=1, name='pre_up3')
-    x = QConv2DTranspose(64, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param),
-                        bias_quantizer=quantized_bits(**quantized_bits_param),
+    x = conv_block(x, 192, name='up2_conv')
+    x = c2f_block(x, 192, n=1, name='up2_c2f')
+    x = c2f_block(x, 192, n=1, name='pre_up3')
+    x = QConv2DTranspose(96, kernel_size=2, strides=2, padding='same',
+                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up3_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat3')([x, skip1])
-    x = conv_block(x, 64, name='up3_conv')
-    x = c2f_block(x, 64, n=1, name='up3_c2f')
-    
-    # Up 4 - Original resolution
-    x = c2f_block(x, 64, n=1, name='pre_up4')
-    x = QConv2DTranspose(32, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param),
-                        bias_quantizer=quantized_bits(**quantized_bits_param),
+    x = conv_block(x, 96, name='up3_conv')
+    x = c2f_block(x, 96, n=1, name='up3_c2f')
+    x = c2f_block(x, 96, n=1, name='pre_up4')
+    x = QConv2DTranspose(48, kernel_size=2, strides=2, padding='same',
+                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
                         name='up4_transpose')(x)
-    x = conv_block(x, 32, name='up4_conv')
-    x = c2f_block(x, 32, n=1, name='up4_c2f')
-    
-    # Output layer with quantized softmax
+    x = conv_block(x, 48, name='up4_conv')
+    x = c2f_block(x, 48, n=1, name='up4_c2f')
+    # Output layer (use 16 bits)
     outputs = QConv2D(NUM_CLASSES, (1, 1),
-                     kernel_quantizer=quantized_bits(**quantized_bits_param),
-                     bias_quantizer=quantized_bits(**quantized_bits_param),
+                     kernel_quantizer=quantized_bits(**quantized_bits_param_16),
+                     bias_quantizer=quantized_bits(**quantized_bits_param_16),
                      kernel_initializer='glorot_uniform',
                      name='output')(x)
-    outputs = QActivation(quantized_bits(**quantized_bits_param), name='output_quant')(outputs)
+    outputs = QActivation(quantized_bits(**quantized_bits_param_16), name='output_quant')(outputs)
     outputs = tf.keras.layers.Activation('softmax', name='output_softmax')(outputs)
-    
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
     return model
 
