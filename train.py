@@ -8,6 +8,26 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 # from tensorflow.keras import mixed_precision
+from tensorflow.keras.preprocessing.image import load_img
+from tensorflow.keras.layers import Input, MaxPooling2D, Conv2D, BatchNormalization
+from qkeras import QActivation, QConv2D, QConv2DTranspose, QBatchNormalization, quantized_bits, quantized_relu
+from qkeras.utils import model_save_quantized_weights
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+import albumentations as A
+from PIL import Image
+import cv2
+from pathlib import Path
+
+# Define constants
+INPUT_HEIGHT = 1024
+INPUT_WIDTH = 2048
+BATCH_SIZE = 4  # Keep at 1 for memory constraints
+EPOCHS = 50
+NUM_CLASSES = 34
+DATASET_DIR = '/cityscapes'
+GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
+NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
+PREFETCH_SIZE = 2  # Reduced for stability
 
 # Configure GPU memory growth
 gpus = tf.config.list_physical_devices('GPU')
@@ -17,7 +37,7 @@ if gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
             tf.config.set_logical_device_configuration(
                 gpu,
-                [tf.config.LogicalDeviceConfiguration(memory_limit=20000)]
+                [tf.config.LogicalDeviceConfiguration(memory_limit=8000)]
             )
             
         # Disable layout optimizer and other problematic optimizations
@@ -52,27 +72,6 @@ tf.compat.v1.disable_eager_execution()
 
 # Add TF memory logger
 tf.debugging.set_log_device_placement(False)  # Set to True only for debugging
-
-from tensorflow.keras.preprocessing.image import load_img
-from tensorflow.keras.layers import Input, MaxPooling2D, Conv2D, BatchNormalization
-from qkeras import QActivation, QConv2D, QConv2DTranspose, QBatchNormalization, quantized_bits, quantized_relu
-from qkeras.utils import model_save_quantized_weights
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
-import albumentations as A
-from PIL import Image
-import cv2
-from pathlib import Path
-
-# Define constants
-INPUT_HEIGHT = 1024
-INPUT_WIDTH = 2048
-BATCH_SIZE = 1  # Keep at 1 for memory constraints
-EPOCHS = 50
-NUM_CLASSES = 34
-DATASET_DIR = '/cityscapes'
-GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
-NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
-PREFETCH_SIZE = 2  # Reduced for stability
 
 # Define quantization parameters optimized for FPGA implementation
 quantized_bits_param = {
@@ -528,22 +527,9 @@ def train_model():
     train_gen = CityscapesDataGenerator(train_images, train_masks, BATCH_SIZE, augment=True)
     val_gen = CityscapesDataGenerator(val_images, val_masks, BATCH_SIZE, augment=False)
 
-    # Wrap generators with tf.data for efficient pipeline
-    train_dataset = tf.data.Dataset.from_generator(
-        lambda: train_gen,
-        output_signature=(
-            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=tf.float32),
-            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=tf.float32)
-        )
-    ).prefetch(PREFETCH_SIZE)
-    val_dataset = tf.data.Dataset.from_generator(
-        lambda: val_gen,
-        output_signature=(
-            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=tf.float32),
-            tf.TensorSpec(shape=(BATCH_SIZE, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=tf.float32)
-        )
-    ).prefetch(PREFETCH_SIZE)
-    
+    # Remove tf.data.Dataset.from_generator and prefetch
+    # Use generators directly in model.fit
+
     # Add HLS4ML model saving callback
     class HLS4MLModelSaver(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
@@ -590,10 +576,13 @@ def train_model():
     # Train with gradient accumulation
     try:
         history = model.fit(
-            train_dataset,
-            validation_data=val_dataset,
+            train_gen,
+            validation_data=val_gen,
             epochs=EPOCHS,
             callbacks=callbacks,
+            workers=NUM_WORKERS,
+            use_multiprocessing=False,
+            max_queue_size=PREFETCH_SIZE,
             steps_per_epoch=len(train_gen) // GRADIENT_ACCUMULATION_STEPS,
             initial_epoch=initial_epoch - 1 if initial_epoch > 0 else 0
         )

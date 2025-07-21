@@ -1,0 +1,55 @@
+Project Overview and Objectives
+==============================
+
+1. **Primary Goal:**
+   - Train a semantic segmentation model for FPGA implementation using hls4ml and QKeras with Quantization-Aware Training (QAT).
+   - Maximize segmentation accuracy while ensuring the model fits and runs efficiently on high-end FPGAs (e.g., Xilinx VCU118).
+
+2. **Technical Context:**
+   - **Frameworks:** TensorFlow/Keras for model definition and training; QKeras for quantization; hls4ml for FPGA conversion.
+   - **Quantization:** Use QKeras layers (QConv2D, QBatchNormalization, QActivation) with 8-bit and 16-bit quantization, and quantized ReLU activations. Quantization-Aware Training (QAT) is required.
+   - **Model Architecture:**
+     - U-Net/YOLOv8-inspired encoder-decoder with skip connections, C2f blocks, SPPF, and channel attention modules.
+     - Downsampling is performed using QConv2D with strides=2 (no MaxPooling2D, for hls4ml compatibility).
+     - Input size: 1024x2048x3, output: 1024x2048x34 (Cityscapes dataset, 34 classes).
+   - **Data Pipeline:**
+     - Uses a custom `CityscapesDataGenerator` wrapped with `tf.data.Dataset.from_generator` and `.prefetch(PREFETCH_SIZE)` for efficient data loading.
+     - Batch size is typically 1 due to GPU memory constraints.
+   - **Training Environment:**
+     - Training is performed inside a Docker container (due to host driver issues).
+     - GPU memory is limited (8GB), so model and data pipeline are optimized for low memory usage.
+     - Mixed precision (float16) is **not** used due to QKeras incompatibility; all training is in float32.
+   - **Callbacks:**
+     - Model checkpoints, early stopping, learning rate reduction, memory cleanup, and periodic saving of quantized weights for hls4ml.
+   - **Dependencies:**
+     - Carefully pinned versions for TensorFlow, Keras, QKeras, NumPy, Albumentations, Pydantic, typing_extensions, OpenCV, etc., to avoid compatibility issues.
+
+3. **Key Requirements:**
+   - Model must be compatible with hls4ml (no unsupported layers like MaxPooling2D).
+   - Quantization must be applied throughout the model (QKeras layers only).
+   - Prioritize segmentation accuracy, but model must fit and run on high-end FPGAs (VCU118 or similar).
+   - Minimize GPU memory usage (batch size 1, efficient data pipeline, no unnecessary prefetching).
+   - Save both standard and quantized (hls4ml-compatible) model weights during/after training.
+   - Training can be interrupted and resumed from the latest checkpoint.
+
+4. **Common Issues and Solutions:**
+   - **OOM Errors:**
+     - Reduce model complexity (filter counts), keep batch size at 1, optimize data pipeline.
+   - **Dependency Conflicts:**
+     - Use specific version pins in requirements.txt for all major libraries.
+   - **QKeras/Mixed Precision:**
+     - Do not use mixed_float16 policy; QKeras requires float32.
+   - **hls4ml Compatibility:**
+     - Avoid unsupported layers (e.g., MaxPooling2D); use QConv2D with strides for downsampling.
+
+5. **Dataset:**
+   - Cityscapes dataset, standard directory structure, 34 classes.
+   - Images and masks are loaded, resized, and one-hot encoded for training.
+
+6. **FPGA Target:**
+   - Model must be exportable to hls4ml and synthesized for Xilinx VCU118 (or similar high-end FPGA).
+   - Quantization and architecture choices are made with FPGA resource constraints in mind.
+
+---
+
+**This file is intended as a persistent reference for anyone working on or reviewing this project.** 
