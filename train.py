@@ -163,19 +163,35 @@ def create_segmentation_model():
     
     # Initial conv
     x = conv_block(x, 32, name='init_conv')
+    x = QConv2D(32, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param),
+                bias_quantizer=quantized_bits(**quantized_bits_param),
+                name='downsample1')(x)  # 512x1024
     
     # Stage 1 - 1/4 resolution
     x = c2f_block(x, 64, n=2, name='stage1')
     skip1 = x
+    x = QConv2D(64, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param),
+                bias_quantizer=quantized_bits(**quantized_bits_param),
+                name='downsample2')(x)  # 256x512
     
     # Stage 2 - 1/8 resolution
     x = c2f_block(x, 128, n=2, name='stage2')
     skip2 = x
+    x = QConv2D(128, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param),
+                bias_quantizer=quantized_bits(**quantized_bits_param),
+                name='downsample3')(x)  # 128x256
     
     # Stage 3 - 1/16 resolution
     x = c2f_block(x, 256, n=1, name='stage3')
     x = channel_attention(x, name='ca_stage3')  # Add attention only at deeper layers
     skip3 = x
+    x = QConv2D(256, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param),
+                bias_quantizer=quantized_bits(**quantized_bits_param),
+                name='downsample4')(x)  # 64x128
     
     # Stage 4 - 1/32 resolution (bottleneck)
     x = c2f_block(x, 512, n=1, name='stage4')
