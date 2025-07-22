@@ -25,7 +25,8 @@ BATCH_SIZE = 1  # Keep at 1 for memory constraints
 EPOCHS = 50
 NUM_CLASSES = 34
 DATASET_DIR = '/cityscapes'
-GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
+# Remove GRADIENT_ACCUMULATION_STEPS variable and related comments
+# GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
 NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
 PREFETCH_SIZE = 2  # Reduced for stability
 
@@ -587,7 +588,7 @@ def train_model():
             workers=NUM_WORKERS,
             use_multiprocessing=False,
             max_queue_size=PREFETCH_SIZE,
-            steps_per_epoch=len(train_gen) // GRADIENT_ACCUMULATION_STEPS,
+            steps_per_epoch=len(train_gen),
             initial_epoch=initial_epoch - 1 if initial_epoch > 0 else 0
         )
         # Save final model in both formats

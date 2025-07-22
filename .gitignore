@@ -1,3 +1,5 @@
+*.h5
+**/*.h5
 old_models/
 old_models/best_model.h5
 old_models/checkpoint_epoch_02_batch_0700.h5
@@ -75,3 +77,5 @@ old_models/checkpoint_epoch_23_batch_0214.h5
 old_models/checkpoint_epoch_23_batch_0264.h5
 old_models/interrupted_model.h5
 old_models/log.txt
+models/interrupted_model_hls4ml.h5
+models/interrupted_model.h5
