@@ -222,7 +222,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
     def on_epoch_end(self):
         np.random.shuffle(self.indices)
         gc.collect()
-        tf.keras.backend.clear_session()
     
     def load_and_preprocess_image(self, img_path, mask_path):
         try:
@@ -275,7 +274,6 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         """Clean up memory at the end of each epoch"""
         gc.collect()
-        tf.keras.backend.clear_session()
         
         # Log memory usage
         process = psutil.Process()
