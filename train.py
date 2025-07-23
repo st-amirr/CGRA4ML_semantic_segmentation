@@ -25,8 +25,7 @@ BATCH_SIZE = 1  # Keep at 1 for memory constraints
 EPOCHS = 50
 NUM_CLASSES = 34
 DATASET_DIR = '/cityscapes'
-# Remove GRADIENT_ACCUMULATION_STEPS variable and related comments
-# GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
+GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
 NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
 PREFETCH_SIZE = 2  # Reduced for stability
 
@@ -587,7 +586,7 @@ def train_model():
             workers=NUM_WORKERS,
             use_multiprocessing=False,
             max_queue_size=PREFETCH_SIZE,
-            steps_per_epoch=len(train_gen),
+            steps_per_epoch=max(1, len(train_gen) // GRADIENT_ACCUMULATION_STEPS),
             initial_epoch=initial_epoch - 1 if initial_epoch > 0 else 0
         )
         # Save final model in both formats
@@ -598,9 +597,23 @@ def train_model():
         print("\nTraining completed successfully!")
     except KeyboardInterrupt:
         print("\nTraining interrupted by user. Saving current model...")
-        model.save('/app/models/interrupted_model.h5')
-        model_save_quantized_weights(model, '/app/models/interrupted_model_hls4ml.h5')
-        print("Interrupted model saved as 'interrupted_model.h5' and 'interrupted_model_hls4ml.h5'")
+        # Try to get current epoch and batch from the callback logs if available
+        epoch = None
+        batch = None
+        if hasattr(model, 'stop_training') and hasattr(model, 'history'):
+            # Try to infer epoch and batch from history (best effort)
+            epoch = model.history.epoch[-1] if hasattr(model.history, 'epoch') and model.history.epoch else None
+            # batch is not directly available; set to 0 as a placeholder
+            batch = 0
+        # Fallback to 0 if not available
+        if epoch is None:
+            epoch = 0
+        if batch is None:
+            batch = 0
+        checkpoint_name = f"/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}.h5"
+        model.save(checkpoint_name)
+        model_save_quantized_weights(model, checkpoint_name.replace('.h5', '_hls4ml.h5'))
+        print(f"Interrupted model saved as '{checkpoint_name}' and '{checkpoint_name.replace('.h5', '_hls4ml.h5')}'")
         raise
     except Exception as e:
         print(f"\nError during training: {str(e)}")
