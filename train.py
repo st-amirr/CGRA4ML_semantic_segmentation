@@ -478,25 +478,33 @@ def train_model():
             except:
                 print("Could not determine epoch number from filename")
         
-        # Load the complete model
+        # Try to load as weights only first, then as full model
+        model = None
         try:
-            print(f"Loading model from {latest_model}")
-            model = tf.keras.models.load_model('/app/models/' + latest_model,
-                                           custom_objects={
-                                               'QConv2D': QConv2D,
-                                               'QConv2DTranspose': QConv2DTranspose,
-                                               'QBatchNormalization': QBatchNormalization,
-                                               'QActivation': QActivation,
-                                               'IoUMetric': IoUMetric,
-                                               'quantized_bits': quantized_bits,
-                                               'quantized_relu': quantized_relu
-                                           })
-            print("Successfully loaded model")
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            print("Will start training from scratch")
+            print(f"Trying to load weights from {latest_model}")
             model = create_segmentation_model()
-            initial_epoch = 0
+            model.load_weights('/app/models/' + latest_model)
+            print("Successfully loaded weights into model architecture.")
+        except Exception as e_weights:
+            print(f"Failed to load as weights: {str(e_weights)}")
+            try:
+                print(f"Trying to load full model from {latest_model}")
+                model = tf.keras.models.load_model('/app/models/' + latest_model,
+                                               custom_objects={
+                                                   'QConv2D': QConv2D,
+                                                   'QConv2DTranspose': QConv2DTranspose,
+                                                   'QBatchNormalization': QBatchNormalization,
+                                                   'QActivation': QActivation,
+                                                   'IoUMetric': IoUMetric,
+                                                   'quantized_bits': quantized_bits,
+                                                   'quantized_relu': quantized_relu
+                                               })
+                print("Successfully loaded full model.")
+            except Exception as e_model:
+                print(f"Error loading model: {str(e_model)}")
+                print("Will start training from scratch")
+                model = create_segmentation_model()
+                initial_epoch = 0
     else:
         print("\nNo existing models found. Creating new model.")
         model = create_segmentation_model()
