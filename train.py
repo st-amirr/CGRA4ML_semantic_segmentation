@@ -25,7 +25,7 @@ BATCH_SIZE = 1  # Keep at 1 for memory constraints
 EPOCHS = 50
 NUM_CLASSES = 34
 DATASET_DIR = '/cityscapes'
-GRADIENT_ACCUMULATION_STEPS = 4  # Keep at 1 for now
+GRADIENT_ACCUMULATION_STEPS = 8  # Keep at 1 for now
 NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
 PREFETCH_SIZE = 2  # Reduced for stability
 
@@ -552,9 +552,17 @@ def train_model():
             verbose=1,
             save_weights_only=False
         ),
+        # Save weights only every 10 batches
         ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}.h5',
-            save_freq=50,
+            '/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}_weights.h5',
+            save_freq=10,
+            verbose=1,
+            save_weights_only=True
+        ),
+        # Save full model every epoch (batch always 0000 for epoch save)
+        ModelCheckpoint(
+            '/app/models/checkpoint_epoch_{epoch:02d}_batch_0000.h5',
+            save_freq='epoch',
             verbose=1,
             save_weights_only=False
         ),
@@ -596,24 +604,19 @@ def train_model():
         print("Models saved as 'final_model.h5' and 'final_model_hls4ml.h5'")
         print("\nTraining completed successfully!")
     except KeyboardInterrupt:
-        print("\nTraining interrupted by user. Saving current model...")
-        # Try to get current epoch and batch from the callback logs if available
+        print("\nTraining interrupted by user. Saving current model weights only...")
         epoch = None
         batch = None
         if hasattr(model, 'stop_training') and hasattr(model, 'history'):
-            # Try to infer epoch and batch from history (best effort)
             epoch = model.history.epoch[-1] if hasattr(model.history, 'epoch') and model.history.epoch else None
-            # batch is not directly available; set to 0 as a placeholder
             batch = 0
-        # Fallback to 0 if not available
         if epoch is None:
             epoch = 0
         if batch is None:
             batch = 0
-        checkpoint_name = f"/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}.h5"
-        model.save(checkpoint_name)
-        model_save_quantized_weights(model, checkpoint_name.replace('.h5', '_hls4ml.h5'))
-        print(f"Interrupted model saved as '{checkpoint_name}' and '{checkpoint_name.replace('.h5', '_hls4ml.h5')}'")
+        checkpoint_name = f"/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}_weights.h5"
+        model.save_weights(checkpoint_name)
+        print(f"Interrupted model weights saved as '{checkpoint_name}'")
         raise
     except Exception as e:
         print(f"\nError during training: {str(e)}")
