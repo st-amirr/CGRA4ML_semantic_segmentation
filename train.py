@@ -18,6 +18,8 @@ from PIL import Image
 import cv2
 from pathlib import Path
 
+# python3 /app/train.py
+
 # Define constants
 INPUT_HEIGHT = 1024
 INPUT_WIDTH = 2048
@@ -306,7 +308,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
     def on_epoch_end(self):
         np.random.shuffle(self.indices)
         gc.collect()
-        # tf.keras.backend.clear_session()  # Removed to prevent training hang
+        tf.keras.backend.clear_session()
     
     def load_and_preprocess_image(self, img_path, mask_path):
         try:
@@ -357,7 +359,7 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         """Clean up memory at the end of each epoch"""
         gc.collect()
-        # tf.keras.backend.clear_session()  # Removed to prevent training hang
+        tf.keras.backend.clear_session()
         # Log memory usage
         process = psutil.Process()
         memory_usage = process.memory_info().rss / 1024 / 1024  # Convert to MB
@@ -464,6 +466,7 @@ def train_model():
     # Find the latest saved model
     model_files = [f for f in os.listdir('/app/models') if f.endswith('.h5')]
     initial_epoch = 0
+    skip_compilation = False  # Initialize compilation flag
     
     if model_files:
         # Sort by modification time to get the latest
@@ -478,54 +481,62 @@ def train_model():
             except:
                 print("Could not determine epoch number from filename")
         
-        # Try to load as weights only first, then as full model
+        # Try to load as full model first, then as weights only
         model = None
         try:
-            print(f"Trying to load weights from {latest_model}")
-            model = create_segmentation_model()
-            model.load_weights('/app/models/' + latest_model)
-            print("Successfully loaded weights into model architecture.")
-        except Exception as e_weights:
-            print(f"Failed to load as weights: {str(e_weights)}")
+            print(f"Trying to load full model from {latest_model}")
+            model = tf.keras.models.load_model('/app/models/' + latest_model,
+                                           custom_objects={
+                                               'QConv2D': QConv2D,
+                                               'QConv2DTranspose': QConv2DTranspose,
+                                               'QBatchNormalization': QBatchNormalization,
+                                               'QActivation': QActivation,
+                                               'IoUMetric': IoUMetric,
+                                               'quantized_bits': quantized_bits,
+                                               'quantized_relu': quantized_relu
+                                           })
+            print("Successfully loaded full model with optimizer state.")
+            # Don't recompile - the loaded model already has optimizer state
+            skip_compilation = True
+        except Exception as e_model:
+            print(f"Failed to load as full model: {str(e_model)}")
             try:
-                print(f"Trying to load full model from {latest_model}")
-                model = tf.keras.models.load_model('/app/models/' + latest_model,
-                                               custom_objects={
-                                                   'QConv2D': QConv2D,
-                                                   'QConv2DTranspose': QConv2DTranspose,
-                                                   'QBatchNormalization': QBatchNormalization,
-                                                   'QActivation': QActivation,
-                                                   'IoUMetric': IoUMetric,
-                                                   'quantized_bits': quantized_bits,
-                                                   'quantized_relu': quantized_relu
-                                               })
-                print("Successfully loaded full model.")
-            except Exception as e_model:
-                print(f"Error loading model: {str(e_model)}")
+                print(f"Trying to load weights from {latest_model}")
+                model = create_segmentation_model()
+                model.load_weights('/app/models/' + latest_model)
+                print("Successfully loaded weights into model architecture.")
+                skip_compilation = False  # Need to compile since we only loaded weights
+            except Exception as e_weights:
+                print(f"Error loading model: {str(e_weights)}")
                 print("Will start training from scratch")
                 model = create_segmentation_model()
                 initial_epoch = 0
+                skip_compilation = False
     else:
         print("\nNo existing models found. Creating new model.")
         model = create_segmentation_model()
         initial_epoch = 0
     
-    # Compile with QAT-specific settings and disable XLA
-    optimizer = tf.keras.optimizers.legacy.Adam(
-        learning_rate=1e-04,
-        beta_1=0.9,
-        beta_2=0.999,
-        epsilon=1e-07,
-        clipnorm=0.5
-    )
-    
-    model.compile(
-        optimizer=optimizer,
-        loss='categorical_crossentropy',
-        metrics=[IoUMetric()],
-        run_eagerly=False,
-        # Remove jit_compile if it was added
-    )
+    # Compile with QAT-specific settings and disable XLA (only if not already compiled)
+    if not skip_compilation:
+        optimizer = tf.keras.optimizers.legacy.Adam(
+            learning_rate=1e-04,
+            beta_1=0.9,
+            beta_2=0.999,
+            epsilon=1e-07,
+            clipnorm=0.5
+        )
+        
+        model.compile(
+            optimizer=optimizer,
+            loss='categorical_crossentropy',
+            metrics=[IoUMetric()],
+            run_eagerly=False,
+            # Remove jit_compile if it was added
+        )
+        print("Model compiled successfully.")
+    else:
+        print("Skipping compilation - using loaded model with existing optimizer state.")
     
     # Setup data paths
     cityscapes_root = '/data'
@@ -560,12 +571,12 @@ def train_model():
             verbose=1,
             save_weights_only=False
         ),
-        # Save weights only every 10 batches
+        # Save full model every 30 batches (preserves optimizer state)
         ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}_weights.h5',
-            save_freq=10,
+            '/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}.h5',
+            save_freq=30,
             verbose=1,
-            save_weights_only=True
+            save_weights_only=False
         ),
         # Save full model every epoch (batch always 0000 for epoch save)
         ModelCheckpoint(

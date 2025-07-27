@@ -79,3 +79,5 @@ old_models/interrupted_model.h5
 old_models/log.txt
 models/interrupted_model_hls4ml.h5
 models/interrupted_model.h5
+models/log.txt
+model.txt

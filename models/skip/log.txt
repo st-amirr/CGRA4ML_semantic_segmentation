@@ -1,0 +1,318 @@
+9/371 [..............................] - ETA: 2:50:22 - loss: 0.7245 - iou: 0.1983  
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0010_weights.h5
+ 19/371 [>.............................] - ETA: 2:56:27 - loss: 0.7003 - iou: 0.2088
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0020_weights.h5
+ 29/371 [=>............................] - ETA: 2:51:03 - loss: 0.9045 - iou: 0.1872
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0030_weights.h5
+ 39/371 [==>...........................] - ETA: 2:46:33 - loss: 0.8758 - iou: 0.1817
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0040_weights.h5
+ 49/371 [==>...........................] - ETA: 2:42:02 - loss: 0.8769 - iou: 0.1789
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0050_weights.h5
+ 59/371 [===>..........................] - ETA: 2:36:27 - loss: 0.8695 - iou: 0.1796
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0060_weights.h5
+ 69/371 [====>.........................] - ETA: 2:31:35 - loss: 0.8857 - iou: 0.1751
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0070_weights.h5
+ 79/371 [=====>........................] - ETA: 2:26:50 - loss: 0.8895 - iou: 0.1754
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0080_weights.h5
+ 89/371 [======>.......................] - ETA: 2:22:05 - loss: 0.8735 - iou: 0.1763
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0090_weights.h5
+ 99/371 [=======>......................] - ETA: 2:16:33 - loss: 0.8554 - iou: 0.1789
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0100_weights.h5
+109/371 [=======>......................] - ETA: 2:11:25 - loss: 0.8563 - iou: 0.1809
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0110_weights.h5
+119/371 [========>.....................] - ETA: 2:05:51 - loss: 0.8749 - iou: 0.1813
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0120_weights.h5
+129/371 [=========>....................] - ETA: 2:00:35 - loss: 0.8681 - iou: 0.1809
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0130_weights.h5
+139/371 [==========>...................] - ETA: 1:55:28 - loss: 0.8702 - iou: 0.1818
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0140_weights.h5
+149/371 [===========>..................] - ETA: 1:50:20 - loss: 0.8750 - iou: 0.1811
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0150_weights.h5
+159/371 [===========>..................] - ETA: 1:45:09 - loss: 0.8740 - iou: 0.1823
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0160_weights.h5
+169/371 [============>.................] - ETA: 1:40:15 - loss: 0.8795 - iou: 0.1808
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0170_weights.h5
+179/371 [=============>................] - ETA: 1:35:08 - loss: 0.8995 - iou: 0.1805
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0180_weights.h5
+189/371 [==============>...............] - ETA: 1:30:13 - loss: 0.8894 - iou: 0.1821
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0190_weights.h5
+199/371 [===============>..............] - ETA: 1:25:12 - loss: 0.8945 - iou: 0.1820
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0200_weights.h5
+209/371 [===============>..............] - ETA: 1:20:14 - loss: 0.8955 - iou: 0.1809
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0210_weights.h5
+219/371 [================>.............] - ETA: 1:15:15 - loss: 0.9009 - iou: 0.1809
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0220_weights.h5
+229/371 [=================>............] - ETA: 1:10:17 - loss: 0.8963 - iou: 0.1815
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0230_weights.h5
+239/371 [==================>...........] - ETA: 1:05:20 - loss: 0.8930 - iou: 0.1829
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0240_weights.h5
+249/371 [===================>..........] - ETA: 1:00:23 - loss: 0.8920 - iou: 0.1833
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0250_weights.h5
+259/371 [===================>..........] - ETA: 55:28 - loss: 0.8826 - iou: 0.1844  
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0260_weights.h5
+269/371 [====================>.........] - ETA: 50:29 - loss: 0.8767 - iou: 0.1847
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0270_weights.h5
+279/371 [=====================>........] - ETA: 45:30 - loss: 0.8686 - iou: 0.1857
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0280_weights.h5
+289/371 [======================>.......] - ETA: 40:33 - loss: 0.8617 - iou: 0.1862
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0290_weights.h5
+299/371 [=======================>......] - ETA: 35:36 - loss: 0.8599 - iou: 0.1858
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0300_weights.h5
+309/371 [=======================>......] - ETA: 30:38 - loss: 0.8573 - iou: 0.1857
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0310_weights.h5
+319/371 [========================>.....] - ETA: 25:42 - loss: 0.8614 - iou: 0.1846
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0320_weights.h5
+329/371 [=========================>....] - ETA: 20:46 - loss: 0.8645 - iou: 0.1845
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0330_weights.h5
+339/371 [==========================>...] - ETA: 15:49 - loss: 0.8688 - iou: 0.1836
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0340_weights.h5
+349/371 [===========================>..] - ETA: 10:52 - loss: 0.8682 - iou: 0.1832
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0350_weights.h5
+359/371 [============================>.] - ETA: 5:55 - loss: 0.8661 - iou: 0.1836 
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0360_weights.h5
+369/371 [============================>.] - ETA: 59s - loss: 0.8619 - iou: 0.1838 
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0370_weights.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8624 - iou: 0.1837 
+Epoch 7: val_iou improved from -inf to 0.10627, saving model to /app/models/best_model.h5
+
+Epoch 7: saving model to /app/models/checkpoint_epoch_07_batch_0000.h5
+
+Memory usage after epoch 6: 9950.27 MB
+371/371 [==============================] - 20605s 48s/step - loss: 0.8624 - iou: 0.1837 - val_loss: 1.6484 - val_iou: 0.1063 - lr: 1.0000e-04
+Epoch 8/50
+  8/371 [..............................] - ETA: 2:48:21 - loss: 1.1571 - iou: 0.1887
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0009_weights.h5
+ 18/371 [>.............................] - ETA: 2:48:30 - loss: 1.0077 - iou: 0.1879
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0019_weights.h5
+ 28/371 [=>............................] - ETA: 2:45:27 - loss: 0.8647 - iou: 0.2015
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0029_weights.h5
+ 38/371 [==>...........................] - ETA: 2:40:54 - loss: 0.9392 - iou: 0.1919
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0039_weights.h5
+ 48/371 [==>...........................] - ETA: 2:36:36 - loss: 0.9022 - iou: 0.1906
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0049_weights.h5
+ 58/371 [===>..........................] - ETA: 2:31:57 - loss: 0.9177 - iou: 0.1904
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0059_weights.h5
+ 68/371 [====>.........................] - ETA: 2:27:11 - loss: 0.9057 - iou: 0.1925
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0069_weights.h5
+ 78/371 [=====>........................] - ETA: 2:22:12 - loss: 0.8626 - iou: 0.1967
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0079_weights.h5
+ 88/371 [======>.......................] - ETA: 2:17:20 - loss: 0.8602 - iou: 0.1948
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0089_weights.h5
+ 98/371 [======>.......................] - ETA: 2:12:37 - loss: 0.8633 - iou: 0.1938
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0099_weights.h5
+108/371 [=======>......................] - ETA: 2:07:49 - loss: 0.8636 - iou: 0.1945
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0109_weights.h5
+118/371 [========>.....................] - ETA: 2:02:58 - loss: 0.8481 - iou: 0.1964
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0119_weights.h5
+128/371 [=========>....................] - ETA: 1:58:05 - loss: 0.8478 - iou: 0.1965
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0129_weights.h5
+138/371 [==========>...................] - ETA: 1:53:15 - loss: 0.8531 - iou: 0.1946
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0139_weights.h5
+148/371 [==========>...................] - ETA: 1:48:29 - loss: 0.8662 - iou: 0.1935
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0149_weights.h5
+158/371 [===========>..................] - ETA: 1:43:36 - loss: 0.8515 - iou: 0.1946
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0159_weights.h5
+168/371 [============>.................] - ETA: 1:38:39 - loss: 0.8512 - iou: 0.1942
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0169_weights.h5
+178/371 [=============>................] - ETA: 1:33:44 - loss: 0.8507 - iou: 0.1939
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0179_weights.h5
+188/371 [==============>...............] - ETA: 1:28:52 - loss: 0.8519 - iou: 0.1935
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0189_weights.h5
+198/371 [===============>..............] - ETA: 1:24:01 - loss: 0.8558 - iou: 0.1924
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0199_weights.h5
+208/371 [===============>..............] - ETA: 1:19:06 - loss: 0.8647 - iou: 0.1921
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0209_weights.h5
+218/371 [================>.............] - ETA: 1:14:16 - loss: 0.8543 - iou: 0.1932
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0219_weights.h5
+228/371 [=================>............] - ETA: 1:09:26 - loss: 0.8630 - iou: 0.1917
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0229_weights.h5
+238/371 [==================>...........] - ETA: 1:04:33 - loss: 0.8609 - iou: 0.1913
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0239_weights.h5
+248/371 [===================>..........] - ETA: 59:42 - loss: 0.8648 - iou: 0.1906  
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0249_weights.h5
+258/371 [===================>..........] - ETA: 54:51 - loss: 0.8811 - iou: 0.1895
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0259_weights.h5
+268/371 [====================>.........] - ETA: 50:00 - loss: 0.8840 - iou: 0.1888
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0269_weights.h5
+278/371 [=====================>........] - ETA: 45:08 - loss: 0.8890 - iou: 0.1880
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0279_weights.h5
+288/371 [======================>.......] - ETA: 40:17 - loss: 0.8949 - iou: 0.1869
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0289_weights.h5
+298/371 [=======================>......] - ETA: 35:26 - loss: 0.8934 - iou: 0.1874
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0299_weights.h5
+308/371 [=======================>......] - ETA: 30:35 - loss: 0.8900 - iou: 0.1876
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0309_weights.h5
+318/371 [========================>.....] - ETA: 25:44 - loss: 0.8913 - iou: 0.1867
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0319_weights.h5
+328/371 [=========================>....] - ETA: 20:53 - loss: 0.8852 - iou: 0.1872
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0329_weights.h5
+338/371 [==========================>...] - ETA: 16:02 - loss: 0.8775 - iou: 0.1879
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0339_weights.h5
+348/371 [===========================>..] - ETA: 11:10 - loss: 0.8750 - iou: 0.1882
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0349_weights.h5
+358/371 [===========================>..] - ETA: 6:19 - loss: 0.8714 - iou: 0.1888 
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0359_weights.h5
+368/371 [============================>.] - ETA: 1:27 - loss: 0.8716 - iou: 0.1883
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0369_weights.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8720 - iou: 0.1881  
+Epoch 8: val_iou improved from 0.10627 to 0.11920, saving model to /app/models/best_model.h5
+
+Epoch 8: saving model to /app/models/checkpoint_epoch_08_batch_0000.h5
+
+Memory usage after epoch 7: 9958.26 MB
+371/371 [==============================] - 17785s 48s/step - loss: 0.8720 - iou: 0.1881 - val_loss: 1.3990 - val_iou: 0.1192 - lr: 1.0000e-04
+Epoch 9/50
+  7/371 [..............................] - ETA: 2:52:48 - loss: 1.0501 - iou: 0.1621
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0008_weights.h5
+ 17/371 [>.............................] - ETA: 2:50:43 - loss: 0.9106 - iou: 0.1747
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0010_weights.h5
+ 19/371 [>.............................] - ETA: 1:33:01 - loss: 1.0224 - iou: 0.1536
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0020_weights.h5
+ 29/371 [=>............................] - ETA: 1:31:44 - loss: 1.0773 - iou: 0.1510
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0030_weights.h5
+ 39/371 [==>...........................] - ETA: 1:27:46 - loss: 1.0694 - iou: 0.1628
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0040_weights.h5
+ 49/371 [==>...........................] - ETA: 1:25:53 - loss: 0.9887 - iou: 0.1727
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0050_weights.h5
+ 59/371 [===>..........................] - ETA: 1:29:23 - loss: 1.0292 - iou: 0.1704
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0060_weights.h5
+ 69/371 [====>.........................] - ETA: 1:32:43 - loss: 0.9993 - iou: 0.1727
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0070_weights.h5
+ 79/371 [=====>........................] - ETA: 1:35:02 - loss: 1.0037 - iou: 0.1748
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0080_weights.h5
+ 89/371 [======>.......................] - ETA: 1:35:43 - loss: 1.0045 - iou: 0.1730
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0090_weights.h5
+ 99/371 [=======>......................] - ETA: 1:34:10 - loss: 0.9910 - iou: 0.1729
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0100_weights.h5
+109/371 [=======>......................] - ETA: 1:32:00 - loss: 0.9789 - iou: 0.1741
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0110_weights.h5
+119/371 [========>.....................] - ETA: 1:30:00 - loss: 0.9814 - iou: 0.1744
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0120_weights.h5
+129/371 [=========>....................] - ETA: 1:27:16 - loss: 0.9567 - iou: 0.1760
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0130_weights.h5
+139/371 [==========>...................] - ETA: 1:25:11 - loss: 0.9551 - iou: 0.1762
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0140_weights.h5
+149/371 [===========>..................] - ETA: 1:22:24 - loss: 0.9488 - iou: 0.1753
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0150_weights.h5
+159/371 [===========>..................] - ETA: 1:19:23 - loss: 0.9508 - iou: 0.1760
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0160_weights.h5
+169/371 [============>.................] - ETA: 1:16:20 - loss: 0.9605 - iou: 0.1753
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0170_weights.h5
+179/371 [=============>................] - ETA: 1:13:08 - loss: 0.9447 - iou: 0.1761
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0180_weights.h5
+189/371 [==============>...............] - ETA: 1:09:50 - loss: 0.9310 - iou: 0.1774
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0190_weights.h5
+199/371 [===============>..............] - ETA: 1:06:35 - loss: 0.9162 - iou: 0.1789
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0200_weights.h5
+209/371 [===============>..............] - ETA: 1:02:58 - loss: 0.9043 - iou: 0.1796
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0210_weights.h5
+219/371 [================>.............] - ETA: 59:25 - loss: 0.9161 - iou: 0.1798  
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0220_weights.h5
+229/371 [=================>............] - ETA: 55:48 - loss: 0.9056 - iou: 0.1810
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0230_weights.h5
+239/371 [==================>...........] - ETA: 52:02 - loss: 0.9043 - iou: 0.1817
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0240_weights.h5
+249/371 [===================>..........] - ETA: 48:16 - loss: 0.8974 - iou: 0.1815
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0250_weights.h5
+259/371 [===================>..........] - ETA: 44:33 - loss: 0.8917 - iou: 0.1821
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0260_weights.h5
+269/371 [====================>.........] - ETA: 40:41 - loss: 0.8840 - iou: 0.1835
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0270_weights.h5
+279/371 [=====================>........] - ETA: 36:43 - loss: 0.8830 - iou: 0.1834
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0280_weights.h5
+289/371 [======================>.......] - ETA: 32:48 - loss: 0.8808 - iou: 0.1837
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0290_weights.h5
+299/371 [=======================>......] - ETA: 28:50 - loss: 0.8748 - iou: 0.1847
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0300_weights.h5
+309/371 [=======================>......] - ETA: 24:49 - loss: 0.8654 - iou: 0.1857
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0310_weights.h5
+319/371 [========================>.....] - ETA: 20:52 - loss: 0.8668 - iou: 0.1861
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0320_weights.h5
+329/371 [=========================>....] - ETA: 16:52 - loss: 0.8602 - iou: 0.1862
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0330_weights.h5
+339/371 [==========================>...] - ETA: 12:50 - loss: 0.8600 - iou: 0.1862
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0340_weights.h5
+349/371 [===========================>..] - ETA: 8:51 - loss: 0.8545 - iou: 0.1869 
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0350_weights.h5
+359/371 [============================>.] - ETA: 4:51 - loss: 0.8566 - iou: 0.1869
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0360_weights.h5
+369/371 [============================>.] - ETA: 48s - loss: 0.8543 - iou: 0.1871 
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0370_weights.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8543 - iou: 0.1871
+
+
+9/371 [..............................] - ETA: 2:49:10 - loss: 0.7803 - iou: 0.1809  
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0010_weights.h5
+ 19/371 [>.............................] - ETA: 2:41:58 - loss: 0.8203 - iou: 0.1853
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0020_weights.h5
+ 29/371 [=>............................] - ETA: 2:37:16 - loss: 0.8816 - iou: 0.1795
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0030_weights.h5
+ 39/371 [==>...........................] - ETA: 2:32:01 - loss: 0.8520 - iou: 0.1881
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0040_weights.h5
+ 49/371 [==>...........................] - ETA: 2:27:32 - loss: 0.8588 - iou: 0.1880
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0050_weights.h5
+ 59/371 [===>..........................] - ETA: 2:22:48 - loss: 0.8383 - iou: 0.1891
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0060_weights.h5
+ 69/371 [====>.........................] - ETA: 2:18:10 - loss: 0.8169 - iou: 0.1889
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0070_weights.h5
+ 79/371 [=====>........................] - ETA: 2:14:08 - loss: 0.8368 - iou: 0.1854
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0080_weights.h5
+ 89/371 [======>.......................] - ETA: 2:10:37 - loss: 0.8612 - iou: 0.1868
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0090_weights.h5
+ 99/371 [=======>......................] - ETA: 2:06:38 - loss: 0.8723 - iou: 0.1874
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0100_weights.h5
+109/371 [=======>......................] - ETA: 2:02:20 - loss: 0.8726 - iou: 0.1873
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0110_weights.h5
+119/371 [========>.....................] - ETA: 1:57:55 - loss: 0.8752 - iou: 0.1861
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0120_weights.h5
+129/371 [=========>....................] - ETA: 1:53:16 - loss: 0.8657 - iou: 0.1872
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0130_weights.h5
+139/371 [==========>...................] - ETA: 1:48:57 - loss: 0.8551 - iou: 0.1890
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0140_weights.h5
+149/371 [===========>..................] - ETA: 1:44:19 - loss: 0.8494 - iou: 0.1897
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0150_weights.h5
+159/371 [===========>..................] - ETA: 1:39:49 - loss: 0.8373 - iou: 0.1903
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0160_weights.h5
+169/371 [============>.................] - ETA: 1:35:17 - loss: 0.8297 - iou: 0.1909
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0170_weights.h5
+179/371 [=============>................] - ETA: 1:30:37 - loss: 0.8345 - iou: 0.1904
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0180_weights.h5
+189/371 [==============>...............] - ETA: 1:25:55 - loss: 0.8346 - iou: 0.1901
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0190_weights.h5
+199/371 [===============>..............] - ETA: 1:21:11 - loss: 0.8365 - iou: 0.1889
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0200_weights.h5
+209/371 [===============>..............] - ETA: 1:16:33 - loss: 0.8306 - iou: 0.1903
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0210_weights.h5
+219/371 [================>.............] - ETA: 1:12:03 - loss: 0.8338 - iou: 0.1903
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0220_weights.h5
+229/371 [=================>............] - ETA: 1:07:29 - loss: 0.8465 - iou: 0.1903
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0230_weights.h5
+239/371 [==================>...........] - ETA: 1:02:50 - loss: 0.8408 - iou: 0.1906
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0240_weights.h5
+249/371 [===================>..........] - ETA: 58:12 - loss: 0.8439 - iou: 0.1908  
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0250_weights.h5
+259/371 [===================>..........] - ETA: 53:32 - loss: 0.8378 - iou: 0.1910
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0260_weights.h5
+269/371 [====================>.........] - ETA: 48:47 - loss: 0.8468 - iou: 0.1901
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0270_weights.h5
+279/371 [=====================>........] - ETA: 44:00 - loss: 0.8450 - iou: 0.1903
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0280_weights.h5
+289/371 [======================>.......] - ETA: 39:14 - loss: 0.8410 - iou: 0.1907
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0290_weights.h5
+299/371 [=======================>......] - ETA: 34:28 - loss: 0.8362 - iou: 0.1910
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0300_weights.h5
+309/371 [=======================>......] - ETA: 29:43 - loss: 0.8384 - iou: 0.1918
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0310_weights.h5
+319/371 [========================>.....] - ETA: 25:00 - loss: 0.8396 - iou: 0.1920
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0320_weights.h5
+329/371 [=========================>....] - ETA: 20:15 - loss: 0.8403 - iou: 0.1924
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0330_weights.h5
+339/371 [==========================>...] - ETA: 15:27 - loss: 0.8394 - iou: 0.1923
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0340_weights.h5
+349/371 [===========================>..] - ETA: 10:39 - loss: 0.8417 - iou: 0.1921
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0350_weights.h5
+359/371 [============================>.] - ETA: 5:49 - loss: 0.8495 - iou: 0.1906 
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0360_weights.h5
+369/371 [============================>.] - ETA: 58s - loss: 0.8472 - iou: 0.1909 
+Epoch 9: saving model to /app/models/checkpoint_epoch_09_batch_0370_weights.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8460 - iou: 0.1910
