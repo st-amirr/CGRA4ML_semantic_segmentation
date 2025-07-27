@@ -308,7 +308,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
     def on_epoch_end(self):
         np.random.shuffle(self.indices)
         gc.collect()
-        tf.keras.backend.clear_session()
+        # tf.keras.backend.clear_session()  # Removed to prevent training hang when resuming
     
     def load_and_preprocess_image(self, img_path, mask_path):
         try:
