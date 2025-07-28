@@ -20,6 +20,7 @@ from pathlib import Path
 
 # python3 /app/train.py
 
+
 # Define constants
 INPUT_HEIGHT = 1024
 INPUT_WIDTH = 2048
