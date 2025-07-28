@@ -20,6 +20,25 @@ from pathlib import Path
 
 # python3 /app/train.py
 
+# IMPROVEMENTS FOR OVERFITTING PREVENTION (HLS4ML-COMPATIBLE):
+# 1. Lightweight Data Augmentation (optimized for speed):
+#    - Essential geometric: horizontal flip, rotation, shift-scale-rotate (reduced limits)
+#    - Lightweight color: brightness/contrast, gamma, hue/sat/value (reduced ranges)
+#    - Minimal noise: Gaussian noise (reduced variance)
+#    - Simple cutout: CoarseDropout (reduced size and probability)
+#    - Removed heavy augmentations: crops, blur, elastic, weather effects
+# 2. Smart Regularization Strategy:
+#    - Added L2 regularization (1e-4) to all QConv2D layers (inference-compatible)
+#    - Added Dropout layers during training (controlled by USE_DROPOUT_DURING_TRAINING toggle)
+#    - Automatic creation of clean model for HLS4ML export (without dropout)
+#    - Model capacity maintained (no reduction for performance)
+# 3. Learning Rate and Scheduling (maintained):
+#    - Reduced initial LR from 1e-4 to 5e-5
+#    - More aggressive LR reduction (factor: 0.3->0.2, patience: 3->2)
+#    - Reduced early stopping patience from 10 to 7 epochs
+# 4. Data Validation (maintained):
+#    - Added validation function to check for data leakage
+#    - Ensures proper train/val split and matching counts
 
 # Define constants
 INPUT_HEIGHT = 1024
@@ -31,6 +50,9 @@ DATASET_DIR = '/cityscapes'
 GRADIENT_ACCUMULATION_STEPS = 8  # Keep at 1 for now
 NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
 PREFETCH_SIZE = 2  # Reduced for stability
+
+# Toggle for dropout usage (True for training, False for HLS4ML export)
+USE_DROPOUT_DURING_TRAINING = True
 
 # Configure GPU memory growth
 gpus = tf.config.list_physical_devices('GPU')
@@ -135,6 +157,7 @@ def conv_block(x, filters, kernel_size=3, strides=1, name=None, use_16bit=False)
                 kernel_quantizer=quantized_bits(**qbits),
                 bias_quantizer=quantized_bits(**qbits),
                 kernel_initializer='glorot_uniform',
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name=f'{name}_conv')(x)
     x = QBatchNormalization(
         gamma_quantizer=quantized_bits(**qbits),
@@ -189,6 +212,7 @@ def channel_attention(x, ratio=16, name=''):
     y = QConv2D(channels, 1,
                 kernel_quantizer=quantized_bits(**quantized_bits_param),
                 bias_quantizer=quantized_bits(**quantized_bits_param),
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name=f'{name}_attention')(y)
     y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     
@@ -198,81 +222,131 @@ def create_segmentation_model():
     tf.keras.backend.clear_session()
     inputs = tf.keras.Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
     x = inputs
-    # Initial conv (use 16 bits)
+    # Initial conv (use 16 bits) - back to original 32
     x = conv_block(x, 32, name='init_conv', use_16bit=True)
     x = QConv2D(32, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample1')(x)
-    # Stage 1
+    # Stage 1 - back to original 64
     x = c2f_block(x, 64, n=2, name='stage1')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.2, name='dropout_stage1')(x)
     skip1 = x
     x = QConv2D(64, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample2')(x)
-    # Stage 2
+    # Stage 2 - back to original 128
     x = c2f_block(x, 128, n=2, name='stage2')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.25, name='dropout_stage2')(x)
     skip2 = x
     x = QConv2D(128, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample3')(x)
-    # Stage 3
+    # Stage 3 - back to original 256
     x = c2f_block(x, 256, n=1, name='stage3')
     x = channel_attention(x, name='ca_stage3')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.3, name='dropout_stage3')(x)
     skip3 = x
     x = QConv2D(256, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample4')(x)
-    # Stage 4
+    # Stage 4 - back to original 512
     x = c2f_block(x, 512, n=1, name='stage4')
     x = channel_attention(x, name='ca_stage4')
     x = sppf_block(x, 512, name='sppf')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.35, name='dropout_stage4')(x)
     # Decoder (upsample and match filter counts)
     x = c2f_block(x, 512, n=1, name='pre_up1')
     x = QConv2DTranspose(256, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                         name='up1_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat1')([x, skip3])
     x = conv_block(x, 256, name='up1_conv')
     x = c2f_block(x, 256, n=1, name='up1_c2f')
     x = channel_attention(x, name='ca_up1')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.25, name='dropout_up1')(x)
     x = c2f_block(x, 256, n=1, name='pre_up2')
     x = QConv2DTranspose(128, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                         name='up2_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat2')([x, skip2])
     x = conv_block(x, 128, name='up2_conv')
     x = c2f_block(x, 128, n=1, name='up2_c2f')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.2, name='dropout_up2')(x)
     x = c2f_block(x, 128, n=1, name='pre_up3')
     x = QConv2DTranspose(64, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                         name='up3_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat3')([x, skip1])
     x = conv_block(x, 64, name='up3_conv')
     x = c2f_block(x, 64, n=1, name='up3_c2f')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.15, name='dropout_up3')(x)
     x = c2f_block(x, 64, n=1, name='pre_up4')
     x = QConv2DTranspose(32, kernel_size=2, strides=2, padding='same',
                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                         name='up4_transpose')(x)
     x = conv_block(x, 32, name='up4_conv')
     x = c2f_block(x, 32, n=1, name='up4_c2f')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.1, name='dropout_up4')(x)
     # Output layer (use 16 bits)
     outputs = QConv2D(NUM_CLASSES, (1, 1),
                      kernel_quantizer=quantized_bits(**quantized_bits_param_16),
                      bias_quantizer=quantized_bits(**quantized_bits_param_16),
                      kernel_initializer='glorot_uniform',
+                     kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                      name='output')(x)
     outputs = QActivation(quantized_bits(**quantized_bits_param_16), name='output_quant')(outputs)
     outputs = tf.keras.layers.Activation('softmax', name='output_softmax')(outputs)
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
     return model
+
+def create_hls4ml_export_model(trained_model=None):
+    """Create a clean model for HLS4ML export without dropout layers"""
+    # Temporarily disable dropout
+    global USE_DROPOUT_DURING_TRAINING
+    original_setting = USE_DROPOUT_DURING_TRAINING
+    USE_DROPOUT_DURING_TRAINING = False
+    
+    # Create clean model without dropout
+    clean_model = create_segmentation_model()
+    
+    # Restore original setting
+    USE_DROPOUT_DURING_TRAINING = original_setting
+    
+    # If a trained model is provided, copy weights (excluding dropout layers)
+    if trained_model is not None:
+        print("Copying weights from trained model to clean model...")
+        for clean_layer, trained_layer in zip(clean_model.layers, trained_model.layers):
+            if hasattr(clean_layer, 'weights') and hasattr(trained_layer, 'weights'):
+                if len(clean_layer.weights) > 0 and len(trained_layer.weights) > 0:
+                    clean_layer.set_weights(trained_layer.get_weights())
+                    print(f"Copied weights for layer: {clean_layer.name}")
+    
+    print("Clean model created for HLS4ML export (no dropout layers)")
+    return clean_model
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
     def __init__(self, image_paths, mask_paths, batch_size, augment=False):
@@ -290,10 +364,45 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         self.aug = None
         if augment:
             self.aug = A.Compose([
+                # Essential geometric transformations (lightweight)
                 A.HorizontalFlip(p=0.5),
-                A.RandomBrightnessContrast(p=0.2),
-                A.RandomGamma(p=0.2),
-                A.GaussNoise(p=0.2),
+                A.RandomRotate90(p=0.25),
+                A.ShiftScaleRotate(
+                    shift_limit=0.05,  # Reduced from 0.1
+                    scale_limit=0.1,   # Reduced from 0.2
+                    rotate_limit=5,    # Reduced from 10
+                    p=0.3,
+                    border_mode=cv2.BORDER_CONSTANT
+                ),
+                
+                # Lightweight color augmentations
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.2,  # Reduced from 0.3
+                    contrast_limit=0.2,    # Reduced from 0.3
+                    p=0.3
+                ),
+                A.RandomGamma(gamma_limit=(90, 110), p=0.2),  # Reduced range
+                A.HueSaturationValue(
+                    hue_shift_limit=10,    # Reduced from 20
+                    sat_shift_limit=15,    # Reduced from 30
+                    val_shift_limit=10,    # Reduced from 20
+                    p=0.2
+                ),
+                
+                # Lightweight noise (minimal impact on speed)
+                A.GaussNoise(var_limit=(5.0, 25.0), p=0.2),  # Reduced variance
+                
+                # Simple cutout for regularization (efficient)
+                A.CoarseDropout(
+                    max_holes=4,      # Reduced from 8
+                    max_height=32,    # Reduced from 64
+                    max_width=32,     # Reduced from 64
+                    min_holes=1,
+                    min_height=8,     # Reduced from 16
+                    min_width=8,      # Reduced from 16
+                    fill_value=0,
+                    p=0.15           # Reduced probability
+                ),
             ])
         
         # Pre-allocate memory for batch
@@ -421,6 +530,47 @@ class IoUMetric(tf.keras.metrics.Metric):
         base_config = super().get_config()
         return {**base_config, 'num_classes': self.num_classes}
 
+def validate_data_split(train_images, train_masks, val_images, val_masks):
+    """Validate data split to ensure no data leakage and proper matching"""
+    print("\n=== Data Validation ===")
+    
+    # Check for data leakage (overlap between train and val)
+    train_image_paths = set(str(img) for img in train_images)
+    val_image_paths = set(str(img) for img in val_images)
+    
+    overlap = train_image_paths.intersection(val_image_paths)
+    if overlap:
+        print(f"WARNING: Found {len(overlap)} overlapping images between train and val sets!")
+        print("This indicates data leakage. Please check your data split.")
+        for img in list(overlap)[:5]:  # Show first 5 examples
+            print(f"  - {img}")
+    else:
+        print("✓ No data leakage detected - train and val sets are properly separated")
+    
+    # Check for matching counts
+    print(f"✓ Training images: {len(train_images)}")
+    print(f"✓ Training masks: {len(train_masks)}")
+    print(f"✓ Validation images: {len(val_images)}")
+    print(f"✓ Validation masks: {len(val_masks)}")
+    
+    if len(train_images) != len(train_masks):
+        print(f"ERROR: Mismatch in training data - {len(train_images)} images vs {len(train_masks)} masks")
+    else:
+        print("✓ Training image/mask counts match")
+    
+    if len(val_images) != len(val_masks):
+        print(f"ERROR: Mismatch in validation data - {len(val_images)} images vs {len(val_masks)} masks")
+    else:
+        print("✓ Validation image/mask counts match")
+    
+    # Check for empty sets
+    if not train_images:
+        raise ValueError("No training images found!")
+    if not val_images:
+        raise ValueError("No validation images found!")
+    
+    print("=== Data Validation Complete ===\n")
+
 def prepare_data(cityscapes_root):
     # Assuming standard Cityscapes directory structure
     images_dir = Path(cityscapes_root) / 'leftImg8bit'
@@ -521,7 +671,7 @@ def train_model():
     # Compile with QAT-specific settings and disable XLA (only if not already compiled)
     if not skip_compilation:
         optimizer = tf.keras.optimizers.legacy.Adam(
-            learning_rate=1e-04,
+            learning_rate=5e-5,  # Reduced from 1e-4 for better stability
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-07,
@@ -543,6 +693,9 @@ def train_model():
     cityscapes_root = '/data'
     print(f"\nLooking for Cityscapes dataset in: {cityscapes_root}")
     train_images, train_masks, val_images, val_masks = prepare_data(cityscapes_root)
+    
+    # Validate data split to prevent data leakage
+    validate_data_split(train_images, train_masks, val_images, val_masks)
     
     print(f"\nFound {len(train_images)} training images and {len(val_images)} validation images")
     
@@ -587,7 +740,7 @@ def train_model():
             save_weights_only=False
         ),
         EarlyStopping(
-            patience=10,
+            patience=7,  # Reduced from 10 to 7 for better stability
             monitor='val_iou',
             mode='max',
             restore_best_weights=True,
@@ -595,8 +748,8 @@ def train_model():
         ),
         ReduceLROnPlateau(
             monitor='val_loss',
-            factor=0.3,
-            patience=3,
+            factor=0.2,  # More aggressive reduction (was 0.3)
+            patience=2,  # Reduced from 3 to 2 for faster adaptation
             min_lr=1e-6,
             verbose=1
         ),
@@ -619,9 +772,19 @@ def train_model():
         )
         # Save final model in both formats
         print("\nSaving final models...")
-        model.save('/app/models/final_model.h5')
-        model_save_quantized_weights(model, '/app/models/final_model_hls4ml.h5')
-        print("Models saved as 'final_model.h5' and 'final_model_hls4ml.h5'")
+        
+        # Save training model (with dropout for potential retraining)
+        model.save('/app/models/final_model_with_dropout.h5')
+        print("Training model saved as 'final_model_with_dropout.h5'")
+        
+        # Create and save clean model for HLS4ML export (without dropout)
+        print("Creating clean model for HLS4ML export...")
+        clean_model = create_hls4ml_export_model(model)
+        clean_model.save('/app/models/final_model_hls4ml_clean.h5')
+        model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
+        print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.h5'")
+        print("Quantized weights saved as 'final_model_hls4ml_weights.h5'")
+        
         print("\nTraining completed successfully!")
     except KeyboardInterrupt:
         print("\nTraining interrupted by user. Saving current model weights only...")
