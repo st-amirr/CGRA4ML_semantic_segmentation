@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  hls4ml-training:
+    build: .
+    container_name: hls4ml-cityscapes
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - TF_FORCE_GPU_ALLOW_GROWTH=true
+      - TF_CPP_MIN_LOG_LEVEL=2
+    volumes:
+      # Mount your Cityscapes dataset
+      - ./cityscapes:/data
+      # Mount your specific Windows models directory
+      - C:/Users/stamir/Desktop/hls4ml_SS/models:/app/models
+      # Mount your specific Windows project directory
+      - C:/Users/stamir/Desktop/hls4ml_SS:/workspace
+    ports:
+      - "6006:6006"  # TensorBoard
+    working_dir: /workspace
+    command: bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu] 

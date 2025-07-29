@@ -60,7 +60,7 @@ gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
         for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
+            tf.config.set_memory_growth(gpu, True)
             tf.config.set_logical_device_configuration(
                 gpu,
                 [tf.config.LogicalDeviceConfiguration(memory_limit=20000)]
@@ -776,7 +776,7 @@ def train_model():
     
     # Compile with QAT-specific settings and disable XLA (only if not already compiled)
     if not skip_compilation:
-        optimizer = tf.keras.optimizers.legacy.Adam(
+        optimizer = tf.keras.optimizers.Adam(
             learning_rate=5e-5,  # Reduced from 1e-4 for better stability
             beta_1=0.9,
             beta_2=0.999,
