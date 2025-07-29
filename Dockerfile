@@ -1,5 +1,5 @@
 # Use official TensorFlow image with CUDA support
-FROM tensorflow/tensorflow:2.15.0-gpu
+FROM tensorflow/tensorflow:2.14.0-gpu
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -23,12 +23,19 @@ RUN apt-get update && apt-get install -y \
 # Upgrade pip
 RUN python -m pip install --upgrade pip
 
+# Install numpy first (required for other packages)
+RUN pip install numpy>=1.24.0
+
+# Install scikit-learn with specific version and pre-compiled wheels
+RUN pip install scikit-learn==1.3.2 --only-binary=scikit-learn --no-cache-dir
+
 # Install additional dependencies
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Install additional HLS4ML dependencies
-RUN pip install hls4ml[profiling]
+# Install HLS4ML separately to avoid dependency conflicts
+RUN pip install hls4ml[profiling] --no-deps
+RUN pip install pydantic>=2.0.0
 
 # Set working directory
 WORKDIR /workspace
