@@ -47,4 +47,4 @@ ENV TF_CPP_MIN_LOG_LEVEL=2
 EXPOSE 6006
 
 # Default command
-CMD ["bash"] 
+CMD ["tail", "-f", "/dev/null"] 

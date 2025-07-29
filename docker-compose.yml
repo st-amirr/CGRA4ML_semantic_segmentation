@@ -9,6 +9,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - TF_FORCE_GPU_ALLOW_GROWTH=true
       - TF_CPP_MIN_LOG_LEVEL=2
+      - CUDA_VISIBLE_DEVICES=0
     volumes:
       # Mount your Cityscapes dataset
       - ./cityscapes:/data
@@ -19,11 +20,12 @@ services:
     ports:
       - "6006:6006"  # TensorBoard
     working_dir: /workspace
-    command: bash
+    command: tail -f /dev/null
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu] 
+              capabilities: [gpu]
+    restart: unless-stopped 
