@@ -357,8 +357,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         self.indices = np.arange(len(self.image_paths))
         
         # Pre-compute image sizes for faster resizing
-        self.target_size = (INPUT_WIDTH, INPUT_HEIGHT)
-        print(f"\n[DEBUG] DataGenerator target size: {self.target_size}")
+        self.target_size = (INPUT_WIDTH, INPUT_HEIGHT)  # cv2.resize expects (width, height)
         
         # Initialize augmentation if needed
         self.aug = None
@@ -445,6 +444,12 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 augmented = self.aug(image=img, mask=mask_one_hot)
                 img = augmented['image']
                 mask_one_hot = augmented['mask']
+                
+                # Ensure correct dimensions after augmentation
+                if img.shape[:2] != (INPUT_HEIGHT, INPUT_WIDTH):
+                    img = cv2.resize(img, (INPUT_WIDTH, INPUT_HEIGHT), interpolation=cv2.INTER_AREA)
+                if mask_one_hot.shape[:2] != (INPUT_HEIGHT, INPUT_WIDTH):
+                    mask_one_hot = cv2.resize(mask_one_hot, (INPUT_WIDTH, INPUT_HEIGHT), interpolation=cv2.INTER_NEAREST)
             
             return img, mask_one_hot
         except Exception as e:

@@ -1,0 +1,158 @@
+29/371 [=>............................] - ETA: 1:34:53 - loss: 0.9007 - iou: 0.1852  
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0030.h5
+ 59/371 [===>..........................] - ETA: 1:53:26 - loss: 0.8828 - iou: 0.1900
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0060.h5
+ 89/371 [======>.......................] - ETA: 1:50:24 - loss: 0.8792 - iou: 0.1878
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0090.h5
+119/371 [========>.....................] - ETA: 1:43:37 - loss: 0.8721 - iou: 0.1851
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0120.h5
+149/371 [===========>..................] - ETA: 1:34:03 - loss: 0.8928 - iou: 0.1837
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0150.h5
+179/371 [=============>................] - ETA: 1:22:57 - loss: 0.8924 - iou: 0.1815
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0180.h5
+209/371 [===============>..............] - ETA: 1:11:14 - loss: 0.8967 - iou: 0.1814
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0210.h5
+239/371 [==================>...........] - ETA: 58:50 - loss: 0.8611 - iou: 0.1842  
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0240.h5
+269/371 [====================>.........] - ETA: 45:50 - loss: 0.8590 - iou: 0.1845
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0270.h5
+299/371 [=======================>......] - ETA: 32:36 - loss: 0.8648 - iou: 0.1837
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0300.h5
+329/371 [=========================>....] - ETA: 19:10 - loss: 0.8553 - iou: 0.1850
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0330.h5
+359/371 [============================>.] - ETA: 5:30 - loss: 0.8587 - iou: 0.1846 
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0360.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8565 - iou: 0.1850  
+Epoch 10: val_iou improved from -inf to 0.09018, saving model to /app/models/best_model.h5
+
+Epoch 10: saving model to /app/models/checkpoint_epoch_10_batch_0000.h5
+
+Memory usage after epoch 9: 8837.56 MB
+371/371 [==============================] - 16430s 40s/step - loss: 0.8565 - iou: 0.1850 - val_loss: 1.7452 - val_iou: 0.0902 - lr: 1.0000e-04
+Epoch 11/50
+ 18/371 [>.............................] - ETA: 2:52:46 - loss: 0.8330 - iou: 0.1915
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0019.h5
+ 48/371 [==>...........................] - ETA: 2:38:36 - loss: 1.0053 - iou: 0.1821
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0049.h5
+ 78/371 [=====>........................] - ETA: 2:24:23 - loss: 0.9294 - iou: 0.1860
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0079.h5
+108/371 [=======>......................] - ETA: 2:09:45 - loss: 0.8752 - iou: 0.1899
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0109.h5
+138/371 [==========>...................] - ETA: 1:54:58 - loss: 0.8870 - iou: 0.1921
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0139.h5
+168/371 [============>.................] - ETA: 1:40:06 - loss: 0.8886 - iou: 0.1931
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0169.h5
+198/371 [===============>..............] - ETA: 1:25:26 - loss: 0.8920 - iou: 0.1932
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0199.h5
+228/371 [=================>............] - ETA: 1:10:37 - loss: 0.8927 - iou: 0.1927
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0229.h5
+258/371 [===================>..........] - ETA: 55:44 - loss: 0.8866 - iou: 0.1925  
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0259.h5
+288/371 [======================>.......] - ETA: 40:58 - loss: 0.8748 - iou: 0.1928
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0289.h5
+318/371 [========================>.....] - ETA: 26:10 - loss: 0.8719 - iou: 0.1938
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0319.h5
+348/371 [===========================>..] - ETA: 11:21 - loss: 0.8684 - iou: 0.1934
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0349.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8719 - iou: 0.1920   
+Epoch 11: val_iou did not improve from 0.09018
+
+Epoch 11: saving model to /app/models/checkpoint_epoch_11_batch_0000.h5
+
+Memory usage after epoch 10: 9092.73 MB
+371/371 [==============================] - 16850s 45s/step - loss: 0.8719 - iou: 0.1920 - val_loss: 1.8756 - val_iou: 0.0755 - lr: 1.0000e-04
+Epoch 12/50
+  7/371 [..............................] - ETA: 2:59:46 - loss: 1.0198 - iou: 0.1721
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0008.h5
+ 37/371 [=>............................] - ETA: 2:45:00 - loss: 0.8469 - iou: 0.1913
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0038.h5
+ 67/371 [====>.........................] - ETA: 2:29:57 - loss: 0.8482 - iou: 0.1970
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0068.h5
+ 97/371 [======>.......................] - ETA: 2:15:13 - loss: 0.8421 - iou: 0.1989
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0098.h5
+127/371 [=========>....................] - ETA: 2:00:29 - loss: 0.8318 - iou: 0.1993
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0128.h5
+157/371 [===========>..................] - ETA: 1:45:42 - loss: 0.8474 - iou: 0.1978
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0158.h5
+187/371 [==============>...............] - ETA: 1:31:09 - loss: 0.8532 - iou: 0.1953
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0188.h5
+217/371 [================>.............] - ETA: 1:16:25 - loss: 0.8526 - iou: 0.1951
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0218.h5
+247/371 [==================>...........] - ETA: 1:01:48 - loss: 0.8479 - iou: 0.1948
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0248.h5
+277/371 [=====================>........] - ETA: 47:13 - loss: 0.8433 - iou: 0.1939  
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0278.h5
+307/371 [=======================>......] - ETA: 32:32 - loss: 0.8544 - iou: 0.1944
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0308.h5
+337/371 [==========================>...] - ETA: 17:23 - loss: 0.8594 - iou: 0.1934
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0338.h5
+367/371 [============================>.] - ETA: 2:03 - loss: 0.8544 - iou: 0.1933 
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0368.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8521 - iou: 0.1934  
+Epoch 12: val_iou did not improve from 0.09018
+
+Epoch 12: saving model to /app/models/checkpoint_epoch_12_batch_0000.h5
+
+Memory usage after epoch 11: 9125.90 MB
+371/371 [==============================] - 17922s 48s/step - loss: 0.8521 - iou: 0.1934 - val_loss: 1.9635 - val_iou: 0.0831 - lr: 1.0000e-04
+Epoch 13/50
+ 26/371 [=>............................] - ETA: 3:13:42 - loss: 0.7647 - iou: 0.1943
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0027.h5
+ 56/371 [===>..........................] - ETA: 2:57:18 - loss: 0.7940 - iou: 0.1965
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0057.h5
+ 86/371 [=====>........................] - ETA: 2:39:30 - loss: 0.8203 - iou: 0.1957
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0087.h5
+116/371 [========>.....................] - ETA: 2:22:19 - loss: 0.8085 - iou: 0.1990
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0117.h5
+146/371 [==========>...................] - ETA: 2:05:20 - loss: 0.8097 - iou: 0.1984
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0147.h5
+176/371 [=============>................] - ETA: 1:48:36 - loss: 0.7997 - iou: 0.1978
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0177.h5
+206/371 [===============>..............] - ETA: 1:31:42 - loss: 0.8099 - iou: 0.1982
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0207.h5
+236/371 [==================>...........] - ETA: 1:15:09 - loss: 0.8179 - iou: 0.1971
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0237.h5
+266/371 [====================>.........] - ETA: 58:42 - loss: 0.8104 - iou: 0.1996  
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0267.h5
+296/371 [======================>.......] - ETA: 41:52 - loss: 0.8195 - iou: 0.1978
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0297.h5
+326/371 [=========================>....] - ETA: 25:09 - loss: 0.8051 - iou: 0.2000
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0327.h5
+356/371 [===========================>..] - ETA: 8:23 - loss: 0.8117 - iou: 0.1992 
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0357.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8042 - iou: 0.1999  
+Epoch 13: val_iou improved from 0.09018 to 0.13178, saving model to /app/models/best_model.h5
+
+Epoch 13: saving model to /app/models/checkpoint_epoch_13_batch_0000.h5
+
+Memory usage after epoch 12: 9198.17 MB
+371/371 [==============================] - 16920s 46s/step - loss: 0.8042 - iou: 0.1999 - val_loss: 1.2176 - val_iou: 0.1318 - lr: 1.0000e-04
+Epoch 14/50
+ 15/371 [>.............................] - ETA: 3:21:08 - loss: 0.6351 - iou: 0.2295
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0016.h5
+ 45/371 [==>...........................] - ETA: 3:01:57 - loss: 0.7425 - iou: 0.1983
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0046.h5
+ 75/371 [=====>........................] - ETA: 2:46:55 - loss: 0.7811 - iou: 0.1973
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0076.h5
+105/371 [=======>......................] - ETA: 2:29:08 - loss: 0.7821 - iou: 0.1990
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0106.h5
+135/371 [=========>....................] - ETA: 2:11:50 - loss: 0.7762 - iou: 0.2010
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0136.h5
+165/371 [============>.................] - ETA: 1:55:41 - loss: 0.8126 - iou: 0.2003
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0166.h5
+195/371 [==============>...............] - ETA: 1:38:45 - loss: 0.8168 - iou: 0.2004
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0196.h5
+225/371 [=================>............] - ETA: 1:21:50 - loss: 0.8250 - iou: 0.1976
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0226.h5
+255/371 [===================>..........] - ETA: 1:05:06 - loss: 0.8268 - iou: 0.1961
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0256.h5
+285/371 [======================>.......] - ETA: 48:19 - loss: 0.8320 - iou: 0.1965  
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0286.h5
+315/371 [========================>.....] - ETA: 31:30 - loss: 0.8440 - iou: 0.1954
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0316.h5
+345/371 [==========================>...] - ETA: 14:37 - loss: 0.8549 - iou: 0.1937
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0346.h5
+371/371 [==============================] - ETA: 0s - loss: 0.8423 - iou: 0.1949   
+Epoch 14: val_iou did not improve from 0.13178
+
+Epoch 14: saving model to /app/models/checkpoint_epoch_14_batch_0000.h5
