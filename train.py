@@ -350,17 +350,14 @@ def create_hls4ml_export_model(trained_model=None):
     return clean_model
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, image_paths, mask_paths, batch_size, augment=False):
-        self.image_paths = image_paths
-        self.mask_paths = mask_paths
+    def __init__(self, image_paths, mask_paths, batch_size, augment=False, preprocessed_prefix=None):
         self.batch_size = batch_size
         self.augment = augment
-        self.indices = np.arange(len(self.image_paths))
-        
-        # Pre-compute image sizes for faster resizing
-        self.target_size = (INPUT_WIDTH, INPUT_HEIGHT)  # cv2.resize expects (width, height)
-        
-        # Initialize augmentation if needed
+        self.indices = None
+        self.preprocessed = False
+        self.images = None
+        self.masks = None
+        self.target_size = (INPUT_WIDTH, INPUT_HEIGHT)
         self.aug = None
         if augment:
             self.aug = A.Compose([
@@ -404,17 +401,28 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     p=0.15           # Reduced probability
                 ),
             ])
-        
-        # Pre-allocate memory for batch
-        self.X = np.zeros((self.batch_size, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=np.float32)
-        self.Y = np.zeros((self.batch_size, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=np.float32)
-        
-        print(f"Initialized data generator with {len(self.image_paths)} images")
-        print(f"Memory usage: {psutil.Process().memory_info().rss / 1024 / 1024:.2f} MB")
-    
+        # Try to load preprocessed data if prefix is given
+        if preprocessed_prefix is not None:
+            img_file = f"{preprocessed_prefix}_images.npy"
+            mask_file = f"{preprocessed_prefix}_masks.npy"
+            if os.path.exists(img_file) and os.path.exists(mask_file):
+                print(f"Loading preprocessed data from {img_file} and {mask_file}")
+                self.images = np.load(img_file)
+                self.masks = np.load(mask_file)
+                self.indices = np.arange(len(self.images))
+                self.preprocessed = True
+            else:
+                print(f"Preprocessed files not found for prefix {preprocessed_prefix}, falling back to raw images.")
+        if not self.preprocessed:
+            self.image_paths = image_paths
+            self.mask_paths = mask_paths
+            self.indices = np.arange(len(self.image_paths))
+
     def __len__(self):
+        if self.preprocessed:
+            return len(self.images) // self.batch_size
         return len(self.image_paths) // self.batch_size
-    
+
     def on_epoch_end(self):
         np.random.shuffle(self.indices)
         gc.collect()
@@ -459,17 +467,22 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
     
     def __getitem__(self, idx):
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch_x = [self.image_paths[i] for i in batch_indices]
-        batch_y = [self.mask_paths[i] for i in batch_indices]
-        
-        # Use pre-allocated arrays
-        for i, (img_path, mask_path) in enumerate(zip(batch_x, batch_y)):
-            img, mask = self.load_and_preprocess_image(img_path, mask_path)
-            if img is not None and mask is not None:
-                self.X[i] = img
-                self.Y[i] = mask
-        
-        return self.X, self.Y
+        if self.preprocessed:
+            X = self.images[batch_indices]
+            Y = self.masks[batch_indices]
+            # Optionally add augmentation here if needed
+            return X, Y
+        else:
+            batch_x = [self.image_paths[i] for i in batch_indices]
+            batch_y = [self.mask_paths[i] for i in batch_indices]
+            X = np.zeros((self.batch_size, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=np.float32)
+            Y = np.zeros((self.batch_size, INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=np.float32)
+            for i, (img_path, mask_path) in enumerate(zip(batch_x, batch_y)):
+                img, mask = self.load_and_preprocess_image(img_path, mask_path)
+                if img is not None and mask is not None:
+                    X[i] = img
+                    Y[i] = mask
+            return X, Y
 
 class MemoryCleanupCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
@@ -792,9 +805,18 @@ def train_model():
     
     print(f"\nFound {len(train_images)} training images and {len(val_images)} validation images")
     
-    # Create data generators with memory optimization
-    train_gen = CityscapesDataGenerator(train_images, train_masks, BATCH_SIZE, augment=True)
-    val_gen = CityscapesDataGenerator(val_images, val_masks, BATCH_SIZE, augment=False)
+    # Try to use preprocessed data if available
+    train_imgs_npy = os.path.join('models', 'train_images.npy')
+    train_msks_npy = os.path.join('models', 'train_masks.npy')
+    val_imgs_npy = os.path.join('models', 'val_images.npy')
+    val_msks_npy = os.path.join('models', 'val_masks.npy')
+    use_preprocessed = all(os.path.exists(f) for f in [train_imgs_npy, train_msks_npy, val_imgs_npy, val_msks_npy])
+    if use_preprocessed:
+        train_gen = CityscapesDataGenerator(None, None, BATCH_SIZE, augment=True, preprocessed_prefix=os.path.join('models', 'train'))
+        val_gen = CityscapesDataGenerator(None, None, BATCH_SIZE, augment=False, preprocessed_prefix=os.path.join('models', 'val'))
+    else:
+        train_gen = CityscapesDataGenerator(train_images, train_masks, BATCH_SIZE, augment=True)
+        val_gen = CityscapesDataGenerator(val_images, val_masks, BATCH_SIZE, augment=False)
 
     # Remove tf.data.Dataset.from_generator and prefetch
     # Use generators directly in model.fit
@@ -839,7 +861,7 @@ def train_model():
             restore_best_weights=True,
             verbose=1
         ),
-        CyclicalLearningRate(base_lr=1e-4, max_lr=5e-3, step_size=10, mode='triangular', verbose=1),
+        CyclicalLearningRate(base_lr=5e-5, max_lr=5e-4, step_size=30, mode='triangular', verbose=1),
         MemoryCleanupCallback(),
         TrainingLoggerCallback('/app/models')
     ]
