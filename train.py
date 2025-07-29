@@ -17,6 +17,7 @@ import albumentations as A
 from PIL import Image
 import cv2
 from pathlib import Path
+import math
 
 # python3 /app/train.py
 
@@ -481,20 +482,58 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
         print(f"\nMemory usage after epoch {epoch}: {memory_usage:.2f} MB")
 
 class TrainingLoggerCallback(tf.keras.callbacks.Callback):
-    def __init__(self, log_dir):
+    def __init__(self, log_dir, clr_step=10, checkpoint_step=30):
         super().__init__()
         self.log_file = os.path.join(log_dir, 'log.txt')
         os.makedirs(log_dir, exist_ok=True)
+        self.clr_step = clr_step
+        self.checkpoint_step = checkpoint_step
+        self.batch_count = 0
+        # Ensure the log file exists
+        if not os.path.exists(self.log_file):
+            try:
+                with open(self.log_file, 'w') as f:
+                    f.write('')
+            except Exception as e:
+                print(f"[TrainingLoggerCallback] Could not create log.txt: {e}")
+
+    def on_batch_end(self, batch, logs=None):
+        logs = logs or {}
+        self.batch_count += 1
+        lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
+        log_line = f"{self.batch_count}/{{steps}} [batch] - loss: {logs.get('loss', float('nan')):.4f} - iou: {logs.get('iou', float('nan')):.4f} - lr: {lr:.6f}\n"
+        try:
+            with open(self.log_file, 'a') as f:
+                f.write(log_line)
+        except Exception as e:
+            print(f"[TrainingLoggerCallback] Could not write to log.txt: {e}")
+        # Log CLR change
+        if self.clr_step and self.batch_count % self.clr_step == 0:
+            clr_line = f"Batch {self.batch_count}: CyclicalLearningRate set learning rate to {lr}\n"
+            try:
+                with open(self.log_file, 'a') as f:
+                    f.write(clr_line)
+            except Exception as e:
+                print(f"[TrainingLoggerCallback] Could not write CLR to log.txt: {e}")
+        # Log checkpoint save
+        if self.checkpoint_step and self.batch_count % self.checkpoint_step == 0:
+            checkpoint_line = f"Batch {self.batch_count}: saving model to /app/models/checkpoint_epoch_{{epoch:02d}}_batch_{{batch:04d}}.h5\n"
+            try:
+                with open(self.log_file, 'a') as f:
+                    f.write(checkpoint_line)
+            except Exception as e:
+                print(f"[TrainingLoggerCallback] Could not write checkpoint to log.txt: {e}")
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
-        # Compose log line
         log_line = f"Epoch {epoch+1}: "
         log_line += ", ".join([f"{k}={v:.5f}" for k, v in logs.items() if isinstance(v, (float, int))])
-        log_line += "\n"
-        # Append to log file
-        with open(self.log_file, 'a') as f:
-            f.write(log_line)
+        log_line += f"\nEpoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}_batch_0000.h5\n"
+        try:
+            with open(self.log_file, 'a') as f:
+                f.write(log_line)
+        except Exception as e:
+            print(f"[TrainingLoggerCallback] Could not write to log.txt: {e}")
 
 # Custom IoU metric for semantic segmentation
 class IoUMetric(tf.keras.metrics.Metric):
@@ -631,43 +670,38 @@ def prepare_data(cityscapes_root):
 tf.random.set_seed(42)
 np.random.seed(42)
 
-class ReduceLROnPlateauBatch(tf.keras.callbacks.Callback):
-    def __init__(self, factor=0.2, patience=2, min_lr=1e-6, check_freq=10, verbose=1):
+class CyclicalLearningRate(tf.keras.callbacks.Callback):
+    def __init__(self, base_lr=1e-4, max_lr=5e-3, step_size=10, mode='triangular', verbose=1):
         super().__init__()
-        self.factor = factor
-        self.patience = patience
-        self.min_lr = min_lr
-        self.check_freq = check_freq
+        self.base_lr = base_lr
+        self.max_lr = max_lr
+        self.step_size = step_size
+        self.mode = mode
         self.verbose = verbose
-        self.wait = 0
-        self.best = np.Inf
-        self.batch_since_last_check = 0
+        self.iteration = 0
+        self.history = {}
+
+    def clr(self):
+        cycle = math.floor(1 + self.iteration / (2 * self.step_size))
+        x = abs(self.iteration / self.step_size - 2 * cycle + 1)
+        scale = 1.0
+        if self.mode == 'triangular2':
+            scale = 1 / (2. ** (cycle - 1))
+        elif self.mode == 'exp_range':
+            scale = 0.99994 ** self.iteration
+        return self.base_lr + (self.max_lr - self.base_lr) * max(0, (1 - x)) * scale
 
     def on_train_begin(self, logs=None):
-        self.wait = 0
-        self.best = np.Inf
-        self.batch_since_last_check = 0
+        self.iteration = 0
+        tf.keras.backend.set_value(self.model.optimizer.lr, self.base_lr)
 
     def on_batch_end(self, batch, logs=None):
-        logs = logs or {}
-        self.batch_since_last_check += 1
-        if self.batch_since_last_check >= self.check_freq:
-            current = logs.get('loss')
-            if current is not None:
-                if current < self.best - 1e-6:
-                    self.best = current
-                    self.wait = 0
-                else:
-                    self.wait += 1
-                    if self.wait >= self.patience:
-                        old_lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
-                        if old_lr > self.min_lr:
-                            new_lr = max(old_lr * self.factor, self.min_lr)
-                            tf.keras.backend.set_value(self.model.optimizer.lr, new_lr)
-                            if self.verbose:
-                                print(f"\nBatch {batch+1}: ReduceLROnPlateauBatch reducing learning rate to {new_lr}.")
-                        self.wait = 0
-            self.batch_since_last_check = 0
+        self.iteration += 1
+        lr = self.clr()
+        tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+        self.history.setdefault('lr', []).append(lr)
+        if self.verbose and self.iteration % self.step_size == 0:
+            print(f"\nBatch {self.iteration}: CyclicalLearningRate set learning rate to {lr}")
 
 def train_model():
     # Create models directory if it doesn't exist
@@ -805,7 +839,7 @@ def train_model():
             restore_best_weights=True,
             verbose=1
         ),
-        ReduceLROnPlateauBatch(factor=0.2, patience=2, min_lr=1e-6, check_freq=10, verbose=1),
+        CyclicalLearningRate(base_lr=1e-4, max_lr=5e-3, step_size=10, mode='triangular', verbose=1),
         MemoryCleanupCallback(),
         TrainingLoggerCallback('/app/models')
     ]
