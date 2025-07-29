@@ -12,7 +12,7 @@ services:
       - CUDA_VISIBLE_DEVICES=0
     volumes:
       # Mount your Cityscapes dataset
-      - ./cityscapes:/data
+      - C:/Users/stamir/Desktop/cityscape:/data
       # Mount your specific Windows models directory
       - C:/Users/stamir/Desktop/hls4ml_SS/models:/app/models
       # Mount your specific Windows project directory

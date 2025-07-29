@@ -19,38 +19,36 @@ import cv2
 from pathlib import Path
 import math
 
-# python3 /app/train.py
+#  python3 /workspace/train.py
 
-# IMPROVEMENTS FOR OVERFITTING PREVENTION (HLS4ML-COMPATIBLE):
-# 1. Lightweight Data Augmentation (optimized for speed):
-#    - Essential geometric: horizontal flip, rotation, shift-scale-rotate (reduced limits)
-#    - Lightweight color: brightness/contrast, gamma, hue/sat/value (reduced ranges)
-#    - Minimal noise: Gaussian noise (reduced variance)
-#    - Simple cutout: CoarseDropout (reduced size and probability)
-#    - Removed heavy augmentations: crops, blur, elastic, weather effects
-# 2. Smart Regularization Strategy:
-#    - Added L2 regularization (1e-4) to all QConv2D layers (inference-compatible)
-#    - Added Dropout layers during training (controlled by USE_DROPOUT_DURING_TRAINING toggle)
-#    - Automatic creation of clean model for HLS4ML export (without dropout)
-#    - Model capacity maintained (no reduction for performance)
-# 3. Learning Rate and Scheduling (maintained):
-#    - Reduced initial LR from 1e-4 to 5e-5
-#    - More aggressive LR reduction (factor: 0.3->0.2, patience: 3->2)
-#    - Reduced early stopping patience from 10 to 7 epochs
-# 4. Data Validation (maintained):
-#    - Added validation function to check for data leakage
-#    - Ensures proper train/val split and matching counts
+# SEMANTIC SEGMENTATION MODEL FOR HLS4ML (QAT-OPTIMIZED):
+# 1. Memory-Efficient Data Loading:
+#    - On-the-fly image loading with 10% random subset per epoch
+#    - Dynamic augmentation during training
+#    - No massive preprocessing or storage requirements
+# 2. Quantization-Aware Training (QAT):
+#    - QKeras layers (QConv2D, QBatchNormalization, QActivation)
+#    - 8-bit quantization for FPGA compatibility
+#    - L2 regularization and dropout for training stability
+# 3. Standard Learning Rate Scheduling:
+#    - ReduceLROnPlateau with gentle 30% reduction
+#    - Monitors validation IoU for optimal performance
+#    - Automatic early stopping to prevent overfitting
+# 4. HLS4ML Compatibility:
+#    - No unsupported layers (MaxPooling2D replaced with strided convolutions)
+#    - Quantized weights export for FPGA synthesis
+#    - Optimized for Xilinx VCU118 or similar high-end FPGAs
 
 # Define constants
 INPUT_HEIGHT = 1024
 INPUT_WIDTH = 2048
-BATCH_SIZE = 1  # Keep at 1 for memory constraints
+BATCH_SIZE = 10  # Keep at 1 for memory constraints
 EPOCHS = 50
 NUM_CLASSES = 34
-DATASET_DIR = '/cityscapes'
-GRADIENT_ACCUMULATION_STEPS = 8  # Keep at 1 for now
-NUM_WORKERS = 1  # Set to 1 for stability and minimal memory usage
-PREFETCH_SIZE = 2  # Reduced for stability
+DATASET_DIR = '/data'  # Updated to match actual path
+SUBSET_RATIO = 0.1  # Use 10% of dataset per epoch
+NUM_WORKERS = 2  # Standard for data loading
+PREFETCH_SIZE = 4  # Standard prefetch for efficiency
 
 # Toggle for dropout usage (True for training, False for HLS4ML export)
 USE_DROPOUT_DURING_TRAINING = True
@@ -60,25 +58,26 @@ gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
         for gpu in gpus:
-            tf.config.set_memory_growth(gpu, True)
+            # Use the new API for TensorFlow 2.14+
+            tf.config.experimental.set_memory_growth(gpu, True)
             tf.config.set_logical_device_configuration(
                 gpu,
                 [tf.config.LogicalDeviceConfiguration(memory_limit=20000)]
             )
             
-        # Disable layout optimizer and other problematic optimizations
+        # Standard TensorFlow optimizations for QAT
         tf.config.optimizer.set_experimental_options({
-            'layout_optimizer': False,  # Disable layout optimization
+            'layout_optimizer': True,
             'constant_folding': True,
-            'shape_optimization': False,  # Disable shape optimization
-            'remapping': False,  # Disable remapping
+            'shape_optimization': True,
+            'remapping': True,
             'arithmetic_optimization': True,
             'dependency_optimization': True,
             'loop_optimization': True,
             'function_optimization': True,
             'debug_stripper': True,
-            'scoped_allocator_optimization': False,  # Disable scoped allocator
-            'implementation_selector': False,  # Disable implementation selector
+            'scoped_allocator_optimization': True,
+            'implementation_selector': True,
         })
         
         print("GPU memory growth enabled with optimizations configured for QAT")
@@ -350,9 +349,10 @@ def create_hls4ml_export_model(trained_model=None):
     return clean_model
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, image_paths, mask_paths, batch_size, augment=False, preprocessed_prefix=None):
+    def __init__(self, image_paths, mask_paths, batch_size, augment=False, preprocessed_prefix=None, subset_ratio=1.0):
         self.batch_size = batch_size
         self.augment = augment
+        self.subset_ratio = subset_ratio  # Fraction of dataset to use per epoch (e.g., 0.1 for 10%)
         self.indices = None
         self.preprocessed = False
         self.images = None
@@ -417,14 +417,29 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             self.image_paths = image_paths
             self.mask_paths = mask_paths
             self.indices = np.arange(len(self.image_paths))
+        
+        # Select random subset for this epoch
+        self._select_random_subset()
 
     def __len__(self):
         if self.preprocessed:
-            return len(self.images) // self.batch_size
-        return len(self.image_paths) // self.batch_size
+            return len(self.epoch_indices) // self.batch_size
+        return len(self.epoch_indices) // self.batch_size
 
+    def _select_random_subset(self):
+        """Select a random subset of the dataset for this epoch"""
+        if self.subset_ratio < 1.0:
+            total_samples = len(self.indices)
+            subset_size = int(total_samples * self.subset_ratio)
+            # Randomly select subset_size samples
+            self.epoch_indices = np.random.choice(self.indices, size=subset_size, replace=False)
+            print(f"Selected {subset_size}/{total_samples} samples ({self.subset_ratio*100:.1f}%) for this epoch")
+        else:
+            self.epoch_indices = self.indices.copy()
+    
     def on_epoch_end(self):
-        np.random.shuffle(self.indices)
+        # Select new random subset for next epoch
+        self._select_random_subset()
         gc.collect()
         # tf.keras.backend.clear_session()  # Removed to prevent training hang when resuming
     
@@ -466,7 +481,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             return None, None
     
     def __getitem__(self, idx):
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch_indices = self.epoch_indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         if self.preprocessed:
             X = self.images[batch_indices]
             Y = self.masks[batch_indices]
@@ -495,12 +510,10 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
         print(f"\nMemory usage after epoch {epoch}: {memory_usage:.2f} MB")
 
 class TrainingLoggerCallback(tf.keras.callbacks.Callback):
-    def __init__(self, log_dir, clr_step=10, checkpoint_step=30):
+    def __init__(self, log_dir):
         super().__init__()
         self.log_file = os.path.join(log_dir, 'log.txt')
         os.makedirs(log_dir, exist_ok=True)
-        self.clr_step = clr_step
-        self.checkpoint_step = checkpoint_step
         self.batch_count = 0
         # Ensure the log file exists
         if not os.path.exists(self.log_file):
@@ -520,28 +533,12 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
                 f.write(log_line)
         except Exception as e:
             print(f"[TrainingLoggerCallback] Could not write to log.txt: {e}")
-        # Log CLR change
-        if self.clr_step and self.batch_count % self.clr_step == 0:
-            clr_line = f"Batch {self.batch_count}: CyclicalLearningRate set learning rate to {lr}\n"
-            try:
-                with open(self.log_file, 'a') as f:
-                    f.write(clr_line)
-            except Exception as e:
-                print(f"[TrainingLoggerCallback] Could not write CLR to log.txt: {e}")
-        # Log checkpoint save
-        if self.checkpoint_step and self.batch_count % self.checkpoint_step == 0:
-            checkpoint_line = f"Batch {self.batch_count}: saving model to /app/models/checkpoint_epoch_{{epoch:02d}}_batch_{{batch:04d}}.h5\n"
-            try:
-                with open(self.log_file, 'a') as f:
-                    f.write(checkpoint_line)
-            except Exception as e:
-                print(f"[TrainingLoggerCallback] Could not write checkpoint to log.txt: {e}")
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
         log_line = f"Epoch {epoch+1}: "
         log_line += ", ".join([f"{k}={v:.5f}" for k, v in logs.items() if isinstance(v, (float, int))])
-        log_line += f"\nEpoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}_batch_0000.h5\n"
+        log_line += f"\nEpoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}.h5\n"
         try:
             with open(self.log_file, 'a') as f:
                 f.write(log_line)
@@ -683,38 +680,7 @@ def prepare_data(cityscapes_root):
 tf.random.set_seed(42)
 np.random.seed(42)
 
-class CyclicalLearningRate(tf.keras.callbacks.Callback):
-    def __init__(self, base_lr=1e-4, max_lr=5e-3, step_size=10, mode='triangular', verbose=1):
-        super().__init__()
-        self.base_lr = base_lr
-        self.max_lr = max_lr
-        self.step_size = step_size
-        self.mode = mode
-        self.verbose = verbose
-        self.iteration = 0
-        self.history = {}
 
-    def clr(self):
-        cycle = math.floor(1 + self.iteration / (2 * self.step_size))
-        x = abs(self.iteration / self.step_size - 2 * cycle + 1)
-        scale = 1.0
-        if self.mode == 'triangular2':
-            scale = 1 / (2. ** (cycle - 1))
-        elif self.mode == 'exp_range':
-            scale = 0.99994 ** self.iteration
-        return self.base_lr + (self.max_lr - self.base_lr) * max(0, (1 - x)) * scale
-
-    def on_train_begin(self, logs=None):
-        self.iteration = 0
-        tf.keras.backend.set_value(self.model.optimizer.lr, self.base_lr)
-
-    def on_batch_end(self, batch, logs=None):
-        self.iteration += 1
-        lr = self.clr()
-        tf.keras.backend.set_value(self.model.optimizer.lr, lr)
-        self.history.setdefault('lr', []).append(lr)
-        if self.verbose and self.iteration % self.step_size == 0:
-            print(f"\nBatch {self.iteration}: CyclicalLearningRate set learning rate to {lr}")
 
 def train_model():
     # Create models directory if it doesn't exist
@@ -795,7 +761,7 @@ def train_model():
     else:
         print("Skipping compilation - using loaded model with existing optimizer state.")
     
-    # Setup data paths
+    # Setup data paths and prepare data
     cityscapes_root = '/data'
     print(f"\nLooking for Cityscapes dataset in: {cityscapes_root}")
     train_images, train_masks, val_images, val_masks = prepare_data(cityscapes_root)
@@ -804,19 +770,11 @@ def train_model():
     validate_data_split(train_images, train_masks, val_images, val_masks)
     
     print(f"\nFound {len(train_images)} training images and {len(val_images)} validation images")
+    print(f"Using {SUBSET_RATIO*100:.0f}% random subset each epoch for faster training")
     
-    # Try to use preprocessed data if available
-    train_imgs_npy = os.path.join('models', 'train_images.npy')
-    train_msks_npy = os.path.join('models', 'train_masks.npy')
-    val_imgs_npy = os.path.join('models', 'val_images.npy')
-    val_msks_npy = os.path.join('models', 'val_masks.npy')
-    use_preprocessed = all(os.path.exists(f) for f in [train_imgs_npy, train_msks_npy, val_imgs_npy, val_msks_npy])
-    if use_preprocessed:
-        train_gen = CityscapesDataGenerator(None, None, BATCH_SIZE, augment=True, preprocessed_prefix=os.path.join('models', 'train'))
-        val_gen = CityscapesDataGenerator(None, None, BATCH_SIZE, augment=False, preprocessed_prefix=os.path.join('models', 'val'))
-    else:
-        train_gen = CityscapesDataGenerator(train_images, train_masks, BATCH_SIZE, augment=True)
-        val_gen = CityscapesDataGenerator(val_images, val_masks, BATCH_SIZE, augment=False)
+    # Create data generators with on-the-fly loading
+    train_gen = CityscapesDataGenerator(train_images, train_masks, BATCH_SIZE, augment=True, subset_ratio=SUBSET_RATIO)
+    val_gen = CityscapesDataGenerator(val_images, val_masks, BATCH_SIZE, augment=False, subset_ratio=SUBSET_RATIO)
 
     # Remove tf.data.Dataset.from_generator and prefetch
     # Use generators directly in model.fit
@@ -840,28 +798,29 @@ def train_model():
             verbose=1,
             save_weights_only=False
         ),
-        # Save full model every 30 batches (preserves optimizer state)
+        # Save model every epoch (standard approach)
         ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}.h5',
-            save_freq=30,
-            verbose=1,
-            save_weights_only=False
-        ),
-        # Save full model every epoch (batch always 0000 for epoch save)
-        ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}_batch_0000.h5',
+            '/app/models/checkpoint_epoch_{epoch:02d}.h5',
             save_freq='epoch',
             verbose=1,
             save_weights_only=False
         ),
         EarlyStopping(
-            patience=7,  # Reduced from 10 to 7 for better stability
+            patience=7,
             monitor='val_iou',
             mode='max',
             restore_best_weights=True,
             verbose=1
         ),
-        CyclicalLearningRate(base_lr=5e-5, max_lr=5e-4, step_size=30, mode='triangular', verbose=1),
+        ReduceLROnPlateau(
+            monitor='val_iou',
+            mode='max',
+            factor=0.7,  # Reduce LR by 30% when plateauing
+            patience=3,   # Wait 3 epochs before reducing
+            min_lr=1e-7,  # Minimum LR
+            verbose=1,
+            restore_best_weights=False
+        ),
         MemoryCleanupCallback(),
         TrainingLoggerCallback('/app/models')
     ]
