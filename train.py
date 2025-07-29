@@ -480,6 +480,22 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
         memory_usage = process.memory_info().rss / 1024 / 1024  # Convert to MB
         print(f"\nMemory usage after epoch {epoch}: {memory_usage:.2f} MB")
 
+class TrainingLoggerCallback(tf.keras.callbacks.Callback):
+    def __init__(self, log_dir):
+        super().__init__()
+        self.log_file = os.path.join(log_dir, 'log.txt')
+        os.makedirs(log_dir, exist_ok=True)
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        # Compose log line
+        log_line = f"Epoch {epoch+1}: "
+        log_line += ", ".join([f"{k}={v:.5f}" for k, v in logs.items() if isinstance(v, (float, int))])
+        log_line += "\n"
+        # Append to log file
+        with open(self.log_file, 'a') as f:
+            f.write(log_line)
+
 # Custom IoU metric for semantic segmentation
 class IoUMetric(tf.keras.metrics.Metric):
     def __init__(self, num_classes=NUM_CLASSES, name='iou', **kwargs):
@@ -614,6 +630,44 @@ def prepare_data(cityscapes_root):
 # Set random seeds for reproducibility
 tf.random.set_seed(42)
 np.random.seed(42)
+
+class ReduceLROnPlateauBatch(tf.keras.callbacks.Callback):
+    def __init__(self, factor=0.2, patience=2, min_lr=1e-6, check_freq=10, verbose=1):
+        super().__init__()
+        self.factor = factor
+        self.patience = patience
+        self.min_lr = min_lr
+        self.check_freq = check_freq
+        self.verbose = verbose
+        self.wait = 0
+        self.best = np.Inf
+        self.batch_since_last_check = 0
+
+    def on_train_begin(self, logs=None):
+        self.wait = 0
+        self.best = np.Inf
+        self.batch_since_last_check = 0
+
+    def on_batch_end(self, batch, logs=None):
+        logs = logs or {}
+        self.batch_since_last_check += 1
+        if self.batch_since_last_check >= self.check_freq:
+            current = logs.get('loss')
+            if current is not None:
+                if current < self.best - 1e-6:
+                    self.best = current
+                    self.wait = 0
+                else:
+                    self.wait += 1
+                    if self.wait >= self.patience:
+                        old_lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
+                        if old_lr > self.min_lr:
+                            new_lr = max(old_lr * self.factor, self.min_lr)
+                            tf.keras.backend.set_value(self.model.optimizer.lr, new_lr)
+                            if self.verbose:
+                                print(f"\nBatch {batch+1}: ReduceLROnPlateauBatch reducing learning rate to {new_lr}.")
+                        self.wait = 0
+            self.batch_since_last_check = 0
 
 def train_model():
     # Create models directory if it doesn't exist
@@ -751,15 +805,9 @@ def train_model():
             restore_best_weights=True,
             verbose=1
         ),
-        ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.2,  # More aggressive reduction (was 0.3)
-            patience=2,  # Reduced from 3 to 2 for faster adaptation
-            min_lr=1e-6,
-            verbose=1
-        ),
-        MemoryCleanupCallback()
-        # HLS4MLModelSaver()  # Do not include this callback
+        ReduceLROnPlateauBatch(factor=0.2, patience=2, min_lr=1e-6, check_freq=10, verbose=1),
+        MemoryCleanupCallback(),
+        TrainingLoggerCallback('/app/models')
     ]
     
     # Train with gradient accumulation
