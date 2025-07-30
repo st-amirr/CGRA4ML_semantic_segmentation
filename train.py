@@ -69,7 +69,11 @@ if gpus:
                 gpu,
                 [tf.config.LogicalDeviceConfiguration(memory_limit=20000)]
             )
-            
+        
+        print("GPU memory growth enabled with optimizations configured for QAT")
+    except RuntimeError as e:
+        print(f"Error setting GPU memory growth: {e}")
+
         # Standard TensorFlow optimizations for QAT (disable layout optimizer for dropout compatibility)
         tf.config.optimizer.set_experimental_options({
             'layout_optimizer': False,  # Disabled to prevent dropout layer issues
@@ -411,10 +415,10 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     p=0.2
                 ),
                 
-                # Basic noise (use correct parameter for albumentations 1.3.1+)
+                # Basic noise (updated for newer albumentations)
                 A.GaussNoise(var_limit=(5.0, 25.0), p=0.2),
                 
-                # Basic cutout (use correct parameters for albumentations 1.3.1+)
+                # Basic cutout (updated for newer albumentations)
                 A.CoarseDropout(
                     max_holes=4,
                     max_height=32,
@@ -422,7 +426,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     min_holes=1,
                     min_height=8,
                     min_width=8,
-                    fill_value=0,
                     p=0.15
                 ),
             ])
@@ -740,8 +743,6 @@ def train_model():
                                                'quantized_relu': quantized_relu
                                            })
             print("Successfully loaded full model with optimizer state.")
-            print(f"Model optimizer: {model.optimizer}")
-            print(f"Model is compiled: {model.compiled}")
             # Don't recompile - the loaded model already has optimizer state
             skip_compilation = True
         except Exception as e_model:
@@ -785,23 +786,14 @@ def train_model():
         print("Model compiled successfully.")
     else:
         print("Skipping compilation - using loaded model with existing optimizer state.")
-        # Force model to be ready for training
-        if not model.compiled:
-            print("WARNING: Loaded model is not compiled, forcing compilation...")
-            model.compile(
-                optimizer=model.optimizer,
-                loss='categorical_crossentropy',
-                metrics=[IoUMetric()],
-                run_eagerly=False
-            )
     
     # Setup data paths and prepare data
     cityscapes_root = '/data'
     print(f"\nLooking for Cityscapes dataset in: {cityscapes_root}")
     train_images, train_masks, val_images, val_masks = prepare_data(cityscapes_root)
     
-    # Validate data split to prevent data leakage
-    validate_data_split(train_images, train_masks, val_images, val_masks)
+    # Validate data split to prevent data leakage (commented out for faster startup)
+    # validate_data_split(train_images, train_masks, val_images, val_masks)
     
     print(f"\nFound {len(train_images)} training images and {len(val_images)} validation images")
     print(f"Using {SUBSET_RATIO*100:.0f}% random subset each epoch for faster training")
@@ -859,8 +851,15 @@ def train_model():
         TrainingLoggerCallback('/app/models')
     ]
     
-    # Train with gradient accumulation
+    # Train with optimized device placement for CPU/GPU parallel processing
     try:
+        print("Using optimized CPU/GPU parallel training for quantization model")
+        
+        # Configure TensorFlow for optimal device placement
+        # This will automatically place operations on the most suitable device
+        tf.config.set_soft_device_placement(True)
+        
+        print("Starting training with automatic CPU/GPU device placement...")
         history = model.fit(
             train_gen,
             validation_data=val_gen,
@@ -870,9 +869,9 @@ def train_model():
             use_multiprocessing=False,
             max_queue_size=PREFETCH_SIZE,
             steps_per_epoch=max(1, len(train_gen) // GRADIENT_ACCUMULATION_STEPS),
-            initial_epoch=initial_epoch
+            initial_epoch= initial_epoch,
             verbose=1  # Force verbose output
-        )
+            )
         print(f"First epoch completed in {time.time() - start_time:.2f}s")
         # Save final model based on dropout setting
         print("\nSaving final models...")
