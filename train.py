@@ -42,8 +42,8 @@ import math
 #    - Optimized for Xilinx VCU118 or similar high-end FPGAs
 
 # Define constants
-INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
-INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
+INPUT_HEIGHT = 1024
+INPUT_WIDTH = 2048
 BATCH_SIZE = 1  # Reduced to 1 for memory constraints
 EPOCHS = 100
 NUM_CLASSES = 34
@@ -193,86 +193,86 @@ def create_segmentation_model():
     tf.keras.backend.clear_session()
     inputs = tf.keras.Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
     x = inputs
-    # Initial conv (use 16 bits) - reduced to 16
-    x = conv_block(x, 16, name='init_conv', use_16bit=True)
-    x = QConv2D(16, kernel_size=3, strides=2, padding='same',
-                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
-                bias_quantizer=quantized_bits(**quantized_bits_param_8),
-                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                name='downsample1')(x)
-    # Stage 1 - reduced to 32
-    x = c2f_block(x, 32, n=1, name='stage1')  # Reduced n from 2 to 1
-    if USE_DROPOUT_DURING_TRAINING:
-        x = tf.keras.layers.Dropout(0.2, name='dropout_stage1')(x)
-    skip1 = x
+    # Initial conv (use 16 bits) - back to original 32
+    x = conv_block(x, 32, name='init_conv', use_16bit=True)
     x = QConv2D(32, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                name='downsample2')(x)
-    # Stage 2 - reduced to 64
-    x = c2f_block(x, 64, n=1, name='stage2')  # Reduced n from 2 to 1
+                name='downsample1')(x)
+    # Stage 1 - back to original 64
+    x = c2f_block(x, 64, n=2, name='stage1')
     if USE_DROPOUT_DURING_TRAINING:
-        x = tf.keras.layers.Dropout(0.25, name='dropout_stage2')(x)
-    skip2 = x
+        x = tf.keras.layers.Dropout(0.2, name='dropout_stage1')(x)
+    skip1 = x
     x = QConv2D(64, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                name='downsample3')(x)
-    # Stage 3 - reduced to 128
-    x = c2f_block(x, 128, n=1, name='stage3')
-    x = channel_attention(x, name='ca_stage3')
+                name='downsample2')(x)
+    # Stage 2 - back to original 128
+    x = c2f_block(x, 128, n=2, name='stage2')
     if USE_DROPOUT_DURING_TRAINING:
-        x = tf.keras.layers.Dropout(0.3, name='dropout_stage3')(x)
-    skip3 = x
+        x = tf.keras.layers.Dropout(0.25, name='dropout_stage2')(x)
+    skip2 = x
     x = QConv2D(128, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                name='downsample3')(x)
+    # Stage 3 - back to original 256
+    x = c2f_block(x, 256, n=1, name='stage3')
+    x = channel_attention(x, name='ca_stage3')
+    if USE_DROPOUT_DURING_TRAINING:
+        x = tf.keras.layers.Dropout(0.3, name='dropout_stage3')(x)
+    skip3 = x
+    x = QConv2D(256, kernel_size=3, strides=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample4')(x)
-    # Stage 4 - reduced to 256
-    x = c2f_block(x, 256, n=1, name='stage4')
+    # Stage 4 - back to original 512
+    x = c2f_block(x, 512, n=1, name='stage4')
     x = channel_attention(x, name='ca_stage4')
-    x = sppf_block(x, 256, name='sppf')
+    x = sppf_block(x, 512, name='sppf')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.35, name='dropout_stage4')(x)
     # Decoder (upsample and match filter counts)
-    x = c2f_block(x, 256, n=1, name='pre_up1')
+    x = c2f_block(x, 512, n=1, name='pre_up1')
     # Use regular Conv2DTranspose instead of QConv2DTranspose for compatibility
-    x = tf.keras.layers.Conv2DTranspose(128, kernel_size=2, strides=2, padding='same',
+    x = tf.keras.layers.Conv2DTranspose(256, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up1_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat1')([x, skip3])
-    x = conv_block(x, 128, name='up1_conv')
-    x = c2f_block(x, 128, n=1, name='up1_c2f')
+    x = conv_block(x, 256, name='up1_conv')
+    x = c2f_block(x, 256, n=1, name='up1_c2f')
     x = channel_attention(x, name='ca_up1')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_up1')(x)
-    x = c2f_block(x, 128, n=1, name='pre_up2')
-    x = tf.keras.layers.Conv2DTranspose(64, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 256, n=1, name='pre_up2')
+    x = tf.keras.layers.Conv2DTranspose(128, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up2_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat2')([x, skip2])
-    x = conv_block(x, 64, name='up2_conv')
-    x = c2f_block(x, 64, n=1, name='up2_c2f')
+    x = conv_block(x, 128, name='up2_conv')
+    x = c2f_block(x, 128, n=1, name='up2_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_up2')(x)
-    x = c2f_block(x, 64, n=1, name='pre_up3')
-    x = tf.keras.layers.Conv2DTranspose(32, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 128, n=1, name='pre_up3')
+    x = tf.keras.layers.Conv2DTranspose(64, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up3_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat3')([x, skip1])
-    x = conv_block(x, 32, name='up3_conv')
-    x = c2f_block(x, 32, n=1, name='up3_c2f')
+    x = conv_block(x, 64, name='up3_conv')
+    x = c2f_block(x, 64, n=1, name='up3_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.15, name='dropout_up3')(x)
-    x = c2f_block(x, 32, n=1, name='pre_up4')
-    x = tf.keras.layers.Conv2DTranspose(16, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 64, n=1, name='pre_up4')
+    x = tf.keras.layers.Conv2DTranspose(32, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up4_transpose')(x)
-    x = conv_block(x, 16, name='up4_conv')
-    x = c2f_block(x, 16, n=1, name='up4_c2f')
+    x = conv_block(x, 32, name='up4_conv')
+    x = c2f_block(x, 32, n=1, name='up4_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.1, name='dropout_up4')(x)
     # Output layer (use 16 bits)
@@ -667,7 +667,7 @@ def train_model():
     # This will automatically place operations on the most suitable device
     tf.config.set_soft_device_placement(True)
     
-    print("✅ Automatic CPU/GPU device placement enabled (hybrid mode)")
+    print("✅ Automatic CPU/GPU device placement enabled")
     
     # Create models directory if it doesn't exist
     os.makedirs('/app/models', exist_ok=True)
