@@ -45,10 +45,10 @@ import math
 INPUT_HEIGHT = 1024
 INPUT_WIDTH = 2048
 BATCH_SIZE = 1  # Reduced to 1 for memory constraints
-EPOCHS = 70
+EPOCHS = 100
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
-SUBSET_RATIO = 0.08  # Use 10% of dataset per epoch
+SUBSET_RATIO = 0.2  # Use 20% of dataset per epoch
 NUM_WORKERS = 2  # Standard for data loading
 PREFETCH_SIZE = 2  # Standard prefetch for efficiency
 GRADIENT_ACCUMULATION_STEPS = 8  # No gradient accumulation needed with current setup
@@ -714,7 +714,14 @@ def train_model():
         # Extract epoch number if it exists in filename
         if 'epoch_' in latest_model:
             try:
-                initial_epoch = int(latest_model.split('epoch_')[1].split('_')[0])
+                # Handle both formats: checkpoint_epoch_15.h5 and epoch_15.h5
+                if 'checkpoint_epoch_' in latest_model:
+                    epoch_part = latest_model.split('checkpoint_epoch_')[1]
+                else:
+                    epoch_part = latest_model.split('epoch_')[1]
+                
+                # Remove .h5 extension and convert to int
+                initial_epoch = int(epoch_part.split('.')[0])
                 print(f"Resuming from epoch {initial_epoch}")
             except:
                 print("Could not determine epoch number from filename")
@@ -852,7 +859,7 @@ def train_model():
             use_multiprocessing=False,
             max_queue_size=PREFETCH_SIZE,
             steps_per_epoch=max(1, len(train_gen) // GRADIENT_ACCUMULATION_STEPS),
-            initial_epoch=initial_epoch - 1 if initial_epoch > 0 else 0
+            initial_epoch=initial_epoch
         )
         # Save final model based on dropout setting
         print("\nSaving final models...")
