@@ -42,8 +42,8 @@ import math
 #    - Optimized for Xilinx VCU118 or similar high-end FPGAs
 
 # Define constants
-INPUT_HEIGHT = 1024
-INPUT_WIDTH = 2048
+INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
+INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
 BATCH_SIZE = 1  # Reduced to 1 for memory constraints
 EPOCHS = 100
 NUM_CLASSES = 34
@@ -58,48 +58,10 @@ USE_DROPOUT_DURING_TRAINING = False
 
 
 
-# Configure GPU memory growth
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            # Use the new API for TensorFlow 2.14+
-            tf.config.experimental.set_memory_growth(gpu, True)
-            tf.config.set_logical_device_configuration(
-                gpu,
-                [tf.config.LogicalDeviceConfiguration(memory_limit=20000)]
-            )
-        
-        print("GPU memory growth enabled with optimizations configured for QAT")
-    except RuntimeError as e:
-        print(f"Error setting GPU memory growth: {e}")
-
-        # Standard TensorFlow optimizations for QAT (disable layout optimizer for dropout compatibility)
-        tf.config.optimizer.set_experimental_options({
-            'layout_optimizer': False,  # Disabled to prevent dropout layer issues
-            'constant_folding': True,
-            'shape_optimization': True,
-            'remapping': True,
-            'arithmetic_optimization': True,
-            'dependency_optimization': True,
-            'loop_optimization': True,
-            'function_optimization': True,
-            'debug_stripper': True,
-            'scoped_allocator_optimization': True,
-            'implementation_selector': True,
-        })
-        
-        print("GPU memory growth enabled with optimizations configured for QAT")
-    except RuntimeError as e:
-        print(f"Error setting GPU memory growth: {e}")
-
 # Configure TensorFlow to use CPU efficiently
 n_cores = multiprocessing.cpu_count()
 tf.config.threading.set_inter_op_parallelism_threads(n_cores)
 tf.config.threading.set_intra_op_parallelism_threads(n_cores)
-
-# Enable memory growth and tensor allocation reporting
-tf.config.set_soft_device_placement(True)
 
 # Disable eager execution for better memory tracking
 # tf.compat.v1.disable_eager_execution()  # Commented out to enable eager execution
@@ -231,86 +193,86 @@ def create_segmentation_model():
     tf.keras.backend.clear_session()
     inputs = tf.keras.Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
     x = inputs
-    # Initial conv (use 16 bits) - back to original 32
-    x = conv_block(x, 32, name='init_conv', use_16bit=True)
-    x = QConv2D(32, kernel_size=3, strides=2, padding='same',
+    # Initial conv (use 16 bits) - reduced to 16
+    x = conv_block(x, 16, name='init_conv', use_16bit=True)
+    x = QConv2D(16, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample1')(x)
-    # Stage 1 - back to original 64
-    x = c2f_block(x, 64, n=2, name='stage1')
+    # Stage 1 - reduced to 32
+    x = c2f_block(x, 32, n=1, name='stage1')  # Reduced n from 2 to 1
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_stage1')(x)
     skip1 = x
-    x = QConv2D(64, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(32, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample2')(x)
-    # Stage 2 - back to original 128
-    x = c2f_block(x, 128, n=2, name='stage2')
+    # Stage 2 - reduced to 64
+    x = c2f_block(x, 64, n=1, name='stage2')  # Reduced n from 2 to 1
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_stage2')(x)
     skip2 = x
-    x = QConv2D(128, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(64, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample3')(x)
-    # Stage 3 - back to original 256
-    x = c2f_block(x, 256, n=1, name='stage3')
+    # Stage 3 - reduced to 128
+    x = c2f_block(x, 128, n=1, name='stage3')
     x = channel_attention(x, name='ca_stage3')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.3, name='dropout_stage3')(x)
     skip3 = x
-    x = QConv2D(256, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(128, kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample4')(x)
-    # Stage 4 - back to original 512
-    x = c2f_block(x, 512, n=1, name='stage4')
+    # Stage 4 - reduced to 256
+    x = c2f_block(x, 256, n=1, name='stage4')
     x = channel_attention(x, name='ca_stage4')
-    x = sppf_block(x, 512, name='sppf')
+    x = sppf_block(x, 256, name='sppf')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.35, name='dropout_stage4')(x)
     # Decoder (upsample and match filter counts)
-    x = c2f_block(x, 512, n=1, name='pre_up1')
+    x = c2f_block(x, 256, n=1, name='pre_up1')
     # Use regular Conv2DTranspose instead of QConv2DTranspose for compatibility
-    x = tf.keras.layers.Conv2DTranspose(256, kernel_size=2, strides=2, padding='same',
+    x = tf.keras.layers.Conv2DTranspose(128, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up1_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat1')([x, skip3])
-    x = conv_block(x, 256, name='up1_conv')
-    x = c2f_block(x, 256, n=1, name='up1_c2f')
+    x = conv_block(x, 128, name='up1_conv')
+    x = c2f_block(x, 128, n=1, name='up1_c2f')
     x = channel_attention(x, name='ca_up1')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_up1')(x)
-    x = c2f_block(x, 256, n=1, name='pre_up2')
-    x = tf.keras.layers.Conv2DTranspose(128, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 128, n=1, name='pre_up2')
+    x = tf.keras.layers.Conv2DTranspose(64, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up2_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat2')([x, skip2])
-    x = conv_block(x, 128, name='up2_conv')
-    x = c2f_block(x, 128, n=1, name='up2_c2f')
+    x = conv_block(x, 64, name='up2_conv')
+    x = c2f_block(x, 64, n=1, name='up2_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_up2')(x)
-    x = c2f_block(x, 128, n=1, name='pre_up3')
-    x = tf.keras.layers.Conv2DTranspose(64, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 64, n=1, name='pre_up3')
+    x = tf.keras.layers.Conv2DTranspose(32, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up3_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat3')([x, skip1])
-    x = conv_block(x, 64, name='up3_conv')
-    x = c2f_block(x, 64, n=1, name='up3_c2f')
+    x = conv_block(x, 32, name='up3_conv')
+    x = c2f_block(x, 32, n=1, name='up3_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.15, name='dropout_up3')(x)
-    x = c2f_block(x, 64, n=1, name='pre_up4')
-    x = tf.keras.layers.Conv2DTranspose(32, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, 32, n=1, name='pre_up4')
+    x = tf.keras.layers.Conv2DTranspose(16, kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up4_transpose')(x)
-    x = conv_block(x, 32, name='up4_conv')
-    x = c2f_block(x, 32, n=1, name='up4_c2f')
+    x = conv_block(x, 16, name='up4_conv')
+    x = c2f_block(x, 16, n=1, name='up4_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.1, name='dropout_up4')(x)
     # Output layer (use 16 bits)
@@ -704,7 +666,8 @@ def train_model():
     # Configure TensorFlow for optimal device placement BEFORE model creation
     # This will automatically place operations on the most suitable device
     tf.config.set_soft_device_placement(True)
-    print("✅ Automatic CPU/GPU device placement enabled")
+    
+    print("✅ Automatic CPU/GPU device placement enabled (hybrid mode)")
     
     # Create models directory if it doesn't exist
     os.makedirs('/app/models', exist_ok=True)
@@ -786,7 +749,7 @@ def train_model():
             loss='categorical_crossentropy',
             metrics=[IoUMetric()],
             run_eagerly=False,
-            # Remove jit_compile if it was added
+            # Ensure device placement is respected during compilation
         )
         print("Model compiled successfully.")
     else:
@@ -871,7 +834,7 @@ def train_model():
             initial_epoch= initial_epoch,
             verbose=1  # Force verbose output
             )
-        print(f"First epoch completed in {time.time() - start_time:.2f}s")
+        print("Training completed successfully!")
         # Save final model based on dropout setting
         print("\nSaving final models...")
         
@@ -910,3 +873,4 @@ if __name__ == "__main__":
     train_model()
 
 #24/743 [..............................] - ETA: 3:05:34 - loss: 2.8576 - iou: 0.3420
+
