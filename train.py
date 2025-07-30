@@ -54,7 +54,7 @@ PREFETCH_SIZE = 2  # Standard prefetch for efficiency
 GRADIENT_ACCUMULATION_STEPS = 8  # No gradient accumulation needed with current setup
 
 # Toggle for dropout usage (True for training, False for HLS4ML export)
-USE_DROPOUT_DURING_TRAINING = True
+USE_DROPOUT_DURING_TRAINING = False
 
 
 
@@ -740,6 +740,8 @@ def train_model():
                                                'quantized_relu': quantized_relu
                                            })
             print("Successfully loaded full model with optimizer state.")
+            print(f"Model optimizer: {model.optimizer}")
+            print(f"Model is compiled: {model.compiled}")
             # Don't recompile - the loaded model already has optimizer state
             skip_compilation = True
         except Exception as e_model:
@@ -783,6 +785,15 @@ def train_model():
         print("Model compiled successfully.")
     else:
         print("Skipping compilation - using loaded model with existing optimizer state.")
+        # Force model to be ready for training
+        if not model.compiled:
+            print("WARNING: Loaded model is not compiled, forcing compilation...")
+            model.compile(
+                optimizer=model.optimizer,
+                loss='categorical_crossentropy',
+                metrics=[IoUMetric()],
+                run_eagerly=False
+            )
     
     # Setup data paths and prepare data
     cityscapes_root = '/data'
@@ -860,7 +871,9 @@ def train_model():
             max_queue_size=PREFETCH_SIZE,
             steps_per_epoch=max(1, len(train_gen) // GRADIENT_ACCUMULATION_STEPS),
             initial_epoch=initial_epoch
+            verbose=1  # Force verbose output
         )
+        print(f"First epoch completed in {time.time() - start_time:.2f}s")
         # Save final model based on dropout setting
         print("\nSaving final models...")
         
