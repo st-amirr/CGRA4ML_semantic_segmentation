@@ -56,6 +56,9 @@ GRADIENT_ACCUMULATION_STEPS = 8  # No gradient accumulation needed with current 
 # Toggle for dropout usage (True for training, False for HLS4ML export)
 USE_DROPOUT_DURING_TRAINING = False
 
+# Toggle for HLS4ML compatible .h5 format on final save
+SAVE_HLS4ML_COMPATIBLE = True
+
 
 
 # Configure TensorFlow to use CPU efficiently
@@ -672,8 +675,8 @@ def train_model():
     # Create models directory if it doesn't exist
     os.makedirs('/app/models', exist_ok=True)
     
-    # Find the latest saved model
-    model_files = [f for f in os.listdir('/app/models') if f.endswith('.h5')]
+    # Find the latest saved model (check both .keras and .h5 files)
+    model_files = [f for f in os.listdir('/app/models') if f.endswith(('.keras', '.h5'))]
     initial_epoch = 0
     skip_compilation = False  # Initialize compilation flag
     
@@ -685,13 +688,13 @@ def train_model():
         # Extract epoch number if it exists in filename
         if 'epoch_' in latest_model:
             try:
-                # Handle both formats: checkpoint_epoch_15.h5 and epoch_15.h5
+                # Handle both formats: checkpoint_epoch_15.keras/h5 and epoch_15.keras/h5
                 if 'checkpoint_epoch_' in latest_model:
                     epoch_part = latest_model.split('checkpoint_epoch_')[1]
                 else:
                     epoch_part = latest_model.split('epoch_')[1]
                 
-                # Remove .h5 extension and convert to int
+                # Remove .keras or .h5 extension and convert to int
                 initial_epoch = int(epoch_part.split('.')[0])
                 print(f"Resuming from epoch {initial_epoch}")
             except:
@@ -785,7 +788,7 @@ def train_model():
     
     callbacks = [
         ModelCheckpoint(
-            '/app/models/best_model.h5',
+            '/app/models/best_model.keras',
             save_best_only=True,
             monitor='val_iou',
             mode='max',
@@ -794,7 +797,7 @@ def train_model():
         ),
         # Save model every epoch (standard approach)
         ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}.h5',
+            '/app/models/checkpoint_epoch_{epoch:02d}.keras',
             save_freq='epoch',
             verbose=1,
             save_weights_only=False
@@ -840,20 +843,25 @@ def train_model():
         
         if USE_DROPOUT_DURING_TRAINING:
             # Training with dropout - save training model only
-            model.save('/app/models/final_model_with_dropout.h5')
-            print("Training model saved as 'final_model_with_dropout.h5'")
+            model.save('/app/models/final_model_with_dropout.keras')
+            print("Training model saved as 'final_model_with_dropout.keras'")
             print("HLS4ML export skipped (dropout enabled - architectural mismatch)")
         else:
             # Training without dropout - save both training and HLS4ML models
-            model.save('/app/models/final_model_no_dropout.h5')
-            print("Training model saved as 'final_model_no_dropout.h5'")
+            model.save('/app/models/final_model_no_dropout.keras')
+            print("Training model saved as 'final_model_no_dropout.keras'")
+            
+            # Save HLS4ML compatible .h5 version if enabled
+            if SAVE_HLS4ML_COMPATIBLE:
+                model.save('/app/models/final_model_hls4ml.h5', save_format='h5')
+                print("HLS4ML compatible model saved as 'final_model_hls4ml.h5'")
             
             # Create and save clean model for HLS4ML export (identical architecture)
             print("Creating HLS4ML export model...")
             clean_model = create_hls4ml_export_model(model)
-            clean_model.save('/app/models/final_model_hls4ml_clean.h5')
+            clean_model.save('/app/models/final_model_hls4ml_clean.keras')
             model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
-            print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.h5'")
+            print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.keras'")
             print("Quantized weights saved as 'final_model_hls4ml_weights.h5'")
         
         print("\nTraining completed successfully!")
