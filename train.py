@@ -701,6 +701,11 @@ np.random.seed(42)
 
 
 def train_model():
+    # Configure TensorFlow for optimal device placement BEFORE model creation
+    # This will automatically place operations on the most suitable device
+    tf.config.set_soft_device_placement(True)
+    print("✅ Automatic CPU/GPU device placement enabled")
+    
     # Create models directory if it doesn't exist
     os.makedirs('/app/models', exist_ok=True)
     
@@ -851,14 +856,8 @@ def train_model():
         TrainingLoggerCallback('/app/models')
     ]
     
-    # Train with optimized device placement for CPU/GPU parallel processing
+    # Train with automatic device placement for optimal performance
     try:
-        print("Using optimized CPU/GPU parallel training for quantization model")
-        
-        # Configure TensorFlow for optimal device placement
-        # This will automatically place operations on the most suitable device
-        tf.config.set_soft_device_placement(True)
-        
         print("Starting training with automatic CPU/GPU device placement...")
         history = model.fit(
             train_gen,
