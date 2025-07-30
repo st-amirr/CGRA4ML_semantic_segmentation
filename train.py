@@ -44,14 +44,14 @@ import math
 # Define constants
 INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
 INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
-BATCH_SIZE = 1  # Reduced to 1 for memory constraints
+BATCH_SIZE = 4  # Reduced to 1 for memory constraints
 EPOCHS = 100
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
 SUBSET_RATIO = 0.2  # Use 20% of dataset per epoch
 NUM_WORKERS = 2  # Standard for data loading
 PREFETCH_SIZE = 2  # Standard prefetch for efficiency
-GRADIENT_ACCUMULATION_STEPS = 8  # No gradient accumulation needed with current setup
+GRADIENT_ACCUMULATION_STEPS = 4  # No gradient accumulation needed with current setup
 
 # Toggle for dropout usage (True for training, False for HLS4ML export)
 USE_DROPOUT_DURING_TRAINING = False
@@ -74,6 +74,14 @@ print(f"Eager execution enabled: {tf.executing_eagerly()}")
 
 # Add TF memory logger
 tf.debugging.set_log_device_placement(False)  # Set to True only for debugging
+
+# Disable layout optimizer to prevent conflicts with QKeras
+tf.config.optimizer.set_experimental_options({
+    'layout_optimizer': False,  # Disabled to prevent QKeras conflicts
+    'constant_folding': True,
+    'shape_optimization': True,
+    'remapping': True,
+})
 
 # Define quantization parameters optimized for FPGA implementation
 quantized_bits_param = {
@@ -666,11 +674,29 @@ np.random.seed(42)
 
 
 def train_model():
+    # Configure GPU to use more VRAM
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                # Allow TensorFlow to allocate more GPU memory
+                tf.config.experimental.set_memory_growth(gpu, True)
+                # Set memory limit to use more VRAM (e.g., 90% of available)
+                tf.config.set_logical_device_configuration(
+                    gpu,
+                    [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 8GB limit
+                )
+            print("✅ GPU memory growth enabled - VRAM will be allocated as needed")
+            print("✅ GPU memory limit set to 8GB to utilize more VRAM")
+        except RuntimeError as e:
+            print(f"GPU memory growth setup failed: {e}")
+    
     # Configure TensorFlow for optimal device placement BEFORE model creation
     # This will automatically place operations on the most suitable device
     tf.config.set_soft_device_placement(True)
     
     print("✅ Automatic CPU/GPU device placement enabled (hybrid mode)")
+    print("✅ Device placement logging enabled - check output for CPU/GPU usage")
     
     # Create models directory if it doesn't exist
     os.makedirs('/app/models', exist_ok=True)
