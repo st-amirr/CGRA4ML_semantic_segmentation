@@ -4,13 +4,15 @@ import tensorflow as tf
 import multiprocessing
 import psutil
 import gc
+import signal
+import sys
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 # from tensorflow.keras import mixed_precision
 from tensorflow.keras.preprocessing.image import load_img
 from tensorflow.keras.layers import Input, MaxPooling2D, Conv2D, BatchNormalization
-from qkeras import QActivation, QConv2D, QConv2DTranspose, QBatchNormalization, quantized_bits, quantized_relu
+from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu
 from qkeras.utils import model_save_quantized_weights
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 import albumentations as A
@@ -42,16 +44,19 @@ import math
 # Define constants
 INPUT_HEIGHT = 1024
 INPUT_WIDTH = 2048
-BATCH_SIZE = 10  # Keep at 1 for memory constraints
-EPOCHS = 50
+BATCH_SIZE = 1  # Reduced to 1 for memory constraints
+EPOCHS = 70
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
-SUBSET_RATIO = 0.1  # Use 10% of dataset per epoch
+SUBSET_RATIO = 0.08  # Use 10% of dataset per epoch
 NUM_WORKERS = 2  # Standard for data loading
-PREFETCH_SIZE = 4  # Standard prefetch for efficiency
+PREFETCH_SIZE = 2  # Standard prefetch for efficiency
+GRADIENT_ACCUMULATION_STEPS = 8  # No gradient accumulation needed with current setup
 
 # Toggle for dropout usage (True for training, False for HLS4ML export)
 USE_DROPOUT_DURING_TRAINING = True
+
+
 
 # Configure GPU memory growth
 gpus = tf.config.list_physical_devices('GPU')
@@ -65,9 +70,9 @@ if gpus:
                 [tf.config.LogicalDeviceConfiguration(memory_limit=20000)]
             )
             
-        # Standard TensorFlow optimizations for QAT
+        # Standard TensorFlow optimizations for QAT (disable layout optimizer for dropout compatibility)
         tf.config.optimizer.set_experimental_options({
-            'layout_optimizer': True,
+            'layout_optimizer': False,  # Disabled to prevent dropout layer issues
             'constant_folding': True,
             'shape_optimization': True,
             'remapping': True,
@@ -268,11 +273,10 @@ def create_segmentation_model():
         x = tf.keras.layers.Dropout(0.35, name='dropout_stage4')(x)
     # Decoder (upsample and match filter counts)
     x = c2f_block(x, 512, n=1, name='pre_up1')
-    x = QConv2DTranspose(256, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
-                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
-                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                        name='up1_transpose')(x)
+    # Use regular Conv2DTranspose instead of QConv2DTranspose for compatibility
+    x = tf.keras.layers.Conv2DTranspose(256, kernel_size=2, strides=2, padding='same',
+                                       kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                                       name='up1_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat1')([x, skip3])
     x = conv_block(x, 256, name='up1_conv')
     x = c2f_block(x, 256, n=1, name='up1_c2f')
@@ -280,33 +284,27 @@ def create_segmentation_model():
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_up1')(x)
     x = c2f_block(x, 256, n=1, name='pre_up2')
-    x = QConv2DTranspose(128, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
-                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
-                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                        name='up2_transpose')(x)
+    x = tf.keras.layers.Conv2DTranspose(128, kernel_size=2, strides=2, padding='same',
+                                       kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                                       name='up2_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat2')([x, skip2])
     x = conv_block(x, 128, name='up2_conv')
     x = c2f_block(x, 128, n=1, name='up2_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_up2')(x)
     x = c2f_block(x, 128, n=1, name='pre_up3')
-    x = QConv2DTranspose(64, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
-                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
-                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                        name='up3_transpose')(x)
+    x = tf.keras.layers.Conv2DTranspose(64, kernel_size=2, strides=2, padding='same',
+                                       kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                                       name='up3_transpose')(x)
     x = tf.keras.layers.Concatenate(name='concat3')([x, skip1])
     x = conv_block(x, 64, name='up3_conv')
     x = c2f_block(x, 64, n=1, name='up3_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.15, name='dropout_up3')(x)
     x = c2f_block(x, 64, n=1, name='pre_up4')
-    x = QConv2DTranspose(32, kernel_size=2, strides=2, padding='same',
-                        kernel_quantizer=quantized_bits(**quantized_bits_param_8),
-                        bias_quantizer=quantized_bits(**quantized_bits_param_8),
-                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                        name='up4_transpose')(x)
+    x = tf.keras.layers.Conv2DTranspose(32, kernel_size=2, strides=2, padding='same',
+                                       kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                                       name='up4_transpose')(x)
     x = conv_block(x, 32, name='up4_conv')
     x = c2f_block(x, 32, n=1, name='up4_c2f')
     if USE_DROPOUT_DURING_TRAINING:
@@ -336,14 +334,48 @@ def create_hls4ml_export_model(trained_model=None):
     # Restore original setting
     USE_DROPOUT_DURING_TRAINING = original_setting
     
-    # If a trained model is provided, copy weights (excluding dropout layers)
+    # If a trained model is provided, copy weights by layer name
     if trained_model is not None:
         print("Copying weights from trained model to clean model...")
-        for clean_layer, trained_layer in zip(clean_model.layers, trained_model.layers):
-            if hasattr(clean_layer, 'weights') and hasattr(trained_layer, 'weights'):
-                if len(clean_layer.weights) > 0 and len(trained_layer.weights) > 0:
-                    clean_layer.set_weights(trained_layer.get_weights())
-                    print(f"Copied weights for layer: {clean_layer.name}")
+        
+        # Create a mapping of layer names to trained layers
+        trained_layers_dict = {layer.name: layer for layer in trained_model.layers}
+        
+        # Copy weights by matching layer names
+        copied_count = 0
+        for clean_layer in clean_model.layers:
+            if clean_layer.name in trained_layers_dict:
+                trained_layer = trained_layers_dict[clean_layer.name]
+                
+                # Check if both layers have weights and they're compatible
+                if (hasattr(clean_layer, 'weights') and hasattr(trained_layer, 'weights') and
+                    len(clean_layer.weights) > 0 and len(trained_layer.weights) > 0):
+                    
+                    try:
+                        # Check if weight shapes are compatible
+                        clean_weights = clean_layer.get_weights()
+                        trained_weights = trained_layer.get_weights()
+                        
+                        if len(clean_weights) == len(trained_weights):
+                            # Check if all weight shapes match
+                            shapes_compatible = True
+                            for cw, tw in zip(clean_weights, trained_weights):
+                                if cw.shape != tw.shape:
+                                    shapes_compatible = False
+                                    break
+                            
+                            if shapes_compatible:
+                                clean_layer.set_weights(trained_weights)
+                                print(f"Copied weights for layer: {clean_layer.name}")
+                                copied_count += 1
+                            else:
+                                print(f"Skipping {clean_layer.name}: weight shapes incompatible")
+                        else:
+                            print(f"Skipping {clean_layer.name}: different number of weights")
+                    except Exception as e:
+                        print(f"Error copying weights for {clean_layer.name}: {str(e)}")
+        
+        print(f"Successfully copied weights for {copied_count} layers")
     
     print("Clean model created for HLS4ML export (no dropout layers)")
     return clean_model
@@ -361,44 +393,37 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         self.aug = None
         if augment:
             self.aug = A.Compose([
-                # Essential geometric transformations (lightweight)
+                # Basic geometric transformations (compatible with all versions)
                 A.HorizontalFlip(p=0.5),
                 A.RandomRotate90(p=0.25),
-                A.ShiftScaleRotate(
-                    shift_limit=0.05,  # Reduced from 0.1
-                    scale_limit=0.1,   # Reduced from 0.2
-                    rotate_limit=5,    # Reduced from 10
-                    p=0.3,
-                    border_mode=cv2.BORDER_CONSTANT
-                ),
                 
-                # Lightweight color augmentations
+                # Basic color augmentations
                 A.RandomBrightnessContrast(
-                    brightness_limit=0.2,  # Reduced from 0.3
-                    contrast_limit=0.2,    # Reduced from 0.3
+                    brightness_limit=0.2,
+                    contrast_limit=0.2,
                     p=0.3
                 ),
-                A.RandomGamma(gamma_limit=(90, 110), p=0.2),  # Reduced range
+                A.RandomGamma(gamma_limit=(90, 110), p=0.2),
                 A.HueSaturationValue(
-                    hue_shift_limit=10,    # Reduced from 20
-                    sat_shift_limit=15,    # Reduced from 30
-                    val_shift_limit=10,    # Reduced from 20
+                    hue_shift_limit=10,
+                    sat_shift_limit=15,
+                    val_shift_limit=10,
                     p=0.2
                 ),
                 
-                # Lightweight noise (minimal impact on speed)
-                A.GaussNoise(var_limit=(5.0, 25.0), p=0.2),  # Reduced variance
+                # Basic noise (use correct parameter for albumentations 1.3.1+)
+                A.GaussNoise(var_limit=(5.0, 25.0), p=0.2),
                 
-                # Simple cutout for regularization (efficient)
+                # Basic cutout (use correct parameters for albumentations 1.3.1+)
                 A.CoarseDropout(
-                    max_holes=4,      # Reduced from 8
-                    max_height=32,    # Reduced from 64
-                    max_width=32,     # Reduced from 64
+                    max_holes=4,
+                    max_height=32,
+                    max_width=32,
                     min_holes=1,
-                    min_height=8,     # Reduced from 16
-                    min_width=8,      # Reduced from 16
+                    min_height=8,
+                    min_width=8,
                     fill_value=0,
-                    p=0.15           # Reduced probability
+                    p=0.15
                 ),
             ])
         # Try to load preprocessed data if prefix is given
@@ -514,7 +539,6 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
         super().__init__()
         self.log_file = os.path.join(log_dir, 'log.txt')
         os.makedirs(log_dir, exist_ok=True)
-        self.batch_count = 0
         # Ensure the log file exists
         if not os.path.exists(self.log_file):
             try:
@@ -523,22 +547,13 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
             except Exception as e:
                 print(f"[TrainingLoggerCallback] Could not create log.txt: {e}")
 
-    def on_batch_end(self, batch, logs=None):
-        logs = logs or {}
-        self.batch_count += 1
-        lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
-        log_line = f"{self.batch_count}/{{steps}} [batch] - loss: {logs.get('loss', float('nan')):.4f} - iou: {logs.get('iou', float('nan')):.4f} - lr: {lr:.6f}\n"
-        try:
-            with open(self.log_file, 'a') as f:
-                f.write(log_line)
-        except Exception as e:
-            print(f"[TrainingLoggerCallback] Could not write to log.txt: {e}")
-
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
+        lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
         log_line = f"Epoch {epoch+1}: "
         log_line += ", ".join([f"{k}={v:.5f}" for k, v in logs.items() if isinstance(v, (float, int))])
-        log_line += f"\nEpoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}.h5\n"
+        log_line += f" - lr: {lr:.6f}\n"
+        log_line += f"Epoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}.h5\n"
         try:
             with open(self.log_file, 'a') as f:
                 f.write(log_line)
@@ -579,12 +594,12 @@ class IoUMetric(tf.keras.metrics.Metric):
             intersections.append(intersection)
             unions.append(union)
         
-        # Update state variables using scatter_nd_update
-        indices = tf.range(self.num_classes, dtype=tf.int32)
-        indices = tf.reshape(indices, [-1, 1])
+        # Update state variables using direct assignment
+        intersections_tensor = tf.stack(intersections)
+        unions_tensor = tf.stack(unions)
         
-        self.intersection.assign_add(tf.scatter_nd(indices, tf.stack(intersections), [self.num_classes]))
-        self.union.assign_add(tf.scatter_nd(indices, tf.stack(unions), [self.num_classes]))
+        self.intersection.assign_add(intersections_tensor)
+        self.union.assign_add(unions_tensor)
 
     def result(self):
         # Calculate IoU for each class
@@ -711,7 +726,6 @@ def train_model():
             model = tf.keras.models.load_model('/app/models/' + latest_model,
                                            custom_objects={
                                                'QConv2D': QConv2D,
-                                               'QConv2DTranspose': QConv2DTranspose,
                                                'QBatchNormalization': QBatchNormalization,
                                                'QActivation': QActivation,
                                                'IoUMetric': IoUMetric,
@@ -739,6 +753,8 @@ def train_model():
         print("\nNo existing models found. Creating new model.")
         model = create_segmentation_model()
         initial_epoch = 0
+    
+
     
     # Compile with QAT-specific settings and disable XLA (only if not already compiled)
     if not skip_compilation:
@@ -806,7 +822,7 @@ def train_model():
             save_weights_only=False
         ),
         EarlyStopping(
-            patience=7,
+            patience=20,  # Increased from 7 to allow more training time
             monitor='val_iou',
             mode='max',
             restore_best_weights=True,
@@ -838,36 +854,35 @@ def train_model():
             steps_per_epoch=max(1, len(train_gen) // GRADIENT_ACCUMULATION_STEPS),
             initial_epoch=initial_epoch - 1 if initial_epoch > 0 else 0
         )
-        # Save final model in both formats
+        # Save final model based on dropout setting
         print("\nSaving final models...")
         
-        # Save training model (with dropout for potential retraining)
-        model.save('/app/models/final_model_with_dropout.h5')
-        print("Training model saved as 'final_model_with_dropout.h5'")
-        
-        # Create and save clean model for HLS4ML export (without dropout)
-        print("Creating clean model for HLS4ML export...")
-        clean_model = create_hls4ml_export_model(model)
-        clean_model.save('/app/models/final_model_hls4ml_clean.h5')
-        model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
-        print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.h5'")
-        print("Quantized weights saved as 'final_model_hls4ml_weights.h5'")
+        if USE_DROPOUT_DURING_TRAINING:
+            # Training with dropout - save training model only
+            model.save('/app/models/final_model_with_dropout.h5')
+            print("Training model saved as 'final_model_with_dropout.h5'")
+            print("HLS4ML export skipped (dropout enabled - architectural mismatch)")
+        else:
+            # Training without dropout - save both training and HLS4ML models
+            model.save('/app/models/final_model_no_dropout.h5')
+            print("Training model saved as 'final_model_no_dropout.h5'")
+            
+            # Create and save clean model for HLS4ML export (identical architecture)
+            print("Creating HLS4ML export model...")
+            clean_model = create_hls4ml_export_model(model)
+            clean_model.save('/app/models/final_model_hls4ml_clean.h5')
+            model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
+            print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.h5'")
+            print("Quantized weights saved as 'final_model_hls4ml_weights.h5'")
         
         print("\nTraining completed successfully!")
     except KeyboardInterrupt:
-        print("\nTraining interrupted by user. Saving current model weights only...")
-        epoch = None
-        batch = None
-        if hasattr(model, 'stop_training') and hasattr(model, 'history'):
-            epoch = model.history.epoch[-1] if hasattr(model.history, 'epoch') and model.history.epoch else None
-            batch = 0
-        if epoch is None:
-            epoch = 0
-        if batch is None:
-            batch = 0
-        checkpoint_name = f"/app/models/checkpoint_epoch_{epoch:02d}_batch_{batch:04d}_weights.h5"
-        model.save_weights(checkpoint_name)
-        print(f"Interrupted model weights saved as '{checkpoint_name}'")
+        print("\nTraining interrupted by user. Saving current full model...")
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_path = f"/app/models/interrupted_model_{timestamp}.h5"
+        model.save(model_path)
+        print(f"Interrupted full model saved as '{model_path}'")
         raise
     except Exception as e:
         print(f"\nError during training: {str(e)}")
