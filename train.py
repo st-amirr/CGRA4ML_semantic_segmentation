@@ -718,6 +718,40 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
         except Exception as e:
             print(f"[TrainingLoggerCallback] Could not write to log.txt: {e}")
 
+# Custom IoU Loss for semantic segmentation
+class IoULoss(tf.keras.losses.Loss):
+    def __init__(self, name='iou_loss', smooth=1e-6):
+        super(IoULoss, self).__init__(name=name)
+        self.smooth = smooth
+
+    def call(self, y_true, y_pred):
+        # Flatten the predictions and ground truth
+        y_true = tf.reshape(y_true, [-1, NUM_CLASSES])
+        y_pred = tf.reshape(y_pred, [-1, NUM_CLASSES])
+
+        # Calculate intersection and union
+        intersection = tf.reduce_sum(tf.multiply(y_true, y_pred), axis=0)
+        union = tf.reduce_sum(y_true, axis=0) + tf.reduce_sum(y_pred, axis=0) - intersection + self.smooth
+
+        # Calculate IoU for each class
+        iou = (intersection + self.smooth) / union
+        
+        # Return negative mean IoU as loss (since we want to maximize IoU)
+        return 1.0 - tf.reduce_mean(iou)
+
+# Combo Loss combining IoU and Cross-Entropy
+class ComboLoss(tf.keras.losses.Loss):
+    def __init__(self, alpha=0.5, name='combo_loss'):
+        super(ComboLoss, self).__init__(name=name)
+        self.alpha = alpha  # Weight for IoU Loss (1-alpha will be weight for CE)
+        self.iou_loss = IoULoss()
+        self.ce_loss = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
+
+    def call(self, y_true, y_pred):
+        iou_loss = self.iou_loss(y_true, y_pred)
+        ce_loss = self.ce_loss(y_true, y_pred)
+        return self.alpha * iou_loss + (1 - self.alpha) * ce_loss
+
 # Custom IoU metric for semantic segmentation
 class IoUMetric(tf.keras.metrics.Metric):
     def __init__(self, num_classes=NUM_CLASSES, name='iou', **kwargs):
