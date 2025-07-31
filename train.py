@@ -53,6 +53,16 @@ NUM_WORKERS = 2  # Standard for data loading
 PREFETCH_SIZE = 2  # Standard prefetch for efficiency
 GRADIENT_ACCUMULATION_STEPS = 4  # No gradient accumulation needed with current setup
 
+DEBUG_MODE = False
+# Model architecture configuration
+MODEL_CONFIG = {
+    'init_filters': INPUT_HEIGHT // 32,  # 16
+    'stage1_filters': INPUT_HEIGHT // 16, # 32
+    'stage2_filters': INPUT_HEIGHT // 8,  # 64
+    'stage3_filters': INPUT_HEIGHT // 4,  # 128
+    'stage4_filters': INPUT_HEIGHT // 2,  # 256
+}
+
 # Toggle for dropout usage (True for training, False for HLS4ML export)
 USE_DROPOUT_DURING_TRAINING = False
 
@@ -73,7 +83,7 @@ tf.config.threading.set_intra_op_parallelism_threads(n_cores)
 print(f"Eager execution enabled: {tf.executing_eagerly()}")
 
 # Add TF memory logger
-tf.debugging.set_log_device_placement(False)  # Set to True only for debugging
+tf.debugging.set_log_device_placement(DEBUG_MODE)  # Set to True only for debugging
 
 # Disable layout optimizer to prevent conflicts with QKeras
 tf.config.optimizer.set_experimental_options({
@@ -219,85 +229,101 @@ def create_segmentation_model():
     inputs = tf.keras.Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
     x = inputs
     # Initial conv (use 16 bits) - reduced to 16
-    x = conv_block(x, 16, name='init_conv', use_16bit=True)
-    x = QConv2D(16, kernel_size=3, strides=2, padding='same',
+    x = conv_block(x, MODEL_CONFIG['init_filters'], name='init_conv', use_16bit=True)  # [B, 512, 1024, 16]
+    x = QConv2D(MODEL_CONFIG['init_filters'], kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample1')(x)
+    # [B, 256, 512, 16]
+
     # Stage 1 - reduced to 32
-    x = c2f_block(x, 32, n=1, name='stage1')  # Reduced n from 2 to 1
+    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='stage1')  # Reduced n from 2 to 1  # [B, 256, 512, 32]
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_stage1')(x)
     skip1 = x
-    x = QConv2D(32, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(MODEL_CONFIG['stage1_filters'], kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample2')(x)
+    # [B, 128, 256, 32]
+
     # Stage 2 - reduced to 64
-    x = c2f_block(x, 64, n=1, name='stage2')  # Reduced n from 2 to 1
+    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='stage2')  # Reduced n from 2 to 1  # [B, 128, 256, 64]
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_stage2')(x)
     skip2 = x
-    x = QConv2D(64, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(MODEL_CONFIG['stage2_filters'], kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample3')(x)
+    # [B, 64, 128, 64]
+
     # Stage 3 - reduced to 128
-    x = c2f_block(x, 128, n=1, name='stage3')
+    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='stage3')  # [B, 64, 128, 128]
     x = channel_attention(x, name='ca_stage3')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.3, name='dropout_stage3')(x)
     skip3 = x
-    x = QConv2D(128, kernel_size=3, strides=2, padding='same',
+    x = QConv2D(MODEL_CONFIG['stage3_filters'], kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='downsample4')(x)
+    # [B, 32, 64, 128]
+
     # Stage 4 - reduced to 256
-    x = c2f_block(x, 256, n=1, name='stage4')
+    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=1, name='stage4')  # [B, 32, 64, 256]
     x = channel_attention(x, name='ca_stage4')
-    x = sppf_block(x, 256, name='sppf')
+    x = sppf_block(x, MODEL_CONFIG['stage4_filters'], name='sppf')
+    # [B, 32, 64, 256]
+
+
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.35, name='dropout_stage4')(x)
     # Decoder (upsample and match filter counts)
-    x = c2f_block(x, 256, n=1, name='pre_up1')
+    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=1, name='pre_up1')  # [B, 32, 64, 256]
     # Use regular Conv2DTranspose instead of QConv2DTranspose for compatibility
-    x = tf.keras.layers.Conv2DTranspose(128, kernel_size=2, strides=2, padding='same',
+    x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage3_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up1_transpose')(x)
+    # [B, 64, 128, 128]
+    
     x = tf.keras.layers.Concatenate(name='concat1')([x, skip3])
-    x = conv_block(x, 128, name='up1_conv')
-    x = c2f_block(x, 128, n=1, name='up1_c2f')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='up1_conv')  # [B, 64, 128, 128]
+    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='up1_c2f')
     x = channel_attention(x, name='ca_up1')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_up1')(x)
-    x = c2f_block(x, 128, n=1, name='pre_up2')
-    x = tf.keras.layers.Conv2DTranspose(64, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='pre_up2')  # [B, 64, 128, 128]
+    x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage2_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up2_transpose')(x)
+    # [B, 128, 256, 64]
     x = tf.keras.layers.Concatenate(name='concat2')([x, skip2])
-    x = conv_block(x, 64, name='up2_conv')
-    x = c2f_block(x, 64, n=1, name='up2_c2f')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='up2_conv')  # [B, 128, 256, 64]
+    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='up2_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_up2')(x)
-    x = c2f_block(x, 64, n=1, name='pre_up3')
-    x = tf.keras.layers.Conv2DTranspose(32, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='pre_up3')  # [B, 128, 256, 64]
+    x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage1_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up3_transpose')(x)
+    # [B, 256, 512, 32]
     x = tf.keras.layers.Concatenate(name='concat3')([x, skip1])
-    x = conv_block(x, 32, name='up3_conv')
-    x = c2f_block(x, 32, n=1, name='up3_c2f')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='up3_conv')  # [B, 256, 512, 32]
+    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='up3_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.15, name='dropout_up3')(x)
-    x = c2f_block(x, 32, n=1, name='pre_up4')
-    x = tf.keras.layers.Conv2DTranspose(16, kernel_size=2, strides=2, padding='same',
+    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='pre_up4')  # [B, 256, 512, 32]
+    x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['init_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='up4_transpose')(x)
-    x = conv_block(x, 16, name='up4_conv')
-    x = c2f_block(x, 16, n=1, name='up4_c2f')
+    # [B, 512, 1024, 16]
+    x = conv_block(x, MODEL_CONFIG['init_filters'], name='up4_conv')  # [B, 512, 1024, 16]
+    x = c2f_block(x, MODEL_CONFIG['init_filters'], n=1, name='up4_c2f')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.1, name='dropout_up4')(x)
     # Output layer (use 16 bits)
@@ -307,6 +333,7 @@ def create_segmentation_model():
                      kernel_initializer='glorot_uniform',
                      kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                      name='output')(x)
+    # [B, 512, 1024, NUM_CLASSES]
     outputs = QActivation(quantized_bits(**quantized_bits_param_16), name='output_quant')(outputs)
     outputs = tf.keras.layers.Activation('softmax', name='output_softmax')(outputs)
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
@@ -370,6 +397,17 @@ def create_hls4ml_export_model(trained_model=None):
     
     print("Clean model created for HLS4ML export (no dropout layers)")
     return clean_model
+
+
+
+
+
+
+
+
+
+
+
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
     def __init__(self, image_paths, mask_paths, batch_size, augment=False, preprocessed_prefix=None, subset_ratio=1.0):
@@ -904,12 +942,12 @@ def train_model():
         
         if USE_DROPOUT_DURING_TRAINING:
             # Training with dropout - save training model only
-            model.save(f'/app/models/final_model_with_dropout{file_extension}', save_format=save_format)
+            model.save(f'/app/models/final_model_with_dropout{file_extension}')
             print(f"Training model saved as 'final_model_with_dropout{file_extension}'")
             print("HLS4ML export skipped (dropout enabled - architectural mismatch)")
         else:
             # Training without dropout - save both training and HLS4ML models
-            model.save(f'/app/models/final_model_no_dropout{file_extension}', save_format=save_format)
+            model.save(f'/app/models/final_model_no_dropout{file_extension}')
             print(f"Training model saved as 'final_model_no_dropout{file_extension}'")
             
             # Save HLS4ML compatible .h5 version if enabled
@@ -931,7 +969,7 @@ def train_model():
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         model_path = f"/app/models/interrupted_model_{timestamp}{file_extension}"
-        model.save(model_path, save_format=save_format)
+        model.save(model_path)
         print(f"Interrupted full model saved as '{model_path}'")
         raise
     except Exception as e:
