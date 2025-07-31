@@ -828,14 +828,14 @@ def train_model():
             monitor='val_iou',
             mode='max',
             verbose=1,
-            save_weights_only=False
+            save_weights_only=True
         ),
         # Save model every epoch (standard approach)
         ModelCheckpoint(
             f'/app/models/checkpoint_epoch_{{epoch:02d}}{file_extension}',
             save_freq='epoch',
             verbose=1,
-            save_weights_only=False
+            save_weights_only=True
         ),
         EarlyStopping(
             patience=20,  # Increased from 7 to allow more training time

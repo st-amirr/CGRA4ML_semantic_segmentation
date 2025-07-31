@@ -1,3 +1,5 @@
+*.keras
+**/*.keras
 *.h5
 **/*.h5
 old_models/
@@ -81,3 +83,4 @@ models/interrupted_model_hls4ml.h5
 models/interrupted_model.h5
 models/log.txt
 model.txt
+models/best_model.keras
