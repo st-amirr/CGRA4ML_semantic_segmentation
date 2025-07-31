@@ -807,18 +807,8 @@ def train_model():
     # Remove tf.data.Dataset.from_generator and prefetch
     # Use generators directly in model.fit
 
-    # Remove HLS4ML model saving callback
-    # class HLS4MLModelSaver(tf.keras.callbacks.Callback):
-    #     def on_epoch_end(self, epoch, logs=None):
-    #         if (epoch + 1) % 10 == 0:  # Save every 10 epochs
-    #             # Save quantized weights in HLS4ML compatible format
-    #             model_save_quantized_weights(
-    #                 self.model,
-    #                 f'/app/models/hls4ml_weights_epoch_{epoch+1}.h5'
-    #             )
     
-    # Determine save format based on HLS4ML compatibility setting
-    save_format = 'h5' if SAVE_HLS4ML_COMPATIBLE else 'keras'
+    # Determine file extension based on HLS4ML compatibility setting
     file_extension = '.h5' if SAVE_HLS4ML_COMPATIBLE else '.keras'
     
     callbacks = [
@@ -838,7 +828,7 @@ def train_model():
             save_weights_only=True
         ),
         EarlyStopping(
-            patience=20,  # Increased from 7 to allow more training time
+            patience=40,  # Increased from 7 to allow more training time
             monitor='val_iou',
             mode='max',
             restore_best_weights=True,
@@ -895,7 +885,7 @@ def train_model():
             print("Creating HLS4ML export model...")
             clean_model = create_hls4ml_export_model(model)
             clean_model.save('/app/models/final_model_hls4ml_clean.h5', save_format='h5')
-            model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
+            # model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
             print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.h5'")
             print("Quantized weights saved as 'final_model_hls4ml_weights.h5'")
         
