@@ -141,11 +141,11 @@ quantized_relu_param_16 = {
     'use_stochastic_rounding': True
 }
 
-def conv_block(x, filters, kernel_size=3, strides=1, name=None, use_16bit=False):
-    """FPGA-optimized convolution block with QAT"""
+def conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, name=None, use_16bit=False):
+    """FPGA-optimized convolution block with QAT and optional dilation"""
     qbits = quantized_bits_param_16 if use_16bit else quantized_bits_param_8
     qrelu = quantized_relu_param_16 if use_16bit else quantized_relu_param_8
-    x = QConv2D(filters, kernel_size, strides=strides, padding='same',
+    x = QConv2D(filters, kernel_size, strides=strides, dilation_rate=dilation_rate, padding='same',
                 kernel_quantizer=quantized_bits(**qbits),
                 bias_quantizer=quantized_bits(**qbits),
                 kernel_initializer='glorot_uniform',
@@ -163,10 +163,10 @@ def conv_block(x, filters, kernel_size=3, strides=1, name=None, use_16bit=False)
     x = QActivation(quantized_relu(**qrelu), name=f'{name}_act')(x)
     return x
 
-def c2f_block(x, filters, n=1, name=None):
-    """YOLOv8 C2f block with quantization optimized for VCK5000"""
-    # First conv
-    x = conv_block(x, filters, name=f'{name}_conv1')
+def c2f_block(x, filters, n=1, name=None, dilation_rate=1, dilation_bottleneck=1):
+    """YOLOv8 C2f block with quantization optimized for VCK5000 and optional dilation"""
+    # First conv with dilation - for expanded receptive field in initial processing
+    x = conv_block(x, filters, dilation_rate=dilation_rate, name=f'{name}_conv1')
     
     # Split
     y = x
@@ -175,7 +175,7 @@ def c2f_block(x, filters, n=1, name=None):
     for i in range(n):
         # Use 1x1 conv for channel reduction
         y = conv_block(y, filters//2, kernel_size=1, name=f'{name}_bottleneck{i}_conv1')
-        y = conv_block(y, filters, kernel_size=3, name=f'{name}_bottleneck{i}_conv2')
+        y = conv_block(y, filters, kernel_size=3, dilation_rate=dilation_bottleneck, name=f'{name}_bottleneck{i}_conv2')
         x = tf.keras.layers.Concatenate(name=f'{name}_concat{i}')([x, y])
     
     return x
@@ -256,10 +256,11 @@ def create_segmentation_model():
     # Uses C2f block for feature extraction and channel attention
     # Resolution: [256x512] -> [128x256] after downsampling
     # Channels: 16 -> 32
-    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='encoder1')  # Reduced n from 2 to 1  # [B, 256, 512, 32]
+    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='encoder1')  # No dilation in early layers
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_encoder1')(x)
     skip1 = x
+
     x = QConv2D(MODEL_CONFIG['stage1_filters'], kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
@@ -272,10 +273,11 @@ def create_segmentation_model():
     # Includes skip connection and dropout for regularization
     # Resolution: [128x256] -> [64x128] after downsampling
     # Channels: 32 -> 64
-    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='encoder2')  # Reduced n from 2 to 1  # [B, 128, 256, 64]
+    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='encoder2', dilation_rate=2, dilation_bottleneck=1)  # Start moderate dilation in mid-stage
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_encoder2')(x)
     skip2 = x
+
     x = QConv2D(MODEL_CONFIG['stage2_filters'], kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
@@ -288,7 +290,7 @@ def create_segmentation_model():
     # Last encoder block before bridge, creates deep feature representation
     # Resolution: [64x128] -> [32x64] after downsampling
     # Channels: 64 -> 128
-    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='encoder3')  # [B, 64, 128, 128]
+    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='encoder3', dilation_rate=3, dilation_bottleneck=1)  # Strong dilation for deep features
     x = channel_attention(x, name='ca_encoder3')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.3, name='dropout_encoder3')(x)
@@ -305,7 +307,7 @@ def create_segmentation_model():
     # Includes SPPF for multi-scale feature extraction and channel attention
     # Resolution maintained: [32x64] -> [32x64]
     # Channels: 128 -> 256 (maximum channel depth)
-    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=1, name='bridge')  # [B, 32, 64, 256]
+    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=1, name='bridge', dilation_rate=4, dilation_bottleneck=2)  # Maximum dilation at bridge for widest context
     x = channel_attention(x, name='ca_bridge')
     x = sppf_block(x, MODEL_CONFIG['stage4_filters'], name='bridge_sppf')
     # [B, 32, 64, 256]
