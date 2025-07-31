@@ -360,13 +360,18 @@ def create_segmentation_model():
                                        name='decoder3_upsample')(x)
     # [B, 64, 128, 128]
     
-    # Pre-process skip connection to match feature complexity
+    # Pre-process skip connection with boundary enhancement
+    skip3_enhance = conv_block(skip3, MODEL_CONFIG['stage3_filters']//2, kernel_size=3, name='skip3_boundary')
     skip3 = conv_block(skip3, MODEL_CONFIG['stage3_filters'], kernel_size=1, name='skip3_adjust')
+    skip3 = tf.keras.layers.Add(name='skip3_fusion')([skip3, skip3_enhance])
+    
     x = tf.keras.layers.Concatenate(name='decoder3_concat')([x, skip3])
-    # Triple conv for better feature refinement at deep levels
+    # Efficient triple conv with residual for deep feature refinement
+    x_identity = x
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv1')
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv2')
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv3')
+    x = tf.keras.layers.Add(name='decoder3_residual')([x, x_identity])
     x = channel_attention(x, name='decoder3_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_decoder3')(x)
@@ -417,7 +422,16 @@ def create_segmentation_model():
     x = conv_block(x, MODEL_CONFIG['init_filters'], name='decoder0_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.1, name='dropout_decoder0')(x)
-    # Output layer (use 16 bits)
+    # Enhanced output layers with boundary refinement (use 16 bits)
+    # Boundary-aware feature enhancement
+    x_boundary = conv_block(x, MODEL_CONFIG['init_filters'], kernel_size=3, name='boundary_enhance1')
+    x_boundary = conv_block(x_boundary, MODEL_CONFIG['init_filters'], kernel_size=3, name='boundary_enhance2')
+    
+    # Merge boundary features
+    x = tf.keras.layers.Concatenate(name='final_fusion')([x, x_boundary])
+    x = conv_block(x, MODEL_CONFIG['init_filters'], kernel_size=1, name='final_reduce')
+    
+    # Output layer with high precision
     outputs = QConv2D(NUM_CLASSES, (1, 1),
                      kernel_quantizer=quantized_bits(**quantized_bits_param_16),
                      bias_quantizer=quantized_bits(**quantized_bits_param_16),
