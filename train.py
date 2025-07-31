@@ -361,14 +361,14 @@ def create_segmentation_model():
     # [B, 64, 128, 128]
     
     # Pre-process skip connection with boundary enhancement
-    skip3_enhance = conv_block(skip3, MODEL_CONFIG['stage3_filters']//2, kernel_size=3, name='skip3_boundary')
+    skip3_enhance = conv_block(skip3, MODEL_CONFIG['stage3_filters'], kernel_size=3, name='skip3_boundary')  # Keep same number of filters
     skip3 = conv_block(skip3, MODEL_CONFIG['stage3_filters'], kernel_size=1, name='skip3_adjust')
     skip3 = tf.keras.layers.Add(name='skip3_fusion')([skip3, skip3_enhance])
     
     x = tf.keras.layers.Concatenate(name='decoder3_concat')([x, skip3])
     # Efficient triple conv with residual for deep feature refinement
-    x_identity = x
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv1')
+    x_identity = x  # Store identity after first conv to match channel dimensions
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv2')
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv3')
     x = tf.keras.layers.Add(name='decoder3_residual')([x, x_identity])
