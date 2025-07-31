@@ -44,11 +44,11 @@ import math
 # Define constants
 INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
 INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
-BATCH_SIZE = 4  # Reduced to 1 for memory constraints
+BATCH_SIZE = 2  # Reduced to 1 for memory constraints
 EPOCHS = 100
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
-SUBSET_RATIO = 0.7  # Use 20% of dataset per epoch
+SUBSET_RATIO = 1.0  # Use 20% of dataset per epoch
 NUM_WORKERS = 2  # Standard for data loading
 PREFETCH_SIZE = 2  # Standard prefetch for efficiency
 GRADIENT_ACCUMULATION_STEPS = 4  # No gradient accumulation needed with current setup
@@ -57,7 +57,7 @@ GRADIENT_ACCUMULATION_STEPS = 4  # No gradient accumulation needed with current 
 USE_DROPOUT_DURING_TRAINING = False
 
 # Toggle for HLS4ML compatible .h5 format on final save
-SAVE_HLS4ML_COMPATIBLE = True
+SAVE_HLS4ML_COMPATIBLE = False
 
 
 
@@ -674,6 +674,10 @@ np.random.seed(42)
 
 
 def train_model():
+    # Configure TensorFlow for optimal device placement BEFORE model creation
+    # This will automatically place operations on the most suitable device
+    tf.config.set_soft_device_placement(True)
+    
     # Configure GPU to use more VRAM
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
@@ -691,9 +695,7 @@ def train_model():
         except RuntimeError as e:
             print(f"GPU memory growth setup failed: {e}")
     
-    # Configure TensorFlow for optimal device placement BEFORE model creation
-    # This will automatically place operations on the most suitable device
-    tf.config.set_soft_device_placement(True)
+
     
     print("✅ Automatic CPU/GPU device placement enabled (hybrid mode)")
     print("✅ Device placement logging enabled - check output for CPU/GPU usage")
