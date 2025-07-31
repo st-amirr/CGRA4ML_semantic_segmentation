@@ -389,7 +389,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 ),
                 
                 # Basic noise (updated for newer albumentations)
-                A.GaussNoise(var_limit=(5.0, 25.0), p=0.2),
+                A.GaussNoise(var_limit=(5.0, 25.0), mean=0, p=0.2),
                 
                 # Basic cutout (updated for newer albumentations)
                 A.CoarseDropout(
@@ -399,6 +399,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     min_holes=1,
                     min_height=8,
                     min_width=8,
+                    fill_value=0,
                     p=0.15
                 ),
             ])
@@ -827,16 +828,14 @@ def train_model():
             monitor='val_iou',
             mode='max',
             verbose=1,
-            save_weights_only=False,
-            save_format=save_format
+            save_weights_only=False
         ),
         # Save model every epoch (standard approach)
         ModelCheckpoint(
             f'/app/models/checkpoint_epoch_{{epoch:02d}}{file_extension}',
             save_freq='epoch',
             verbose=1,
-            save_weights_only=False,
-            save_format=save_format
+            save_weights_only=False
         ),
         EarlyStopping(
             patience=20,  # Increased from 7 to allow more training time
