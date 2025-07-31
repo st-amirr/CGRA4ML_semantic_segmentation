@@ -523,13 +523,35 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
                     f.write('')
             except Exception as e:
                 print(f"[TrainingLoggerCallback] Could not create log.txt: {e}")
+        self.epoch_start_time = None
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
+        # Use self.epoch_start_time if available, else fallback to previous epoch duration
+        if self.epoch_start_time is None:
+            self.epoch_start_time = time.time()
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - self.epoch_start_time
+        self.epoch_start_time = epoch_end_time  # Prepare for next epoch
         lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
-        log_line = f"Epoch {epoch+1}: "
-        log_line += ", ".join([f"{k}={v:.5f}" for k, v in logs.items() if isinstance(v, (float, int))])
-        log_line += f" - lr: {lr:.6f}\n"
+        # Format metrics for log
+        loss = logs.get('loss', None)
+        iou = logs.get('iou', None)
+        val_loss = logs.get('val_loss', None)
+        val_iou = logs.get('val_iou', None)
+        # Format time as seconds
+        time_str = f"{int(epoch_duration)}s"
+        # Compose log line similar to terminal output
+        log_line = f"{time_str} 1s/step - "
+        if loss is not None:
+            log_line += f"loss: {loss:.4f} - "
+        if iou is not None:
+            log_line += f"iou: {iou:.4f} - "
+        if val_loss is not None:
+            log_line += f"val_loss: {val_loss:.4f} - "
+        if val_iou is not None:
+            log_line += f"val_iou: {val_iou:.4f} - "
+        log_line += f"lr: {lr:.6e}\n"
         # Use the same file extension logic as the main training code
         file_extension = '.h5' if SAVE_HLS4ML_COMPATIBLE else '.keras'
         log_line += f"Epoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}{file_extension}\n"
@@ -771,7 +793,7 @@ def train_model():
     # Compile with QAT-specific settings and disable XLA (only if not already compiled)
     if not skip_compilation:
         optimizer = tf.keras.optimizers.Adam(
-            learning_rate=5e-5,  # Reduced from 1e-4 for better stability
+            learning_rate=2e-4,  # Reduced from 1e-4 for better stability
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-07,
@@ -838,7 +860,7 @@ def train_model():
             monitor='val_iou',
             mode='max',
             factor=0.7,  # Reduce LR by 30% when plateauing
-            patience=3,   # Wait 3 epochs before reducing
+            patience=10,   # Wait 3 epochs before reducing
             min_lr=1e-7,  # Minimum LR
             verbose=1,
             restore_best_weights=False
