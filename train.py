@@ -529,7 +529,9 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
         log_line = f"Epoch {epoch+1}: "
         log_line += ", ".join([f"{k}={v:.5f}" for k, v in logs.items() if isinstance(v, (float, int))])
         log_line += f" - lr: {lr:.6f}\n"
-        log_line += f"Epoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}.h5\n"
+        # Use the same file extension logic as the main training code
+        file_extension = '.h5' if SAVE_HLS4ML_COMPATIBLE else '.keras'
+        log_line += f"Epoch {epoch+1}: saving model to /app/models/checkpoint_epoch_{epoch+1:02d}{file_extension}\n"
         try:
             with open(self.log_file, 'a') as f:
                 f.write(log_line)
@@ -814,23 +816,27 @@ def train_model():
     #                 f'/app/models/hls4ml_weights_epoch_{epoch+1}.h5'
     #             )
     
+    # Determine save format based on HLS4ML compatibility setting
+    save_format = 'h5' if SAVE_HLS4ML_COMPATIBLE else 'keras'
+    file_extension = '.h5' if SAVE_HLS4ML_COMPATIBLE else '.keras'
+    
     callbacks = [
         ModelCheckpoint(
-            '/app/models/best_model.h5',
+            f'/app/models/best_model{file_extension}',
             save_best_only=True,
             monitor='val_iou',
             mode='max',
             verbose=1,
             save_weights_only=False,
-            save_format='h5'
+            save_format=save_format
         ),
         # Save model every epoch (standard approach)
         ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}.h5',
+            f'/app/models/checkpoint_epoch_{{epoch:02d}}{file_extension}',
             save_freq='epoch',
             verbose=1,
             save_weights_only=False,
-            save_format='h5'
+            save_format=save_format
         ),
         EarlyStopping(
             patience=20,  # Increased from 7 to allow more training time
@@ -873,13 +879,13 @@ def train_model():
         
         if USE_DROPOUT_DURING_TRAINING:
             # Training with dropout - save training model only
-            model.save('/app/models/final_model_with_dropout.h5', save_format='h5')
-            print("Training model saved as 'final_model_with_dropout.h5'")
+            model.save(f'/app/models/final_model_with_dropout{file_extension}', save_format=save_format)
+            print(f"Training model saved as 'final_model_with_dropout{file_extension}'")
             print("HLS4ML export skipped (dropout enabled - architectural mismatch)")
         else:
             # Training without dropout - save both training and HLS4ML models
-            model.save('/app/models/final_model_no_dropout.h5', save_format='h5')
-            print("Training model saved as 'final_model_no_dropout.h5'")
+            model.save(f'/app/models/final_model_no_dropout{file_extension}', save_format=save_format)
+            print(f"Training model saved as 'final_model_no_dropout{file_extension}'")
             
             # Save HLS4ML compatible .h5 version if enabled
             if SAVE_HLS4ML_COMPATIBLE:
@@ -899,8 +905,8 @@ def train_model():
         print("\nTraining interrupted by user. Saving current full model...")
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_path = f"/app/models/interrupted_model_{timestamp}.h5"
-        model.save(model_path, save_format='h5')
+        model_path = f"/app/models/interrupted_model_{timestamp}{file_extension}"
+        model.save(model_path, save_format=save_format)
         print(f"Interrupted full model saved as '{model_path}'")
         raise
     except Exception as e:
