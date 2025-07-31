@@ -300,30 +300,12 @@ def create_segmentation_model():
                 name='encoder3_downsample')(x)
     # [B, 32, 64, 128]
 
-    ############ ---- Bridge Block - Network bottleneck with Dilated Convolutions ---- ############
+    ############ ---- Bridge Block - Network bottleneck ---- ############
     # Connects encoder and decoder paths with maximal feature channels
-    # Uses dilated convolutions to increase receptive field without losing resolution
+    # Includes SPPF for multi-scale feature extraction and channel attention
     # Resolution maintained: [32x64] -> [32x64]
     # Channels: 128 -> 256 (maximum channel depth)
     x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=1, name='bridge')  # [B, 32, 64, 256]
-    
-    # Multi-scale context using dilated convolutions
-    dilated_features = []
-    dilation_rates = [2, 4, 8]  # Multiple dilation rates for different scales
-    for i, rate in enumerate(dilation_rates):
-        dilated = QConv2D(MODEL_CONFIG['stage4_filters'], 3, dilation_rate=rate, padding='same',
-                         kernel_quantizer=quantized_bits(**quantized_bits_param_8),
-                         bias_quantizer=quantized_bits(**quantized_bits_param_8),
-                         kernel_initializer='glorot_uniform',
-                         kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                         name=f'bridge_dilated_{rate}')(x)
-        dilated = QBatchNormalization(name=f'bridge_dilated_{rate}_bn')(dilated)
-        dilated = QActivation(quantized_relu(**quantized_relu_param_8), name=f'bridge_dilated_{rate}_act')(dilated)
-        dilated_features.append(dilated)
-    
-    # Combine dilated features
-    x = tf.keras.layers.Concatenate(name='bridge_dilated_concat')([x] + dilated_features)
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], name='bridge_combine')
     x = channel_attention(x, name='ca_bridge')
     x = sppf_block(x, MODEL_CONFIG['stage4_filters'], name='bridge_sppf')
     # [B, 32, 64, 256]
