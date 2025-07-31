@@ -173,12 +173,26 @@ def c2f_block(x, filters, n=1, name=None):
 # Add SPPF module for better multi-scale feature extraction
 def sppf_block(x, channels, name):
     """Spatial Pyramid Pooling - Fast (SPPF) with quantization"""
-    y1 = MaxPooling2D(pool_size=(5, 5), strides=1, padding='same', name=f'{name}_pool5')(x)
-    y2 = MaxPooling2D(pool_size=(5, 5), strides=1, padding='same', name=f'{name}_pool5_2')(y1)
-    y3 = MaxPooling2D(pool_size=(5, 5), strides=1, padding='same', name=f'{name}_pool5_3')(y2)
-    
+    # Replace MaxPooling2D with strided QConv2D for hardware efficiency
+    y1 = QConv2D(x.shape[-1], kernel_size=5, strides=1, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_initializer='glorot_uniform',
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                name=f'{name}_pool5_conv')(x)
+    y2 = QConv2D(x.shape[-1], kernel_size=5, strides=1, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_initializer='glorot_uniform',
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                name=f'{name}_pool5_2_conv')(y1)
+    y3 = QConv2D(x.shape[-1], kernel_size=5, strides=1, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_initializer='glorot_uniform',
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                name=f'{name}_pool5_3_conv')(y2)
     concat = tf.keras.layers.Concatenate(name=f'{name}_concat')([x, y1, y2, y3])
-    
     return conv_block(concat, channels, kernel_size=1, name=f'{name}_conv')
 
 # Efficient Channel Attention Module
