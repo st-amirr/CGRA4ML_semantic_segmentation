@@ -251,7 +251,7 @@ def create_segmentation_model():
                 name='downsample1')(x)
     # [B, 256, 512, 16]
 
-    ############ ---- Encoder Block 1 - First encoding stage ---- ############
+   ############ ---- Encoder Block 1 - First encoding stage ---- ############
     # Doubles the number of channels and includes skip connection for later decoding
     # Uses C2f block for feature extraction and channel attention
     # Resolution: [256x512] -> [128x256] after downsampling
