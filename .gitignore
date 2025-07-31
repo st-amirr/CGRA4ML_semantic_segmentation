@@ -84,3 +84,4 @@ models/interrupted_model.h5
 models/log.txt
 model.txt
 models/best_model.keras
+small hybrid/log.txt

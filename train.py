@@ -171,38 +171,65 @@ def c2f_block(x, filters, n=1, name=None, dilation_rate=1, dilation_bottleneck=1
     # Split
     y = x
     
-    # Bottleneck blocks - optimized for VCK5000
+    # Optimized bottleneck blocks - single 3x3 conv with reduced channels
     for i in range(n):
-        # Use 1x1 conv for channel reduction
-        y = conv_block(y, filters//2, kernel_size=1, name=f'{name}_bottleneck{i}_conv1')
-        y = conv_block(y, filters, kernel_size=3, dilation_rate=dilation_bottleneck, name=f'{name}_bottleneck{i}_conv2')
+        # Direct 3x3 conv with reduced channels and dilation
+        y = conv_block(y, filters//2, kernel_size=3, dilation_rate=dilation_bottleneck, name=f'{name}_bottleneck{i}')
         x = tf.keras.layers.Concatenate(name=f'{name}_concat{i}')([x, y])
     
     return x
 
 # Add SPPF module for better multi-scale feature extraction
 def sppf_block(x, channels, name):
-    """Spatial Pyramid Pooling - Fast (SPPF) with quantization"""
-    # Replace MaxPooling2D with strided QConv2D for hardware efficiency
-    y1 = QConv2D(x.shape[-1], kernel_size=5, strides=1, padding='same',
+    """Enhanced Spatial Pyramid Pooling - Fast (SPPF) with boundary refinement and multi-scale fusion"""
+    # Branch 1: Fine details with residual boundary enhancement
+    y1_detail = QConv2D(channels//4, kernel_size=3, strides=1, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_initializer='glorot_uniform',
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                name=f'{name}_pool5_conv')(x)
-    y2 = QConv2D(x.shape[-1], kernel_size=5, strides=1, padding='same',
+                name=f'{name}_detail_conv1')(x)
+    y1_refine = QConv2D(channels//4, kernel_size=3, strides=1, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_initializer='glorot_uniform',
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                name=f'{name}_pool5_2_conv')(y1)
-    y3 = QConv2D(x.shape[-1], kernel_size=5, strides=1, padding='same',
+                name=f'{name}_detail_conv2')(y1_detail)
+    y1 = tf.keras.layers.Add(name=f'{name}_detail_residual')([y1_detail, y1_refine])
+    
+    # Branch 2: Multi-scale spatial pyramid with efficient dilation
+    y2_d1 = QConv2D(channels//4, kernel_size=3, strides=1, dilation_rate=1, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
                 kernel_initializer='glorot_uniform',
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                name=f'{name}_pool5_3_conv')(y2)
-    concat = tf.keras.layers.Concatenate(name=f'{name}_concat')([x, y1, y2, y3])
+                name=f'{name}_pyramid_d1')(x)
+    y2_d2 = QConv2D(channels//4, kernel_size=3, strides=1, dilation_rate=2, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_initializer='glorot_uniform',
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                name=f'{name}_pyramid_d2')(x)
+    y2_d4 = QConv2D(channels//4, kernel_size=3, strides=1, dilation_rate=4, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_initializer='glorot_uniform',
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                name=f'{name}_pyramid_d4')(x)
+    
+    # Branch 3: Global context with efficient pooling
+    y3_pool = tf.keras.layers.GlobalAveragePooling2D(keepdims=True, name=f'{name}_global_pool')(x)
+    y3 = QConv2D(channels//4, kernel_size=1, strides=1, padding='same',
+                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
+                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_initializer='glorot_uniform',
+                kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                name=f'{name}_global_conv')(y3_pool)
+    # Broadcast global features
+    y3 = tf.keras.layers.UpSampling2D(size=(x.shape[1], x.shape[2]), interpolation='nearest', name=f'{name}_broadcast')(y3)
+    
+    # Progressive feature fusion with parallel paths
+    concat = tf.keras.layers.Concatenate(name=f'{name}_concat')([x, y1, y2_d1, y2_d2, y2_d4, y3])
     return conv_block(concat, channels, kernel_size=1, name=f'{name}_conv')
 
 # Efficient Channel Attention Module
@@ -210,11 +237,8 @@ def channel_attention(x, ratio=16, name=''):
     """Lightweight Squeeze-and-Excitation block with quantization"""
     channels = x.shape[-1]
     
-    # Global average pooling
-    y = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_gap')(x)
-    y = tf.keras.layers.Reshape((1, 1, channels), name=f'{name}_reshape')(y)
-    
-    # Single conv for efficiency
+    # Combined pooling and attention
+    y = tf.keras.layers.GlobalAveragePooling2D(keepdims=True, name=f'{name}_gap')(x)
     y = QConv2D(channels, 1,
                 kernel_quantizer=quantized_bits(**quantized_bits_param),
                 bias_quantizer=quantized_bits(**quantized_bits_param),
@@ -256,9 +280,13 @@ def create_segmentation_model():
     # Uses regular convolution for early layers where complex feature extraction isn't critical
     # Resolution: [256x512] -> [128x256] after downsampling
     # Channels: 16 -> 32
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='encoder1')  # Simple conv for early features
+    # Use double conv for better initial feature extraction
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='encoder1_1')
+    
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='encoder1_2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_encoder1')(x)
+    
     skip1 = x
 
     x = QConv2D(MODEL_CONFIG['stage1_filters'], kernel_size=3, strides=2, padding='same',
@@ -274,8 +302,10 @@ def create_segmentation_model():
     # Resolution: [128x256] -> [64x128] after downsampling
     # Channels: 32 -> 64
     x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=2, name='encoder2', dilation_rate=2, dilation_bottleneck=1)  # Enhanced feature extraction with n=2
+    
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_encoder2')(x)
+
     skip2 = x
 
     x = QConv2D(MODEL_CONFIG['stage2_filters'], kernel_size=3, strides=2, padding='same',
@@ -292,9 +322,12 @@ def create_segmentation_model():
     # Channels: 64 -> 128
     x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='encoder3', dilation_rate=2, dilation_bottleneck=1)  # Moderate dilation for deep features
     x = channel_attention(x, name='ca_encoder3')
+
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.3, name='dropout_encoder3')(x)
+
     skip3 = x
+
     x = QConv2D(MODEL_CONFIG['stage3_filters'], kernel_size=3, strides=2, padding='same',
                 kernel_quantizer=quantized_bits(**quantized_bits_param_8),
                 bias_quantizer=quantized_bits(**quantized_bits_param_8),
@@ -304,12 +337,12 @@ def create_segmentation_model():
 
     ############ ---- Bridge Block - Network bottleneck ---- ############
     # Connects encoder and decoder paths with maximal feature channels
-    # Includes SPPF for multi-scale feature extraction and channel attention
+    # Uses C2F block for rich feature extraction followed by multi-scale context
     # Resolution maintained: [32x64] -> [32x64]
     # Channels: 128 -> 256 (maximum channel depth)
-    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=2, name='bridge', dilation_rate=3, dilation_bottleneck=2)  # Enhanced feature extraction at bridge
+    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=3, name='bridge', dilation_rate=2, dilation_bottleneck=1)  # Maximum feature extraction at bridge
     x = channel_attention(x, name='ca_bridge')
-    x = sppf_block(x, MODEL_CONFIG['stage4_filters'], name='bridge_sppf')
+    x = sppf_block(x, MODEL_CONFIG['stage4_filters'], name='bridge_sppf')  # Multi-scale context
     # [B, 32, 64, 256]
 
 
@@ -319,16 +352,21 @@ def create_segmentation_model():
     ############ ---- Decoder Block 3 (deepest level) ---- upsampling from 256 to 128 channels ############
     # Processes the features from bridge and combines with encoder3 skip connection
     # Resolution: [32x64] -> [64x128]
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], name='decoder3_prep')  # [B, 32, 64, 256]
+    # Pre-processing of bridge features
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], kernel_size=1, name='decoder3_prep')  # [B, 32, 64, 256]
     # Use regular Conv2DTranspose instead of QConv2DTranspose for compatibility
     x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage3_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='decoder3_upsample')(x)
     # [B, 64, 128, 128]
     
+    # Pre-process skip connection to match feature complexity
+    skip3 = conv_block(skip3, MODEL_CONFIG['stage3_filters'], kernel_size=1, name='skip3_adjust')
     x = tf.keras.layers.Concatenate(name='decoder3_concat')([x, skip3])
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv')  # [B, 64, 128, 128]
+    # Triple conv for better feature refinement at deep levels
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv1')
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv3')
     x = channel_attention(x, name='decoder3_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_decoder3')(x)
@@ -336,27 +374,33 @@ def create_segmentation_model():
     ############ ---- Decoder Block 2 - upsampling from 128 to 64 channels ############
     # Processes the features from decoder3 and combines with encoder2 skip connection
     # Resolution: [64x128] -> [128x256]
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder2_prep')  # [B, 64, 128, 128]
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], kernel_size=1, name='decoder2_prep')  # [B, 64, 128, 128]
     x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage2_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='decoder2_upsample')(x)
     # [B, 128, 256, 64]
+    # Pre-process skip connection to match feature complexity
+    skip2 = conv_block(skip2, MODEL_CONFIG['stage2_filters'], kernel_size=1, name='skip2_adjust')
     x = tf.keras.layers.Concatenate(name='decoder2_concat')([x, skip2])
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder2_conv')  # [B, 128, 256, 64]
+    # Triple conv at mid-level decoder for better feature refinement
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder2_conv1')  # [B, 128, 256, 64]
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder2_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder2_conv3')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_decoder2')(x)
 
     ############ ---- Decoder Block 1 - upsampling from 64 to 32 channels ############
     # Processes the features from decoder2 and combines with encoder1 skip connection
     # Resolution: [128x256] -> [256x512]
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder1_prep')  # [B, 128, 256, 64]
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], kernel_size=1, name='decoder1_prep')  # [B, 128, 256, 64]
     x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage1_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='decoder1_upsample')(x)
     # [B, 256, 512, 32]
+    # Pre-process skip connection
+    skip1 = conv_block(skip1, MODEL_CONFIG['stage1_filters'], kernel_size=1, name='skip1_adjust')
     x = tf.keras.layers.Concatenate(name='decoder1_concat')([x, skip1])
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='decoder1_conv')  # [B, 256, 512, 32]
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='decoder1_conv1')  # [B, 256, 512, 32]
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='decoder1_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.15, name='dropout_decoder1')(x)
