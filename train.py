@@ -44,7 +44,7 @@ import math
 # Define constants
 INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
 INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
-BATCH_SIZE = 2  # Reduced to 1 for memory constraints
+BATCH_SIZE = 4  # Reduced to 1 for memory constraints
 EPOCHS = 100
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
