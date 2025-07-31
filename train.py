@@ -45,7 +45,7 @@ import math
 INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
 INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
 BATCH_SIZE = 2  # Reduced to 1 for memory constraints
-EPOCHS = 100
+EPOCHS = 200
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
 SUBSET_RATIO = 1.0  # Use 20% of dataset per epoch
@@ -816,19 +816,21 @@ def train_model():
     
     callbacks = [
         ModelCheckpoint(
-            '/app/models/best_model.keras',
+            '/app/models/best_model.h5',
             save_best_only=True,
             monitor='val_iou',
             mode='max',
             verbose=1,
-            save_weights_only=False
+            save_weights_only=False,
+            save_format='h5'
         ),
         # Save model every epoch (standard approach)
         ModelCheckpoint(
-            '/app/models/checkpoint_epoch_{epoch:02d}.keras',
+            '/app/models/checkpoint_epoch_{epoch:02d}.h5',
             save_freq='epoch',
             verbose=1,
-            save_weights_only=False
+            save_weights_only=False,
+            save_format='h5'
         ),
         EarlyStopping(
             patience=20,  # Increased from 7 to allow more training time
@@ -871,13 +873,13 @@ def train_model():
         
         if USE_DROPOUT_DURING_TRAINING:
             # Training with dropout - save training model only
-            model.save('/app/models/final_model_with_dropout.keras')
-            print("Training model saved as 'final_model_with_dropout.keras'")
+            model.save('/app/models/final_model_with_dropout.h5', save_format='h5')
+            print("Training model saved as 'final_model_with_dropout.h5'")
             print("HLS4ML export skipped (dropout enabled - architectural mismatch)")
         else:
             # Training without dropout - save both training and HLS4ML models
-            model.save('/app/models/final_model_no_dropout.keras')
-            print("Training model saved as 'final_model_no_dropout.keras'")
+            model.save('/app/models/final_model_no_dropout.h5', save_format='h5')
+            print("Training model saved as 'final_model_no_dropout.h5'")
             
             # Save HLS4ML compatible .h5 version if enabled
             if SAVE_HLS4ML_COMPATIBLE:
@@ -887,9 +889,9 @@ def train_model():
             # Create and save clean model for HLS4ML export (identical architecture)
             print("Creating HLS4ML export model...")
             clean_model = create_hls4ml_export_model(model)
-            clean_model.save('/app/models/final_model_hls4ml_clean.keras')
+            clean_model.save('/app/models/final_model_hls4ml_clean.h5', save_format='h5')
             model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
-            print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.keras'")
+            print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.h5'")
             print("Quantized weights saved as 'final_model_hls4ml_weights.h5'")
         
         print("\nTraining completed successfully!")
@@ -898,7 +900,7 @@ def train_model():
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         model_path = f"/app/models/interrupted_model_{timestamp}.h5"
-        model.save(model_path)
+        model.save(model_path, save_format='h5')
         print(f"Interrupted full model saved as '{model_path}'")
         raise
     except Exception as e:
