@@ -253,10 +253,10 @@ def create_segmentation_model():
 
     ############ ---- Encoder Block 1 - First encoding stage ---- ############
     # Doubles the number of channels and includes skip connection for later decoding
-    # Uses C2f block for feature extraction and channel attention
+    # Uses regular convolution for early layers where complex feature extraction isn't critical
     # Resolution: [256x512] -> [128x256] after downsampling
     # Channels: 16 -> 32
-    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='encoder1')  # No dilation in early layers
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='encoder1')  # Simple conv for early features
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_encoder1')(x)
     skip1 = x
@@ -270,10 +270,10 @@ def create_segmentation_model():
 
     ############ ---- Encoder Block 2 - Second encoding stage ---- ############
     # Further doubles the feature channels for richer representation
-    # Includes skip connection and dropout for regularization
+    # Uses C2F block with n=2 as this is a critical feature extraction stage
     # Resolution: [128x256] -> [64x128] after downsampling
     # Channels: 32 -> 64
-    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='encoder2', dilation_rate=2, dilation_bottleneck=1)  # Start moderate dilation in mid-stage
+    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=2, name='encoder2', dilation_rate=2, dilation_bottleneck=1)  # Enhanced feature extraction with n=2
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_encoder2')(x)
     skip2 = x
@@ -290,7 +290,7 @@ def create_segmentation_model():
     # Last encoder block before bridge, creates deep feature representation
     # Resolution: [64x128] -> [32x64] after downsampling
     # Channels: 64 -> 128
-    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='encoder3', dilation_rate=3, dilation_bottleneck=1)  # Strong dilation for deep features
+    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='encoder3', dilation_rate=2, dilation_bottleneck=1)  # Moderate dilation for deep features
     x = channel_attention(x, name='ca_encoder3')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.3, name='dropout_encoder3')(x)
@@ -307,7 +307,7 @@ def create_segmentation_model():
     # Includes SPPF for multi-scale feature extraction and channel attention
     # Resolution maintained: [32x64] -> [32x64]
     # Channels: 128 -> 256 (maximum channel depth)
-    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=1, name='bridge', dilation_rate=4, dilation_bottleneck=2)  # Maximum dilation at bridge for widest context
+    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=2, name='bridge', dilation_rate=3, dilation_bottleneck=2)  # Enhanced feature extraction at bridge
     x = channel_attention(x, name='ca_bridge')
     x = sppf_block(x, MODEL_CONFIG['stage4_filters'], name='bridge_sppf')
     # [B, 32, 64, 256]
@@ -319,7 +319,7 @@ def create_segmentation_model():
     ############ ---- Decoder Block 3 (deepest level) ---- upsampling from 256 to 128 channels ############
     # Processes the features from bridge and combines with encoder3 skip connection
     # Resolution: [32x64] -> [64x128]
-    x = c2f_block(x, MODEL_CONFIG['stage4_filters'], n=1, name='decoder3_prep')  # [B, 32, 64, 256]
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], name='decoder3_prep')  # [B, 32, 64, 256]
     # Use regular Conv2DTranspose instead of QConv2DTranspose for compatibility
     x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage3_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
@@ -328,7 +328,7 @@ def create_segmentation_model():
     
     x = tf.keras.layers.Concatenate(name='decoder3_concat')([x, skip3])
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv')  # [B, 64, 128, 128]
-    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='decoder3_c2f')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder3_conv2')
     x = channel_attention(x, name='decoder3_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.25, name='dropout_decoder3')(x)
@@ -336,41 +336,41 @@ def create_segmentation_model():
     ############ ---- Decoder Block 2 - upsampling from 128 to 64 channels ############
     # Processes the features from decoder3 and combines with encoder2 skip connection
     # Resolution: [64x128] -> [128x256]
-    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], n=1, name='decoder2_prep')  # [B, 64, 128, 128]
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], name='decoder2_prep')  # [B, 64, 128, 128]
     x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage2_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='decoder2_upsample')(x)
     # [B, 128, 256, 64]
     x = tf.keras.layers.Concatenate(name='decoder2_concat')([x, skip2])
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder2_conv')  # [B, 128, 256, 64]
-    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='decoder2_c2f')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder2_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_decoder2')(x)
 
     ############ ---- Decoder Block 1 - upsampling from 64 to 32 channels ############
     # Processes the features from decoder2 and combines with encoder1 skip connection
     # Resolution: [128x256] -> [256x512]
-    x = c2f_block(x, MODEL_CONFIG['stage2_filters'], n=1, name='decoder1_prep')  # [B, 128, 256, 64]
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], name='decoder1_prep')  # [B, 128, 256, 64]
     x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['stage1_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='decoder1_upsample')(x)
     # [B, 256, 512, 32]
     x = tf.keras.layers.Concatenate(name='decoder1_concat')([x, skip1])
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='decoder1_conv')  # [B, 256, 512, 32]
-    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='decoder1_c2f')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='decoder1_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.15, name='dropout_decoder1')(x)
 
     ############ ---- Decoder Block 0 (final upsampling) - upsampling from 32 to 16 channels ############
     # Final decoder block that restores the original input resolution
     # Resolution: [256x512] -> [512x1024]
-    x = c2f_block(x, MODEL_CONFIG['stage1_filters'], n=1, name='decoder0_prep')  # [B, 256, 512, 32]
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], name='decoder0_prep')  # [B, 256, 512, 32]
     x = tf.keras.layers.Conv2DTranspose(MODEL_CONFIG['init_filters'], kernel_size=2, strides=2, padding='same',
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='decoder0_upsample')(x)
     # [B, 512, 1024, 16]
     x = conv_block(x, MODEL_CONFIG['init_filters'], name='decoder0_conv')  # [B, 512, 1024, 16]
-    x = c2f_block(x, MODEL_CONFIG['init_filters'], n=1, name='decoder0_c2f')
+    x = conv_block(x, MODEL_CONFIG['init_filters'], name='decoder0_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.1, name='dropout_decoder0')(x)
     # Output layer (use 16 bits)
