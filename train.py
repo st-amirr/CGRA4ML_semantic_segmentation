@@ -145,6 +145,7 @@ def conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, name=None,
     """FPGA-optimized convolution block with QAT and optional dilation"""
     qbits = quantized_bits_param_16 if use_16bit else quantized_bits_param_8
     qrelu = quantized_relu_param_16 if use_16bit else quantized_relu_param_8
+    
     x = QConv2D(filters, kernel_size, strides=strides, dilation_rate=dilation_rate, padding='same',
                 kernel_quantizer=quantized_bits(**qbits),
                 bias_quantizer=quantized_bits(**qbits),
@@ -1030,7 +1031,7 @@ def train_model():
         tf.keras.callbacks.LearningRateScheduler(
             tf.keras.optimizers.schedules.CosineDecayRestarts(
                 initial_learning_rate=1e-3,  # Initial learning rate
-                first_decay_steps=6000,      # Steps in first cycle
+                first_decay_steps=1000,      # Steps in first cycle
                 t_mul=2.0,                   # Each restart cycle will be twice as long
                 m_mul=0.9,                   # Each restart max lr will be 90% of previous
                 alpha=0.01                   # Minimum learning rate will be 1% of initial
