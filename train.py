@@ -6,6 +6,7 @@ import psutil
 import gc
 import signal
 import sys
+import json
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
@@ -67,7 +68,7 @@ MODEL_CONFIG = {
 USE_DROPOUT_DURING_TRAINING = False
 
 # Toggle for HLS4ML compatible .h5 format on final save
-SAVE_HLS4ML_COMPATIBLE = False
+SAVE_HLS4ML_COMPATIBLE = False  # Enable HLS4ML compatibility for model export
 
 
 
@@ -93,129 +94,72 @@ tf.config.optimizer.set_experimental_options({
     'remapping': True,
 })
 
-# Define quantization parameters optimized based on weight analysis
-# For critical high-precision operations (bridge features, complex transforms)
+# Define standard quantization parameters for consistent bit width
+# 32-bit precision configuration (highest precision, most resources)
 quantized_bits_param_32 = {
     'bits': 32,
-    'integer': 8,
+    'integer': 8,  # Fixed at 8 for FPGA optimization
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
 
-# For deep feature processing (SPPF, attention mechanisms)
-quantized_bits_param_24 = {
-    'bits': 24,
-    'integer': 8,
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# For first layers and feature extraction (init_conv, encoder1)
-quantized_bits_param_init = {
+# 16-bit precision configuration (balanced precision and resources)
+quantized_bits_param_16 = {
     'bits': 16,
-    'integer': 6,
+    'integer': 8,  # Fixed at 8 for FPGA optimization
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
 
-# For deep feature extraction (encoder2, encoder3)
-quantized_bits_param_deep = {
-    'bits': 12,
-    'integer': 5,
+# 8-bit precision configuration (lowest precision, fewest resources)
+quantized_bits_param_8 = {
+    'bits': 8,
+    'integer': 4,  # Half of total bits for balanced range
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
 
-# For bridge block (where most computation happens)
-quantized_bits_param_bridge = {
-    'bits': 10,
-    'integer': 5,
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
+# Set default quantization for each component type
+quantized_bits_param = quantized_bits_param_16  # Default to 16-bit
+quantized_bits_param_init = quantized_bits_param_16  # Input layers
+quantized_bits_param_deep = quantized_bits_param_16  # Deep layers
+quantized_bits_param_bridge = quantized_bits_param_16  # Bridge block
+quantized_bits_param_decoder = quantized_bits_param_16  # Decoder blocks
+quantized_bits_param_boundary = quantized_bits_param_16  # Boundary enhancement
+quantized_bits_param_light = quantized_bits_param_16  # Intermediate layers
+quantized_bits_param_bn = quantized_bits_param_16  # Batch normalization
 
-# For decoder blocks (where precision is crucial for spatial info)
-quantized_bits_param_decoder = {
-    'bits': 12,
-    'integer': 6,
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# For boundary enhancement and final layers
-quantized_bits_param_boundary = {
-    'bits': 16,
+# Define standard ReLU quantization parameters
+quantized_relu_param_32 = {
+    'bits': 32,
     'integer': 8,
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# For lightweight intermediate layers
-quantized_bits_param_light = {
-    'bits': 8,
-    'integer': 4,
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# For batch normalization layers (based on analysis of moving stats)
-quantized_bits_param_bn = {
-    'bits': 10,
-    'integer': 5,
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# For activation layers (ReLU)
-quantized_relu_param_deep = {
-    'bits': 10,
-    'integer': 5,
     'use_stochastic_rounding': True
 }
 
-quantized_relu_param_light = {
-    'bits': 8,
-    'integer': 4,
-    'use_stochastic_rounding': True
-}
-
-# Legacy parameters for backward compatibility
-quantized_bits_param = quantized_bits_param_light  # default
-quantized_bits_param_8 = quantized_bits_param_light
-quantized_bits_param_16 = quantized_bits_param_boundary
-
-# Update quantized_relu_param for 8-bit layers
-quantized_relu_param_8 = {
-    'bits': 8,
-    'integer': 4,
-    'use_stochastic_rounding': True
-}
-# For first/last layers, use 16 bits
 quantized_relu_param_16 = {
     'bits': 16,
     'integer': 8,
     'use_stochastic_rounding': True
 }
 
-def conv_block(x, filters, bits=8, kernel_size=3, strides=1, dilation_rate=1, name=None):
+quantized_relu_param_8 = {
+    'bits': 8,
+    'integer': 4,
+    'use_stochastic_rounding': True
+}
+
+# Set default ReLU quantization
+quantized_relu_param = quantized_relu_param_16  # Default to 16-bit
+quantized_relu_param_deep = quantized_relu_param_16  # Deep layers
+quantized_relu_param_light = quantized_relu_param_16  # Light layers
+
+def conv_block(x, filters, bits=16, kernel_size=3, strides=1, dilation_rate=1, name=None):
     """FPGA-optimized convolution block with QAT and configurable precision"""
     # Configure quantization for this block based on bits parameter
     qbits = {
@@ -257,7 +201,7 @@ def conv_block(x, filters, bits=8, kernel_size=3, strides=1, dilation_rate=1, na
     x = QActivation(qparam, name=f'{name}_act')(x)
     return x
 
-def c2f_block(x, filters, bits=12, n=1, name=None, dilation_rate=1, dilation_bottleneck=1):
+def c2f_block(x, filters, bits=16, n=1, name=None, dilation_rate=1, dilation_bottleneck=1):
     """YOLOv8 C2f block with configurable precision and optional dilation"""
     # First conv with dilation - for expanded receptive field in initial processing
     x = conv_block(x, filters, bits=bits, dilation_rate=dilation_rate, name=f'{name}_conv1')
@@ -274,7 +218,7 @@ def c2f_block(x, filters, bits=12, n=1, name=None, dilation_rate=1, dilation_bot
     return x
 
 # Add SPPF module for better multi-scale feature extraction
-def sppf_block(x, channels, name, bits=24):
+def sppf_block(x, channels, name, bits=16):
     """Enhanced Spatial Pyramid Pooling - Fast (SPPF) with configurable precision"""
     qbits = {
         'bits': bits,
@@ -335,7 +279,7 @@ def sppf_block(x, channels, name, bits=24):
     return conv_block(concat, channels, kernel_size=1, name=f'{name}_conv')
 
 # Efficient Channel Attention Module
-def channel_attention(x, bits=12, ratio=16, name=''):
+def channel_attention(x, bits=16, ratio=16, name=''):
     """Lightweight Squeeze-and-Excitation block with configurable precision"""
     channels = x.shape[-1]
     qbits = {
@@ -370,17 +314,17 @@ def create_segmentation_model():
     x = inputs
     
     # Initial Feature Extraction - reduces channels to 16
-    # First convolution uses 16-bit quantization for better precision
+    # First convolution uses 8-bit quantization for resource efficiency in early layers
     # Resolution maintained: [512x1024] -> [512x1024]
     # Channels: 3 -> 16
-    x = conv_block(x, MODEL_CONFIG['init_filters'], bits=16, name='init_conv')  # [B, 512, 1024, 16]
+    x = conv_block(x, MODEL_CONFIG['init_filters'], bits=8, name='init_conv')  # [B, 512, 1024, 16]
     # Initial Downsampling - halves spatial dimensions
-    # Uses strided QConv2D with 12-bit precision for feature preservation
+    # Uses strided QConv2D with standardized 16-bit precision
     # Resolution: [512x1024] -> [256x512]
     # Channels maintained: 16 -> 16
     qbits_down = {
-        'bits': 12,
-        'integer': 6,
+        'bits': 16,
+        'integer': 8,  # Fixed at 8 for FPGA optimization
         'symmetric': True,
         'alpha': 'auto_po2',
         'use_stochastic_rounding': True,
@@ -395,13 +339,13 @@ def create_segmentation_model():
 
     ############ ---- Encoder Block 1 - First encoding stage ---- ############
     # Doubles the number of channels and includes skip connection for later decoding
-    # Uses 12-bit precision for early feature extraction
+    # Uses standardized 16-bit precision for consistent feature extraction
     # Resolution: [256x512] -> [128x256] after downsampling
     # Channels: 16 -> 32
     # Use double conv for better initial feature extraction
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=12, name='encoder1_1')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=16, name='encoder1_1')
     
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=12, name='encoder1_2')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=16, name='encoder1_2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.2, name='dropout_encoder1')(x)
     
@@ -435,11 +379,11 @@ def create_segmentation_model():
 
    ############ ---- Encoder Block 3 - Third encoding stage (deepest encoder) ---- ############
     # Incorporates channel attention mechanism for adaptive feature weighting
-    # Last encoder block before bridge, creates deep feature representation with 24-bit precision
+    # Last encoder block before bridge, uses standardized 16-bit precision
     # Resolution: [64x128] -> [32x64] after downsampling
     # Channels: 64 -> 128
-    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], bits=24, n=1, name='encoder3', dilation_rate=2, dilation_bottleneck=1)  # Moderate dilation for deep features
-    x = channel_attention(x, bits=24, name='ca_encoder3')
+    x = c2f_block(x, MODEL_CONFIG['stage3_filters'], bits=16, n=1, name='encoder3', dilation_rate=2, dilation_bottleneck=1)  # Moderate dilation for deep features
+    x = channel_attention(x, bits=16, name='ca_encoder3')
 
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.3, name='dropout_encoder3')(x)
@@ -447,20 +391,20 @@ def create_segmentation_model():
     skip3 = x
 
     x = QConv2D(MODEL_CONFIG['stage3_filters'], kernel_size=3, strides=2, padding='same',
-                kernel_quantizer=quantized_bits(**quantized_bits_param_8),
-                bias_quantizer=quantized_bits(**quantized_bits_param_8),
+                kernel_quantizer=quantized_bits(**quantized_bits_param_16),
+                bias_quantizer=quantized_bits(**quantized_bits_param_16),
                 kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                 name='encoder3_downsample')(x)
     # [B, 32, 64, 128]
 
     ############ ---- Bridge Block - Network bottleneck ---- ############
     # Connects encoder and decoder paths with maximal feature channels
-    # Uses C2F block with 32-bit precision for maximum feature preservation
+    # Uses C2F block with 32-bit precision for maximum feature preservation at the critical bridge
     # Resolution maintained: [32x64] -> [32x64]
     # Channels: 128 -> 256 (maximum channel depth)
     x = c2f_block(x, MODEL_CONFIG['stage4_filters'], bits=32, n=3, name='bridge', dilation_rate=2, dilation_bottleneck=1)  # Maximum feature extraction at bridge
-    x = channel_attention(x, bits=32, name='ca_bridge')
-    x = sppf_block(x, MODEL_CONFIG['stage4_filters'], name='bridge_sppf')  # Multi-scale context
+    x = channel_attention(x, bits=32, name='ca_bridge')  # High precision for critical attention weights
+    x = sppf_block(x, MODEL_CONFIG['stage4_filters'], bits=32, name='bridge_sppf')  # Multi-scale context with maximum precision
     # [B, 32, 64, 256]
 
 
@@ -478,17 +422,17 @@ def create_segmentation_model():
                                        name='decoder3_upsample')(x)
     # [B, 64, 128, 128]
     
-    # Pre-process skip connection with boundary enhancement (24-bit precision for complex feature fusion)
-    skip3_enhance = conv_block(skip3, MODEL_CONFIG['stage3_filters'], bits=24, kernel_size=3, name='skip3_boundary')
-    skip3 = conv_block(skip3, MODEL_CONFIG['stage3_filters'], bits=24, kernel_size=1, name='skip3_adjust')
+    # Pre-process skip connection with standardized precision
+    skip3_enhance = conv_block(skip3, MODEL_CONFIG['stage3_filters'], bits=16, kernel_size=3, name='skip3_boundary')
+    skip3 = conv_block(skip3, MODEL_CONFIG['stage3_filters'], bits=16, kernel_size=1, name='skip3_adjust')
     skip3 = tf.keras.layers.Add(name='skip3_fusion')([skip3, skip3_enhance])
     
     x = tf.keras.layers.Concatenate(name='decoder3_concat')([x, skip3])
-    # Efficient triple conv with residual for deep feature refinement (24-bit for critical decoder path)
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], bits=24, name='decoder3_conv1')
+    # Efficient triple conv with residual for deep feature refinement
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], bits=16, name='decoder3_conv1')
     x_identity = x  # Store identity after first conv to match channel dimensions
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], bits=24, name='decoder3_conv2')
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], bits=24, name='decoder3_conv3')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], bits=16, name='decoder3_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], bits=16, name='decoder3_conv3')
     x = tf.keras.layers.Add(name='decoder3_residual')([x, x_identity])
     x = channel_attention(x, name='decoder3_attention')
     if USE_DROPOUT_DURING_TRAINING:
@@ -520,11 +464,11 @@ def create_segmentation_model():
                                        kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                                        name='decoder1_upsample')(x)
     # [B, 256, 512, 32]
-    # Pre-process skip connection (12-bit for early decoder features)
-    skip1 = conv_block(skip1, MODEL_CONFIG['stage1_filters'], bits=12, kernel_size=1, name='skip1_adjust')
+    # Pre-process skip connection with standardized precision
+    skip1 = conv_block(skip1, MODEL_CONFIG['stage1_filters'], bits=16, kernel_size=1, name='skip1_adjust')
     x = tf.keras.layers.Concatenate(name='decoder1_concat')([x, skip1])
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=12, name='decoder1_conv1')  # [B, 256, 512, 32]
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=12, name='decoder1_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=16, name='decoder1_conv1')  # [B, 256, 512, 32]
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], bits=16, name='decoder1_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.15, name='dropout_decoder1')(x)
 
@@ -540,8 +484,8 @@ def create_segmentation_model():
     x = conv_block(x, MODEL_CONFIG['init_filters'], bits=16, name='decoder0_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = tf.keras.layers.Dropout(0.1, name='dropout_decoder0')(x)
-    # Enhanced output layers with boundary refinement (use 32 bits for high precision)
-    # Boundary-aware feature enhancement with high precision quantization
+    # Enhanced output layers with boundary refinement using 32-bit precision for maximum accuracy
+    # Boundary-aware feature enhancement with high precision quantization for critical edge detection
     x_boundary = QConv2D(MODEL_CONFIG['init_filters'], kernel_size=3, padding='same',
                       kernel_quantizer=quantized_bits(**quantized_bits_param_32),
                       bias_quantizer=quantized_bits(**quantized_bits_param_32),
@@ -555,7 +499,7 @@ def create_segmentation_model():
         variance_quantizer=quantized_bits(**quantized_bits_param_32),
         name='boundary_enhance1_bn'
     )(x_boundary)
-    x_boundary = QActivation(quantized_relu(**quantized_relu_param_16), name='boundary_enhance1_act')(x_boundary)
+    x_boundary = QActivation(quantized_relu(**quantized_relu_param_32), name='boundary_enhance1_act')(x_boundary)
 
     x_boundary = QConv2D(MODEL_CONFIG['init_filters'], kernel_size=3, padding='same',
                       kernel_quantizer=quantized_bits(**quantized_bits_param_32),
@@ -574,18 +518,18 @@ def create_segmentation_model():
     # Merge boundary features
     x = tf.keras.layers.Concatenate(name='final_fusion')([x, x_boundary])
     
-    # Final reduce block with 24-bit precision (based on 27.29 bits needed from analysis)
+    # Final reduce block with 16-bit precision for FPGA optimization
     x = QConv2D(MODEL_CONFIG['init_filters'], kernel_size=1, padding='same',
-              kernel_quantizer=quantized_bits(**quantized_bits_param_24),
-              bias_quantizer=quantized_bits(**quantized_bits_param_24),
+              kernel_quantizer=quantized_bits(**quantized_bits_param_16),
+              bias_quantizer=quantized_bits(**quantized_bits_param_16),
               kernel_initializer='glorot_uniform',
               kernel_regularizer=tf.keras.regularizers.l2(1e-4),
               name='final_reduce_conv')(x)
     x = QBatchNormalization(
-        gamma_quantizer=quantized_bits(**quantized_bits_param_24),
-        beta_quantizer=quantized_bits(**quantized_bits_param_24),
-        mean_quantizer=quantized_bits(**quantized_bits_param_24),
-        variance_quantizer=quantized_bits(**quantized_bits_param_24),
+        gamma_quantizer=quantized_bits(**quantized_bits_param_16),
+        beta_quantizer=quantized_bits(**quantized_bits_param_16),
+        mean_quantizer=quantized_bits(**quantized_bits_param_16),
+        variance_quantizer=quantized_bits(**quantized_bits_param_16),
         name='final_reduce_bn'
     )(x)
     x = QActivation(quantized_relu(**quantized_relu_param_16), name='final_reduce_act')(x)
@@ -648,7 +592,6 @@ def create_hls4ml_export_model(trained_model=None):
                             
                             if shapes_compatible:
                                 clean_layer.set_weights(trained_weights)
-                                print(f"Copied weights for layer: {clean_layer.name}")
                                 copied_count += 1
                             else:
                                 print(f"Skipping {clean_layer.name}: weight shapes incompatible")
@@ -839,7 +782,7 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
                     f.write('')
             except Exception as e:
                 print(f"[TrainingLoggerCallback] Could not create log.txt: {e}")
-        self.epoch_start_time = None
+        self.epoch_start_time = time.time()
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
@@ -1268,10 +1211,37 @@ def train_model():
             # Create and save clean model for HLS4ML export (identical architecture)
             print("Creating HLS4ML export model...")
             clean_model = create_hls4ml_export_model(model)
+            
+            # Save the clean model in HLS4ML compatible format
             clean_model.save('/app/models/final_model_hls4ml_clean.h5', save_format='h5')
-            # model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
+            
+            # Save quantized weights specifically for HLS4ML
+            model_save_quantized_weights(clean_model, '/app/models/final_model_hls4ml_weights.h5')
+            
+            # Save model configuration for HLS4ML
+            config = {
+                'input_shape': (INPUT_HEIGHT, INPUT_WIDTH, 3),
+                'output_shape': (INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES),
+                'quantization_bits': {
+                    'input': 16,
+                    'weights': 16,
+                    'bias': 16,
+                    'activation': 16
+                },
+                'layer_precision': {
+                    'init_conv': 8,  # Initial layers use 8-bit
+                    'bridge': 32,    # Bridge block uses 32-bit
+                    'boundary': 32,  # Boundary enhancement uses 32-bit
+                    'default': 16    # Default precision for other layers
+                }
+            }
+            
+            with open('/app/models/hls4ml_config.json', 'w') as f:
+                json.dump(config, f, indent=4)
+            
             print("Clean HLS4ML model saved as 'final_model_hls4ml_clean.h5'")
             print("Quantized weights saved as 'final_model_hls4ml_weights.h5'")
+            print("HLS4ML configuration saved as 'hls4ml_config.json'")
         
         print("\nTraining completed successfully!")
     except KeyboardInterrupt:
