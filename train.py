@@ -51,7 +51,7 @@ DATASET_DIR = '/data'  # Updated to match actual path
 SUBSET_RATIO = 1.0  # Use 20% of dataset per epoch
 NUM_WORKERS = 2  # Standard for data loading
 PREFETCH_SIZE = 2  # Standard prefetch for efficiency
-GRADIENT_ACCUMULATION_STEPS = 4  # No gradient accumulation needed with current setup
+GRADIENT_ACCUMULATION_STEPS = 2  # No gradient accumulation needed with current setup
 
 DEBUG_MODE = False
 # Model architecture configuration
@@ -750,7 +750,8 @@ class ComboLoss(tf.keras.losses.Loss):
     def call(self, y_true, y_pred):
         iou_loss = self.iou_loss(y_true, y_pred)
         ce_loss = self.ce_loss(y_true, y_pred)
-        return self.alpha * iou_loss + (1 - self.alpha) * ce_loss
+        # Give more weight to IoU loss as it's directly related to our metric
+        return 0.7 * iou_loss + 0.3 * ce_loss  # Increased weight on IoU loss
 
 # Custom IoU metric for semantic segmentation
 class IoUMetric(tf.keras.metrics.Metric):
@@ -1025,6 +1026,17 @@ def train_model():
     file_extension = '.h5' if SAVE_HLS4ML_COMPATIBLE else '.keras'
     
     callbacks = [
+        # Cosine Decay with Warm Restarts scheduler
+        tf.keras.callbacks.LearningRateScheduler(
+            tf.keras.optimizers.schedules.CosineDecayRestarts(
+                initial_learning_rate=1e-3,  # Initial learning rate
+                first_decay_steps=6000,      # Steps in first cycle
+                t_mul=2.0,                   # Each restart cycle will be twice as long
+                m_mul=0.9,                   # Each restart max lr will be 90% of previous
+                alpha=0.01                   # Minimum learning rate will be 1% of initial
+            )
+        ),
+        
         ModelCheckpoint(
             f'/app/models/best_model{file_extension}',
             save_best_only=True,
@@ -1047,15 +1059,15 @@ def train_model():
             restore_best_weights=True,
             verbose=1
         ),
-        ReduceLROnPlateau(
-            monitor='val_iou',
-            mode='max',
-            factor=0.7,  # Reduce LR by 30% when plateauing
-            patience=10,   # Wait 3 epochs before reducing
-            min_lr=1e-7,  # Minimum LR
-            verbose=1,
-            restore_best_weights=False
-        ),
+        # ReduceLROnPlateau(
+        #     monitor='val_iou',
+        #     mode='max',
+        #     factor=0.7,  # Reduce LR by 30% when plateauing
+        #     patience=10,   # Wait 3 epochs before reducing
+        #     min_lr=1e-7,  # Minimum LR
+        #     verbose=1,
+        #     restore_best_weights=False
+        # ),
         MemoryCleanupCallback(),
         TrainingLoggerCallback('/app/models')
     ]
