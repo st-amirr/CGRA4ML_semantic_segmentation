@@ -21,7 +21,7 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # Inside container - train float32 baseline
-python train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
 ```
 
 **Why start with Float32?**
@@ -41,7 +41,7 @@ docker-compose exec hls4ml-training /bin/bash
 ls -la /app/models/float32_*.keras
 
 # Apply QAT to your best float32 model
-python train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
 ```
 
 **QAT Fine-tuning:**
@@ -78,6 +78,22 @@ The new script includes automatic weight transfer from float32 to QAT layers:
 - Maps `bn` layers to `qbn` layers  
 - Preserves learned features during QAT conversion
 
+### 4. Automatic Training Resume
+The script automatically detects and resumes from the latest checkpoint:
+- **Smart detection**: Finds the most recent checkpoint for the current training type (float32 vs QAT)
+- **Epoch extraction**: Automatically determines the epoch to resume from
+- **Seamless continuation**: Loads model weights and optimizer state when possible
+- **Fallback handling**: Creates new model if checkpoint loading fails
+- **Manual override**: Use `--load_model` to specify a different starting point
+
+### 5. Dropout Management
+The script automatically handles dropout layers for HLS4ML compatibility:
+- **Training models**: Include dropout layers for regularization when enabled (default rates: 0.1-0.35)
+- **Clean export models**: Always automatically created without dropout for HLS4ML compatibility
+- **Flexible control**: Can disable dropout with `--use_dropout=False` for testing
+- **Consistent naming**: Clean models always saved as `*_clean_for_hls4ml.keras` regardless of dropout setting
+- **Weight transfer**: Clean models inherit weights from trained models (dropout layers automatically excluded)
+
 ## File Structure
 
 After training, you'll have:
@@ -86,11 +102,19 @@ models/
 ├── float32_model_checkpoint_epoch_XX.keras  # Float32 checkpoints
 ├── float32_model_best.keras                 # Best float32 model
 ├── float32_model_final.keras               # Final float32 model
+├── float32_model_clean_for_hls4ml.keras    # Clean float32 model (no dropout)
 ├── qat_model_checkpoint_epoch_XX.keras     # QAT checkpoints
 ├── qat_model_best.keras                    # Best QAT model
 ├── qat_model_final.keras                   # Final QAT model
+├── qat_model_clean_for_hls4ml.keras        # Clean QAT model (no dropout)
 └── qat_model_quantized_weights.h5          # For hls4ml export
 ```
+
+### Important Notes About Model Files:
+- **Training models** (`*_final.keras`): Include dropout layers when dropout is enabled
+- **Clean models** (`*_clean_for_hls4ml.keras`): Always created without dropout for HLS4ML export
+- **Quantized weights** (`*_quantized_weights.h5`): Always generated from clean models for FPGA synthesis
+- **Consistent workflow**: Same file structure and naming regardless of dropout setting
 
 ## Docker Terminal Workflow (Recommended)
 
@@ -104,13 +128,13 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # 3. You're now inside the container - run Phase 1
-python train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
 
 # 4. Wait for training to complete (6-8 hours), then check results
 ls -la /app/models/float32_*.keras
 
 # 5. Run Phase 2 (QAT) using your best float32 model
-python train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
 
 # 6. Check final results
 ls -la /app/models/
@@ -134,28 +158,32 @@ docker-compose exec hls4ml-training free -h
 ### Basic Training (Inside Container)
 ```bash
 # Float32 baseline (recommended first step)
-python train_qat_toggle.py --trainQAT=False
+python3 /workspace/train_qat_toggle.py --trainQAT=False
 
 # QAT training with loaded model (recommended second step)
-python train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras
+python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras
 
 # QAT from scratch (not recommended)
-python train_qat_toggle.py --trainQAT=True
+python3 /workspace/train_qat_toggle.py --trainQAT=True
 ```
 
 ### Advanced Options (Inside Container)
 ```bash
 # Custom epochs and batch size for float32
-python train_qat_toggle.py --trainQAT=False --epochs=30 --batch_size=1
+python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=30 --batch_size=1
 
 # Custom parameters for QAT
-python train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=15 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=15 --batch_size=2
+
+# Training without dropout (for testing)
+python3 /workspace/train_qat_toggle.py --trainQAT=False --use_dropout=False --epochs=20
 
 # All available parameters:
 --trainQAT=True/False          # Enable/disable QAT
 --load_model=path             # Load existing model for QAT
 --epochs=50                   # Number of epochs
 --batch_size=2                # Batch size
+--use_dropout=True/False      # Enable/disable dropout during training
 ```
 
 ## Quick Reference Commands
@@ -163,10 +191,10 @@ python train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best
 ### Essential Commands (Run Inside Container)
 ```bash
 # Start training from scratch (Float32)
-python train_qat_toggle.py --trainQAT=False
+python3 /workspace/train_qat_toggle.py --trainQAT=False
 
 # Continue with QAT after float32 completes
-python train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras
+python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras
 
 # Check available models
 ls -la /app/models/
@@ -192,7 +220,7 @@ docker-compose exec hls4ml-training /bin/bash
 ### Phase 1 - Float32 Training (Inside Container)
 ```bash
 # Start float32 baseline training
-python train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
 
 # Expected output:
 # Training Configuration:
@@ -214,7 +242,7 @@ python train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
 ls -la /app/models/float32_*.keras
 
 # Start QAT training using best float32 model
-python train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
 
 # Expected output:
 # Training Configuration:
@@ -304,6 +332,25 @@ docker-compose exec hls4ml-training ls -la /app/models/
 ```
 
 ## Troubleshooting
+
+### Training Interruption and Resume
+The script automatically handles training interruptions:
+- **Automatic detection**: When you restart training, it automatically finds and loads the latest checkpoint
+- **Smart resuming**: Continues from the exact epoch where training was interrupted
+- **Type-aware**: Float32 training resumes float32 checkpoints, QAT training resumes QAT checkpoints
+- **No manual intervention**: Just run the same command again - it will resume automatically
+
+Example of interrupted training:
+```bash
+# Training gets interrupted at epoch 25
+python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+# ... training stops unexpectedly ...
+
+# Restart with the same command - will automatically resume from epoch 25
+python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+# Output: "Found latest checkpoint: float32_model_checkpoint_epoch_25.keras"
+# Output: "Resuming from epoch 25"
+```
 
 ### If Float32 Training Doesn't Improve
 1. Check data loading (verify dataset path)
