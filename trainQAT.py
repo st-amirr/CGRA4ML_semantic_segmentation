@@ -90,6 +90,7 @@ DEBUG_MODE = False
 n_cores = multiprocessing.cpu_count()
 tf.config.threading.set_inter_op_parallelism_threads(n_cores)
 tf.config.threading.set_intra_op_parallelism_threads(n_cores)
+tf.config.set_soft_device_placement(True)
 
 print(f"Eager execution enabled: {tf.executing_eagerly()}")
 tf.debugging.set_log_device_placement(DEBUG_MODE)
@@ -270,7 +271,7 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
         except Exception as e:
             print(f"[TrainingLoggerCallback] Could not write to log.txt: {e}")
 
-class CityscapesDataGenerator:
+class CityscapesDataGenerator(tf.keras.utils.Sequence):
     """Data generator for Cityscapes dataset"""
     
     def __init__(self, image_dir, mask_dir, batch_size=1, subset_ratio=1.0, 
@@ -859,7 +860,10 @@ def train_model():
             initial_epoch=initial_epoch,
             validation_data=val_generator,
             callbacks=callbacks,
-            verbose=1
+            verbose=1,
+            workers=NUM_WORKERS,
+            use_multiprocessing=True if NUM_WORKERS > 1 else False,
+            max_queue_size=10
         )
         
         # Save final model

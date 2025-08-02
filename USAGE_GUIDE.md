@@ -21,7 +21,7 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # Inside container - train float32 baseline
-python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=200 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=200 --batch_size=2
 ```
 
 **Why start with Float32?**
@@ -41,7 +41,7 @@ docker-compose exec hls4ml-training /bin/bash
 ls -la /app/models/float32_*.keras
 
 # Apply QAT to your best float32 model
-python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
 ```
 
 **QAT Fine-tuning:**
@@ -128,13 +128,13 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # 3. You're now inside the container - run Phase 1
-python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --subset_ratio=0.8
 
 # 4. Wait for training to complete (6-8 hours), then check results
 ls -la /app/models/float32_*.keras
 
 # 5. Run Phase 2 (QAT) using your best float32 model
-python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2 --subset_ratio=0.5
 
 # 6. Check final results
 ls -la /app/models/
@@ -158,25 +158,29 @@ docker-compose exec hls4ml-training free -h
 ### Basic Training (Inside Container)
 ```bash
 # Float32 baseline (recommended first step)
-python3 /workspace/train_qat_toggle.py --trainQAT=False
+python3 /workspace/trainQAT.py --trainQAT=False
 
 # QAT training with loaded model (recommended second step)
-python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras
+python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras
 
 # QAT from scratch (not recommended)
-python3 /workspace/train_qat_toggle.py --trainQAT=True
+python3 /workspace/trainQAT.py --trainQAT=True
 ```
 
 ### Advanced Options (Inside Container)
 ```bash
 # Custom epochs and batch size for float32
-python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=30 --batch_size=1
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=30 --batch_size=1
 
 # Custom parameters for QAT
-python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=15 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=15 --batch_size=2
 
 # Training without dropout (for testing)
-python3 /workspace/train_qat_toggle.py --trainQAT=False --use_dropout=False --epochs=20
+python3 /workspace/trainQAT.py --trainQAT=False --use_dropout=False --epochs=20
+
+
+# Medium testing with 50% of dataset
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=20 --batch_size=2 --subset_ratio=0.5
 
 # All available parameters:
 --trainQAT=True/False          # Enable/disable QAT
@@ -184,6 +188,24 @@ python3 /workspace/train_qat_toggle.py --trainQAT=False --use_dropout=False --ep
 --epochs=50                   # Number of epochs
 --batch_size=2                # Batch size
 --use_dropout=True/False      # Enable/disable dropout during training
+--subset_ratio=0.1-1.0        # Fraction of dataset to use (1.0 = full dataset)
+```
+
+### Dataset Subset Options
+The `--subset_ratio` parameter allows you to control how much of the dataset to use:
+
+```bash
+# Quick testing - 10% of dataset (fast iteration, ~1 hour)
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=10 --subset_ratio=0.1
+
+# Development - 25% of dataset (good for hyperparameter tuning, ~2-3 hours)
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=20 --subset_ratio=0.25
+
+# Validation - 50% of dataset (solid results, ~4-5 hours)
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=40 --subset_ratio=0.5
+
+# Full training - 100% of dataset (production training, ~8-10 hours)
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --subset_ratio=1.0
 ```
 
 ## Quick Reference Commands
@@ -191,10 +213,13 @@ python3 /workspace/train_qat_toggle.py --trainQAT=False --use_dropout=False --ep
 ### Essential Commands (Run Inside Container)
 ```bash
 # Start training from scratch (Float32)
-python3 /workspace/train_qat_toggle.py --trainQAT=False
+python3 /workspace/trainQAT.py --trainQAT=False
+
+# Quick test with small dataset subset (10% for fast iteration)
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=5 --subset_ratio=0.1
 
 # Continue with QAT after float32 completes
-python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras
+python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras
 
 # Check available models
 ls -la /app/models/
@@ -220,7 +245,10 @@ docker-compose exec hls4ml-training /bin/bash
 ### Phase 1 - Float32 Training (Inside Container)
 ```bash
 # Start float32 baseline training
-python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=50 --batch_size=2
+
+# For quick testing, use subset of dataset
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=10 --batch_size=2 --subset_ratio=0.1
 
 # Expected output:
 # Training Configuration:
@@ -242,7 +270,7 @@ python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size
 ls -la /app/models/float32_*.keras
 
 # Start QAT training using best float32 model
-python3 /workspace/train_qat_toggle.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
 
 # Expected output:
 # Training Configuration:
@@ -343,11 +371,11 @@ The script automatically handles training interruptions:
 Example of interrupted training:
 ```bash
 # Training gets interrupted at epoch 25
-python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=50 --batch_size=2
 # ... training stops unexpectedly ...
 
 # Restart with the same command - will automatically resume from epoch 25
-python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=50 --batch_size=2
 # Output: "Found latest checkpoint: float32_model_checkpoint_epoch_25.keras"
 # Output: "Resuming from epoch 25"
 ```
