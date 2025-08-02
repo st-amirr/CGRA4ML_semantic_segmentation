@@ -166,6 +166,8 @@ class ComboLoss(tf.keras.losses.Loss):
         
         # Simple weighted combination
         return self.alpha_iou * iou_loss + self.alpha_ce * ce_loss
+
+# Custom callbacks for better training monitoring
 class MemoryCleanupCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         """Clean up memory at the end of each epoch"""
