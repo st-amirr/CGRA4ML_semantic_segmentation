@@ -55,6 +55,8 @@ parser.add_argument('--batch_size', type=int, default=2,
                    help='Batch size for training')
 parser.add_argument('--use_dropout', type=str, default='True',
                    help='Enable dropout during training (True/False). Default: True')
+parser.add_argument('--subset_ratio', type=float, default=1.0,
+                   help='Fraction of dataset to use per epoch (0.1-1.0). Default: 1.0 (full dataset)')
 
 args = parser.parse_args()
 
@@ -64,6 +66,7 @@ LOAD_MODEL_PATH = args.load_model
 EPOCHS = args.epochs
 BATCH_SIZE = args.batch_size
 USE_DROPOUT_DURING_TRAINING = args.use_dropout.lower() == 'true'
+SUBSET_RATIO = args.subset_ratio
 
 print(f"Training Configuration:")
 print(f"  QAT Training: {TRAIN_QAT}")
@@ -71,17 +74,25 @@ print(f"  Load Model: {LOAD_MODEL_PATH if LOAD_MODEL_PATH else 'None (training f
 print(f"  Epochs: {EPOCHS}")
 print(f"  Batch Size: {BATCH_SIZE}")
 print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
+print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
 
 # Define constants
 INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
 NUM_CLASSES = 34
 DATASET_DIR = '/data'
-SUBSET_RATIO = 1.0
 NUM_WORKERS = 4
 PREFETCH_SIZE = 2
 
 DEBUG_MODE = False
+
+# Configure TensorFlow
+n_cores = multiprocessing.cpu_count()
+tf.config.threading.set_inter_op_parallelism_threads(n_cores)
+tf.config.threading.set_intra_op_parallelism_threads(n_cores)
+
+print(f"Eager execution enabled: {tf.executing_eagerly()}")
+tf.debugging.set_log_device_placement(DEBUG_MODE)
 
 # Model architecture configuration
 MODEL_CONFIG = {
@@ -92,14 +103,6 @@ MODEL_CONFIG = {
     'stage4_filters': INPUT_HEIGHT // 2,  # 256
 }
 
-# Configure TensorFlow
-n_cores = multiprocessing.cpu_count()
-tf.config.threading.set_inter_op_parallelism_threads(n_cores)
-tf.config.threading.set_intra_op_parallelism_threads(n_cores)
-
-print(f"Eager execution enabled: {tf.executing_eagerly()}")
-tf.debugging.set_log_device_placement(DEBUG_MODE)
-
 # Disable layout optimizer to prevent conflicts with QKeras
 tf.config.optimizer.set_experimental_options({
     'layout_optimizer': False,
@@ -109,7 +112,10 @@ tf.config.optimizer.set_experimental_options({
 })
 
 # QKeras quantization parameters (used only when TRAIN_QAT=True)
-quantized_bits_config = {
+# Multi-precision quantization based on analyze_weights.txt recommendations
+
+# 8-bit quantization for light layers (input, encoder1, decoder0, output)
+quantized_bits_8_config = {
     'bits': 8,
     'integer': 4,
     'symmetric': True,
@@ -118,11 +124,47 @@ quantized_bits_config = {
     'scale_axis': None
 }
 
-quantized_relu_config = {
+quantized_relu_8_config = {
     'bits': 8,
     'integer': 4,
     'use_stochastic_rounding': True
 }
+
+# 16-bit quantization for medium layers (encoder2, encoder3, decoder1, decoder2)
+quantized_bits_16_config = {
+    'bits': 16,
+    'integer': 8,
+    'symmetric': True,
+    'alpha': 'auto_po2',
+    'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+
+quantized_relu_16_config = {
+    'bits': 16,
+    'integer': 8,
+    'use_stochastic_rounding': True
+}
+
+# 32-bit quantization for critical layers (bridge, decoder3)
+quantized_bits_32_config = {
+    'bits': 32,
+    'integer': 8,
+    'symmetric': True,
+    'alpha': 'auto_po2',
+    'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+
+quantized_relu_32_config = {
+    'bits': 32,
+    'integer': 8,
+    'use_stochastic_rounding': True
+}
+
+# Default configs for backward compatibility
+quantized_bits_config = quantized_bits_8_config  # Default to 8-bit
+quantized_relu_config = quantized_relu_8_config
 
 def get_memory_usage():
     """Get current memory usage in MB"""
@@ -331,7 +373,7 @@ class CityscapesDataGenerator:
         
         return np.array(batch_images), np.array(batch_masks)
 
-def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, name='conv_block'):
+def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, precision='8bit', name='conv_block'):
     """
     Convolutional block with option for quantization
     
@@ -341,20 +383,36 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, nam
         kernel_size: Kernel size
         strides: Stride value
         use_quantization: Whether to use QKeras quantized layers
+        precision: Quantization precision ('8bit', '16bit', '32bit')
         name: Block name
     """
     if use_quantization:
+        # Select quantization config based on precision
+        if precision == '8bit':
+            qbits_config = quantized_bits_8_config
+            qrelu_config = quantized_relu_8_config
+        elif precision == '16bit':
+            qbits_config = quantized_bits_16_config
+            qrelu_config = quantized_relu_16_config
+        elif precision == '32bit':
+            qbits_config = quantized_bits_32_config
+            qrelu_config = quantized_relu_32_config
+        else:
+            # Default to 8-bit for unknown precision
+            qbits_config = quantized_bits_8_config
+            qrelu_config = quantized_relu_8_config
+        
         # Use QKeras quantized layers
         x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
-                   kernel_quantizer=quantized_bits(**quantized_bits_config),
-                   bias_quantizer=quantized_bits(**quantized_bits_config),
+                   kernel_quantizer=quantized_bits(**qbits_config),
+                   bias_quantizer=quantized_bits(**qbits_config),
                    kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                    name=f'{name}_qconv')(x)
         x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**quantized_bits_config),
-            beta_quantizer=quantized_bits(**quantized_bits_config),
+            gamma_quantizer=quantized_bits(**qbits_config),
+            beta_quantizer=quantized_bits(**qbits_config),
             name=f'{name}_qbn')(x)
-        x = QActivation(quantized_relu(**quantized_relu_config), name=f'{name}_qact')(x)
+        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_qact')(x)
     else:
         # Use standard float32 layers
         x = Conv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
@@ -365,9 +423,15 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, nam
     
     return x
 
-def attention_block(x, use_quantization=False, name='attention'):
+def attention_block(x, use_quantization=False, precision='16bit', name='attention'):
     """
     Channel attention block with option for quantization
+    
+    Args:
+        x: Input tensor
+        use_quantization: Whether to use QKeras quantized layers
+        precision: Quantization precision ('8bit', '16bit', '32bit')
+        name: Block name
     """
     channels = x.shape[-1]
     
@@ -377,14 +441,28 @@ def attention_block(x, use_quantization=False, name='attention'):
     
     # Attention mechanism
     if use_quantization:
+        # Select quantization config based on precision
+        if precision == '8bit':
+            qbits_config = quantized_bits_8_config
+            qrelu_config = quantized_relu_8_config
+        elif precision == '16bit':
+            qbits_config = quantized_bits_16_config
+            qrelu_config = quantized_relu_16_config
+        elif precision == '32bit':
+            qbits_config = quantized_bits_32_config
+            qrelu_config = quantized_relu_32_config
+        else:
+            qbits_config = quantized_bits_16_config  # Default to 16-bit for attention
+            qrelu_config = quantized_relu_16_config
+        
         y = QConv2D(channels // 4, kernel_size=1, padding='same',
-                   kernel_quantizer=quantized_bits(**quantized_bits_config),
-                   bias_quantizer=quantized_bits(**quantized_bits_config),
+                   kernel_quantizer=quantized_bits(**qbits_config),
+                   bias_quantizer=quantized_bits(**qbits_config),
                    name=f'{name}_qconv1')(y)
-        y = QActivation(quantized_relu(**quantized_relu_config), name=f'{name}_qact1')(y)
+        y = QActivation(quantized_relu(**qrelu_config), name=f'{name}_qact1')(y)
         y = QConv2D(channels, kernel_size=1, padding='same',
-                   kernel_quantizer=quantized_bits(**quantized_bits_config),
-                   bias_quantizer=quantized_bits(**quantized_bits_config),
+                   kernel_quantizer=quantized_bits(**qbits_config),
+                   bias_quantizer=quantized_bits(**qbits_config),
                    name=f'{name}_qconv2')(y)
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     else:
@@ -410,81 +488,81 @@ def create_segmentation_model(use_quantization=False):
     inputs = Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
     x = inputs
     
-    # Initial feature extraction
-    x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, name='init_conv')
+    # Initial feature extraction (INPUT block - 8-bit precision)
+    x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='init_conv')
     
     # Encoder path with skip connections
     skip_connections = []
     
-    # Encoder block 1
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], strides=2, use_quantization=use_quantization, name='enc1_down')
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, name='enc1_conv')
+    # Encoder block 1 (ENCODER1 block - 8-bit precision)
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], strides=2, use_quantization=use_quantization, precision='8bit', name='enc1_down')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='enc1_conv')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_encoder1')(x)
     skip_connections.append(x)
     
-    # Encoder block 2
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, name='enc2_down')
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, name='enc2_conv')
-    x = attention_block(x, use_quantization=use_quantization, name='enc2_att')
+    # Encoder block 2 (ENCODER2 block - 16-bit precision)
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='enc2_conv')
+    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_att')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_encoder2')(x)
     skip_connections.append(x)
     
-    # Encoder block 3
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, name='enc3_down')
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, name='enc3_conv')
-    x = attention_block(x, use_quantization=use_quantization, name='enc3_att')
+    # Encoder block 3 (ENCODER3 block - 16-bit precision)
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='enc3_conv')
+    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_att')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.3, name='dropout_encoder3')(x)
     skip_connections.append(x)
     
-    # Bridge block
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, name='bridge_down')
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, name='bridge_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, name='bridge_conv2')
-    x = attention_block(x, use_quantization=use_quantization, name='bridge_att')
+    # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv1')
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv2')
+    x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_att')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.35, name='dropout_bridge')(x)
     
     # Decoder path
-    # Decoder block 3
+    # Decoder block 3 (DECODER3 block - 32-bit precision for critical features)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip_connections[2]])
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, name='dec3_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, name='dec3_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='32bit', name='dec3_conv1')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='32bit', name='dec3_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_decoder3')(x)
     
-    # Decoder block 2
+    # Decoder block 2 (DECODER2 block - 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip_connections[1]])
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, name='dec2_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, name='dec2_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv1')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_decoder2')(x)
     
-    # Decoder block 1
+    # Decoder block 1 (DECODER1 block - 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec1_up')(x)
     x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip_connections[0]])
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, name='dec1_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, name='dec1_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='16bit', name='dec1_conv1')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='16bit', name='dec1_conv2')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_decoder1')(x)
     
     # Final upsampling to original resolution
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='final_up')(x)
     
-    # Final convolution before output
-    x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, name='final_conv')
+    # Final convolution before output (DECODER0 block - 8-bit precision)
+    x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='final_conv')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_final')(x)
     
-    # Output layer
+    # Output layer (OUTPUT block - 8-bit precision)
     if use_quantization:
         outputs = QConv2D(NUM_CLASSES, kernel_size=1, padding='same',
-                         kernel_quantizer=quantized_bits(**quantized_bits_config),
-                         bias_quantizer=quantized_bits(**quantized_bits_config),
+                         kernel_quantizer=quantized_bits(**quantized_bits_8_config),
+                         bias_quantizer=quantized_bits(**quantized_bits_8_config),
                          activation='softmax', name='output_qconv')(x)
     else:
         outputs = Conv2D(NUM_CLASSES, kernel_size=1, padding='same',

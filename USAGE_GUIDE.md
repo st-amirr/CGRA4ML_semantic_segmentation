@@ -21,7 +21,7 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # Inside container - train float32 baseline
-python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=50 --batch_size=2
+python3 /workspace/train_qat_toggle.py --trainQAT=False --epochs=200 --batch_size=2
 ```
 
 **Why start with Float32?**
