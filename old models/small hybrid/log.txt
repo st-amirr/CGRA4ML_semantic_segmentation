@@ -1,0 +1,144 @@
+Epoch 1: loss=3.78187, iou=0.03544, val_loss=3.25900, val_iou=0.04949 - lr: 0.000050
+Epoch 1: saving model to /app/models/checkpoint_epoch_01.h5
+Epoch 1: loss=4.08492, iou=0.00914, val_loss=3.88238, val_iou=0.01224 - lr: 0.000050
+Epoch 1: saving model to /app/models/checkpoint_epoch_01.keras
+Epoch 1: loss=3.84404, iou=0.02374, val_loss=3.22440, val_iou=0.05298 - lr: 0.000050
+Epoch 1: saving model to /app/models/checkpoint_epoch_01.keras
+Epoch 2: loss=2.97002, iou=0.06135, val_loss=2.74029, val_iou=0.06585 - lr: 0.000050
+Epoch 2: saving model to /app/models/checkpoint_epoch_02.keras
+Epoch 3: loss=2.57588, iou=0.07377, val_loss=2.41243, val_iou=0.07681 - lr: 0.000050
+Epoch 3: saving model to /app/models/checkpoint_epoch_03.keras
+Epoch 4: loss=2.39710, iou=0.07506, val_loss=2.22160, val_iou=0.08061 - lr: 0.000050
+Epoch 4: saving model to /app/models/checkpoint_epoch_04.keras
+Epoch 5: loss=2.29044, iou=0.07618, val_loss=2.05388, val_iou=0.09169 - lr: 0.000050
+Epoch 5: saving model to /app/models/checkpoint_epoch_05.keras
+Epoch 6: loss=2.09471, iou=0.08353, val_loss=1.93508, val_iou=0.09408 - lr: 0.000050
+Epoch 6: saving model to /app/models/checkpoint_epoch_06.keras
+Epoch 7: loss=2.00069, iou=0.08906, val_loss=1.85448, val_iou=0.10403 - lr: 0.000050
+Epoch 7: saving model to /app/models/checkpoint_epoch_07.keras
+Epoch 8: loss=1.90026, iou=0.09864, val_loss=1.77317, val_iou=0.10776 - lr: 0.000050
+Epoch 8: saving model to /app/models/checkpoint_epoch_08.keras
+Epoch 9: loss=1.84194, iou=0.10988, val_loss=1.73324, val_iou=0.12112 - lr: 0.000050
+Epoch 9: saving model to /app/models/checkpoint_epoch_09.keras
+Epoch 10: loss=1.77653, iou=0.12249, val_loss=1.68481, val_iou=0.12908 - lr: 0.000050
+Epoch 10: saving model to /app/models/checkpoint_epoch_10.keras
+Epoch 11: loss=1.68406, iou=0.13025, val_loss=1.61300, val_iou=0.14142 - lr: 0.000050
+Epoch 11: saving model to /app/models/checkpoint_epoch_11.keras
+Epoch 12: loss=1.65393, iou=0.13341, val_loss=1.60085, val_iou=0.13951 - lr: 0.000050
+Epoch 12: saving model to /app/models/checkpoint_epoch_12.keras
+Epoch 13: loss=1.60018, iou=0.13752, val_loss=1.51568, val_iou=0.14521 - lr: 0.000050
+Epoch 13: saving model to /app/models/checkpoint_epoch_13.keras
+Epoch 14: loss=1.57032, iou=0.14147, val_loss=1.52130, val_iou=0.14312 - lr: 0.000050
+Epoch 14: saving model to /app/models/checkpoint_epoch_14.keras
+Epoch 15: loss=1.53721, iou=0.14822, val_loss=1.45188, val_iou=0.15210 - lr: 0.000050
+Epoch 15: saving model to /app/models/checkpoint_epoch_15.keras
+Epoch 16: loss=1.50796, iou=0.15619, val_loss=1.43576, val_iou=0.15344 - lr: 0.000050
+Epoch 16: saving model to /app/models/checkpoint_epoch_16.keras
+Epoch 17: loss=1.47055, iou=0.16029, val_loss=1.44539, val_iou=0.15345 - lr: 0.000050
+Epoch 17: saving model to /app/models/checkpoint_epoch_17.keras
+Epoch 18: loss=1.40258, iou=0.16655, val_loss=1.42208, val_iou=0.15249 - lr: 0.000050
+Epoch 18: saving model to /app/models/checkpoint_epoch_18.keras
+Epoch 19: loss=1.40711, iou=0.16940, val_loss=1.38718, val_iou=0.16227 - lr: 0.000050
+Epoch 19: saving model to /app/models/checkpoint_epoch_19.keras
+Epoch 20: loss=1.39111, iou=0.16992, val_loss=1.40886, val_iou=0.15852 - lr: 0.000050
+Epoch 20: saving model to /app/models/checkpoint_epoch_20.keras
+Epoch 21: loss=1.35184, iou=0.17269, val_loss=1.39132, val_iou=0.15832 - lr: 0.000050
+Epoch 21: saving model to /app/models/checkpoint_epoch_21.keras
+Epoch 22: loss=1.33775, iou=0.17626, val_loss=1.38603, val_iou=0.16017 - lr: 0.000035
+Epoch 22: saving model to /app/models/checkpoint_epoch_22.keras
+Epoch 23: loss=1.31693, iou=0.17862, val_loss=1.33068, val_iou=0.16858 - lr: 0.000035
+Epoch 23: saving model to /app/models/checkpoint_epoch_23.keras
+Epoch 24: loss=1.32147, iou=0.17840, val_loss=1.30228, val_iou=0.17076 - lr: 0.000035
+Epoch 24: saving model to /app/models/checkpoint_epoch_24.keras
+Epoch 25: loss=1.31020, iou=0.18023, val_loss=1.30669, val_iou=0.16808 - lr: 0.000035
+Epoch 25: saving model to /app/models/checkpoint_epoch_25.keras
+Epoch 26: loss=1.29138, iou=0.18093, val_loss=1.31592, val_iou=0.16304 - lr: 0.000035
+Epoch 26: saving model to /app/models/checkpoint_epoch_26.keras
+Epoch 27: loss=1.25880, iou=0.18411, val_loss=1.29942, val_iou=0.16545 - lr: 0.000024
+Epoch 27: saving model to /app/models/checkpoint_epoch_27.keras
+Epoch 28: loss=1.28955, iou=0.18405, val_loss=1.29206, val_iou=0.17020 - lr: 0.000024
+Epoch 28: saving model to /app/models/checkpoint_epoch_28.keras
+Epoch 29: loss=1.25154, iou=0.18522, val_loss=1.29521, val_iou=0.16530 - lr: 0.000024
+Epoch 29: saving model to /app/models/checkpoint_epoch_29.keras
+Epoch 30: loss=1.24689, iou=0.18651, val_loss=1.26870, val_iou=0.16916 - lr: 0.000017
+Epoch 30: saving model to /app/models/checkpoint_epoch_30.keras
+Epoch 31: loss=1.20782, iou=0.18913, val_loss=1.24148, val_iou=0.17780 - lr: 0.000017
+Epoch 31: saving model to /app/models/checkpoint_epoch_31.keras
+Epoch 32: loss=1.19939, iou=0.19126, val_loss=1.23507, val_iou=0.18177 - lr: 0.000017
+Epoch 32: saving model to /app/models/checkpoint_epoch_32.keras
+Epoch 33: loss=1.19799, iou=0.19046, val_loss=1.25347, val_iou=0.16810 - lr: 0.000017
+Epoch 33: saving model to /app/models/checkpoint_epoch_33.keras
+Epoch 34: loss=1.19323, iou=0.19171, val_loss=1.25388, val_iou=0.17134 - lr: 0.000017
+Epoch 34: saving model to /app/models/checkpoint_epoch_34.keras
+Epoch 35: loss=1.20921, iou=0.18928, val_loss=1.23984, val_iou=0.17095 - lr: 0.000012
+Epoch 35: saving model to /app/models/checkpoint_epoch_35.keras
+Epoch 36: loss=1.19640, iou=0.19172, val_loss=1.23490, val_iou=0.17128 - lr: 0.000012
+Epoch 36: saving model to /app/models/checkpoint_epoch_36.keras
+Epoch 37: loss=1.18869, iou=0.19199, val_loss=1.24382, val_iou=0.17137 - lr: 0.000012
+Epoch 37: saving model to /app/models/checkpoint_epoch_37.keras
+Epoch 38: loss=1.18204, iou=0.19362, val_loss=1.25918, val_iou=0.16615 - lr: 0.000008
+Epoch 38: saving model to /app/models/checkpoint_epoch_38.keras
+Epoch 39: loss=1.14560, iou=0.19608, val_loss=1.23376, val_iou=0.17465 - lr: 0.000008
+Epoch 39: saving model to /app/models/checkpoint_epoch_39.keras
+Epoch 40: loss=1.20443, iou=0.19168, val_loss=1.23544, val_iou=0.16979 - lr: 0.000008
+Epoch 40: saving model to /app/models/checkpoint_epoch_40.keras
+Epoch 41: loss=1.16892, iou=0.19447, val_loss=1.20956, val_iou=0.17668 - lr: 0.000006
+Epoch 41: saving model to /app/models/checkpoint_epoch_41.keras
+Epoch 42: loss=1.17158, iou=0.19458, val_loss=1.23377, val_iou=0.16834 - lr: 0.000006
+Epoch 42: saving model to /app/models/checkpoint_epoch_42.keras
+Epoch 43: loss=1.17889, iou=0.19445, val_loss=1.20413, val_iou=0.17661 - lr: 0.000006
+Epoch 43: saving model to /app/models/checkpoint_epoch_43.keras
+Epoch 44: loss=1.14222, iou=0.19485, val_loss=1.21584, val_iou=0.17254 - lr: 0.000004
+Epoch 44: saving model to /app/models/checkpoint_epoch_44.keras
+Epoch 45: loss=1.15875, iou=0.19603, val_loss=1.21077, val_iou=0.17440 - lr: 0.000004
+Epoch 45: saving model to /app/models/checkpoint_epoch_45.keras
+Epoch 46: loss=1.15778, iou=0.19498, val_loss=1.20636, val_iou=0.17599 - lr: 0.000004
+Epoch 46: saving model to /app/models/checkpoint_epoch_46.keras
+Epoch 47: loss=1.16015, iou=0.19588, val_loss=1.21405, val_iou=0.17129 - lr: 0.000003
+Epoch 47: saving model to /app/models/checkpoint_epoch_47.keras
+Epoch 48: loss=1.15602, iou=0.19679, val_loss=1.19531, val_iou=0.17714 - lr: 0.000003
+Epoch 48: saving model to /app/models/checkpoint_epoch_48.keras
+Epoch 49: loss=1.15799, iou=0.19523, val_loss=1.23022, val_iou=0.17058 - lr: 0.000003
+Epoch 49: saving model to /app/models/checkpoint_epoch_49.keras
+Epoch 50: loss=1.18126, iou=0.19429, val_loss=1.21023, val_iou=0.17363 - lr: 0.000002
+Epoch 50: saving model to /app/models/checkpoint_epoch_50.keras
+Epoch 51: loss=1.17036, iou=0.19576, val_loss=1.18198, val_iou=0.18019 - lr: 0.000002
+Epoch 51: saving model to /app/models/checkpoint_epoch_51.keras
+Epoch 52: loss=1.14683, iou=0.19704, val_loss=1.21386, val_iou=0.17254 - lr: 0.000002
+Epoch 52: saving model to /app/models/checkpoint_epoch_52.keras
+Epoch 53: loss=1.21393, iou=0.18964, val_loss=1.23839, val_iou=0.16941 - lr: 0.000050
+Epoch 53: saving model to /app/models/checkpoint_epoch_53.keras
+Epoch 54: loss=1.19355, iou=0.18771, val_loss=1.26799, val_iou=0.16260 - lr: 0.000050
+Epoch 54: saving model to /app/models/checkpoint_epoch_54.keras
+Epoch 55: loss=1.18118, iou=0.18802, val_loss=1.20892, val_iou=0.17510 - lr: 0.000050
+Epoch 55: saving model to /app/models/checkpoint_epoch_55.keras
+Epoch 56: loss=1.18328, iou=0.19087, val_loss=1.18483, val_iou=0.18195 - lr: 0.000050
+Epoch 56: saving model to /app/models/checkpoint_epoch_56.keras
+Epoch 57: loss=1.15840, iou=0.19420, val_loss=1.21266, val_iou=0.17155 - lr: 0.000050
+Epoch 57: saving model to /app/models/checkpoint_epoch_57.keras
+0s 1s/step - loss: 1.1837 - iou: 0.1948 - val_loss: 1.2116 - val_iou: 0.1724 - lr: 5.000000e-05
+Epoch 58: saving model to /app/models/checkpoint_epoch_58.keras
+349s 1s/step - loss: 1.1597 - iou: 0.1966 - val_loss: 1.1659 - val_iou: 0.1864 - lr: 5.000000e-05
+Epoch 59: saving model to /app/models/checkpoint_epoch_59.keras
+349s 1s/step - loss: 1.1410 - iou: 0.1992 - val_loss: 1.2333 - val_iou: 0.1729 - lr: 5.000000e-05
+Epoch 60: saving model to /app/models/checkpoint_epoch_60.keras
+353s 1s/step - loss: 1.1373 - iou: 0.1986 - val_loss: 1.1391 - val_iou: 0.1936 - lr: 5.000000e-05
+Epoch 61: saving model to /app/models/checkpoint_epoch_61.keras
+355s 1s/step - loss: 1.1167 - iou: 0.2044 - val_loss: 1.1469 - val_iou: 0.1871 - lr: 5.000000e-05
+Epoch 62: saving model to /app/models/checkpoint_epoch_62.keras
+353s 1s/step - loss: 1.1104 - iou: 0.2025 - val_loss: 1.1647 - val_iou: 0.1832 - lr: 5.000000e-05
+Epoch 63: saving model to /app/models/checkpoint_epoch_63.keras
+353s 1s/step - loss: 1.1203 - iou: 0.2036 - val_loss: 1.1383 - val_iou: 0.1926 - lr: 3.500000e-05
+Epoch 64: saving model to /app/models/checkpoint_epoch_64.keras
+396s 1s/step - loss: 1.0836 - iou: 0.2079 - val_loss: 1.1394 - val_iou: 0.1881 - lr: 3.500000e-05
+Epoch 65: saving model to /app/models/checkpoint_epoch_65.keras
+353s 1s/step - loss: 1.0897 - iou: 0.2075 - val_loss: 1.1308 - val_iou: 0.1888 - lr: 3.500000e-05
+Epoch 66: saving model to /app/models/checkpoint_epoch_66.keras
+354s 1s/step - loss: 1.0785 - iou: 0.2084 - val_loss: 1.1045 - val_iou: 0.1943 - lr: 3.500000e-05
+Epoch 67: saving model to /app/models/checkpoint_epoch_67.keras
+354s 1s/step - loss: 1.0902 - iou: 0.2091 - val_loss: 1.1168 - val_iou: 0.1885 - lr: 3.500000e-05
+Epoch 68: saving model to /app/models/checkpoint_epoch_68.keras
+353s 1s/step - loss: 1.0802 - iou: 0.2103 - val_loss: 1.1661 - val_iou: 0.1799 - lr: 3.500000e-05
+Epoch 69: saving model to /app/models/checkpoint_epoch_69.keras
+403s 1s/step - loss: 1.0641 - iou: 0.2109 - val_loss: 1.1214 - val_iou: 0.1944 - lr: 3.500000e-05
+Epoch 70: saving model to /app/models/checkpoint_epoch_70.keras

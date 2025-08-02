@@ -13,9 +13,9 @@ services:
     volumes:
       # Mount your Cityscapes dataset
       - C:/Users/stamir/Desktop/cityscape:/data
-      # Mount your specific Windows models directory
+      # Mount your specific Windows models directory  
       - C:/Users/stamir/Desktop/hls4ml_SS/models:/app/models
-      # Mount your specific Windows project directory
+      # Mount your specific Windows project directory (parent of docker folder)
       - C:/Users/stamir/Desktop/hls4ml_SS:/workspace
     ports:
       - "6006:6006"  # TensorBoard
