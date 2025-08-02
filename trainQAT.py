@@ -77,8 +77,8 @@ print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
 print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
 
 # Define constants
-INPUT_HEIGHT = 512
-INPUT_WIDTH = 1024
+INPUT_HEIGHT = 1024 
+INPUT_WIDTH = 2048
 NUM_CLASSES = 34
 DATASET_DIR = '/data'
 NUM_WORKERS = 4
@@ -176,39 +176,6 @@ def cleanup_memory():
     """Cleanup memory and run garbage collection"""
     gc.collect()
     tf.keras.backend.clear_session()
-
-# Simplified Combo Loss using built-in MeanIoU and constant weights
-class ComboLoss(tf.keras.losses.Loss):
-    def __init__(self, alpha_iou=0.3, alpha_ce=0.7, name='combo_loss'):
-        super(ComboLoss, self).__init__(name=name)
-        self.alpha_iou = alpha_iou  # Weight for IoU loss
-        self.alpha_ce = alpha_ce    # Weight for CrossEntropy loss
-        self.ce_loss = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
-        # Use built-in MeanIoU for IoU calculation
-        self.miou_metric = tf.keras.metrics.MeanIoU(num_classes=NUM_CLASSES)
-
-    def call(self, y_true, y_pred):
-        # Standard categorical crossentropy
-        ce_loss = self.ce_loss(y_true, y_pred)
-        
-        # Calculate IoU using built-in MeanIoU metric
-        # Convert to class indices for MeanIoU calculation
-        y_true_classes = tf.argmax(y_true, axis=-1)
-        y_pred_classes = tf.argmax(y_pred, axis=-1)
-        
-        # Update the metric state
-        self.miou_metric.update_state(y_true_classes, y_pred_classes)
-        
-        # Get current IoU and convert to loss (1 - IoU)
-        current_iou = self.miou_metric.result()
-        iou_loss = 1.0 - current_iou
-        
-        # Handle NaN values
-        ce_loss = tf.where(tf.math.is_finite(ce_loss), ce_loss, 0.0)
-        iou_loss = tf.where(tf.math.is_finite(iou_loss), iou_loss, 0.0)
-        
-        # Simple weighted combination
-        return self.alpha_iou * iou_loss + self.alpha_ce * ce_loss
 
 # Custom callbacks for better training monitoring
 class MemoryCleanupCallback(tf.keras.callbacks.Callback):
@@ -347,7 +314,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             # Normalize image
             image = image.astype(np.float32) / 255.0
             
-            # Convert mask to one-hot encoding
+            # Convert mask to one-hot encoding for categorical crossentropy
             mask = tf.keras.utils.to_categorical(mask, num_classes=NUM_CLASSES)
             
             return image, mask
@@ -754,8 +721,7 @@ def train_model():
                                                    'QBatchNormalization': QBatchNormalization,
                                                    'QActivation': QActivation,
                                                    'quantized_bits': quantized_bits,
-                                                   'quantized_relu': quantized_relu,
-                                                   'ComboLoss': ComboLoss
+                                                   'quantized_relu': quantized_relu
                                                })
             print(f"Successfully loaded model from {latest_model}")
             skip_compilation = True  # Model already compiled
@@ -803,8 +769,8 @@ def train_model():
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         model.compile(
             optimizer=optimizer,
-            loss=ComboLoss(alpha_iou=0.3, alpha_ce=0.7),  # Simple constant weights: 30% IoU, 70% CrossEntropy
-            metrics=[tf.keras.metrics.MeanIoU(num_classes=NUM_CLASSES, name='mean_iou')]
+            loss='categorical_crossentropy',  # Standard categorical crossentropy loss
+            metrics=['accuracy']  # Use accuracy metric
         )
         print(f"Model compiled with learning rate: {learning_rate}")
     else:
@@ -820,38 +786,35 @@ def train_model():
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
             save_weights_only=False,
             save_best_only=False,
-            monitor='val_mean_iou',
-            mode='max',
+            monitor='val_loss',
+            mode='min',
             verbose=1
         ),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_best.keras'),
             save_weights_only=False,
             save_best_only=True,
-            monitor='val_mean_iou',
-            mode='max',
+            monitor='val_loss',
+            mode='min',
             verbose=1
         ),
         ReduceLROnPlateau(
-            monitor='val_mean_iou',
-            mode='max',
+            monitor='val_loss',
+            mode='min',
             factor=0.7,
             patience=5,
             verbose=1,
             min_lr=1e-7
         ),
         EarlyStopping(
-            monitor='val_mean_iou',
-            mode='max',
+            monitor='val_loss',
+            mode='min',
             patience=15,
             verbose=1,
             restore_best_weights=True
         ),
-        MemoryCleanupCallback(),
-        TrainingLoggerCallback(model_dir)
-    ]
-    
-    # Train model
+        MemoryCleanupCallback()
+    ]    # Train model
     try:
         print(f"Starting training from epoch {initial_epoch}...")
         history = model.fit(
@@ -891,14 +854,14 @@ def train_model():
         if hasattr(history, 'history'):
             final_loss = history.history['loss'][-1]
             final_val_loss = history.history['val_loss'][-1]
-            final_miou = history.history['mean_iou'][-1]
-            final_val_miou = history.history['val_mean_iou'][-1]
+            final_accuracy = history.history['accuracy'][-1]
+            final_val_accuracy = history.history['val_accuracy'][-1]
             
             print(f"\nFinal Training Results:")
             print(f"  Training Loss: {final_loss:.4f}")
             print(f"  Validation Loss: {final_val_loss:.4f}")
-            print(f"  Training Mean IoU: {final_miou:.4f}")
-            print(f"  Validation Mean IoU: {final_val_miou:.4f}")
+            print(f"  Training Accuracy: {final_accuracy:.4f}")
+            print(f"  Validation Accuracy: {final_val_accuracy:.4f}")
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")

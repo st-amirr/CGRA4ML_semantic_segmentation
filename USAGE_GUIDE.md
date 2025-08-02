@@ -128,7 +128,7 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # 3. You're now inside the container - run Phase 1
-python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --subset_ratio=0.8
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --subset_ratio=0.9
 
 # 4. Wait for training to complete (6-8 hours), then check results
 ls -la /app/models/float32_*.keras
