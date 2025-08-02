@@ -342,6 +342,11 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
             if logs is not None:
                 # Main metrics (these appear as separate scalars)
                 logs['epoch_miou'] = overall_miou  # Overall mean IoU across all classes
+                
+                # Learning rate tracking
+                if hasattr(self.model.optimizer, 'learning_rate'):
+                    current_lr = float(self.model.optimizer.learning_rate)
+                    logs['learning_rate'] = current_lr
 
                 # Group per-class IoU metrics under "IoU_Classes" category
                 # TensorBoard will automatically group these by the prefix before the slash

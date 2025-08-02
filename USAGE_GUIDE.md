@@ -130,6 +130,35 @@ docker-compose exec hls4ml-training /bin/bash
 # 3. You're now inside the container - run Phase 1
 python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --subset_ratio=0.9
 
+## TensorBoard Monitoring Metrics
+
+Your training script now provides comprehensive real-time monitoring through TensorBoard with the following metrics:
+
+### Main Scalar Metrics (Individual Charts)
+- **`epoch_miou`** - Overall mean IoU across all 34 classes (primary performance metric)
+- **`learning_rate`** - Current learning rate (tracks ReduceLROnPlateau adjustments)
+- **`loss`** - Training loss
+- **`val_loss`** - Validation loss
+- **`accuracy`** - Training accuracy
+- **`val_accuracy`** - Validation accuracy
+
+### Grouped Metrics (Combined Charts)
+- **`IoU_Classes/*`** - Per-class IoU metrics grouped together:
+  - `IoU_Classes/road`, `IoU_Classes/sidewalk`, `IoU_Classes/building`
+  - `IoU_Classes/wall`, `IoU_Classes/fence`, `IoU_Classes/pole`
+  - `IoU_Classes/traffic_light`, `IoU_Classes/traffic_sign`
+  - `IoU_Classes/vegetation`, `IoU_Classes/sky`
+  - `IoU_Classes/person`, `IoU_Classes/car`
+
+### Visual Monitoring
+- **Images Tab**: Automatic model input/output samples every epoch
+- **Custom Visualizations**: High-quality side-by-side comparisons every 5 epochs in `models/visualizations/`
+
+### Histograms and Graphs
+- **Weight distributions**: Layer weight histograms updated every epoch
+- **Model graph**: Complete computational graph visualization
+- **Gradient tracking**: Gradient flow analysis (when enabled)
+
 # 4. Wait for training to complete (6-8 hours), then check results
 ls -la /app/models/float32_*.keras
 
