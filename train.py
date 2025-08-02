@@ -499,7 +499,7 @@ def create_segmentation_model():
         variance_quantizer=quantized_bits(**quantized_bits_param_32),
         name='boundary_enhance1_bn'
     )(x_boundary)
-    x_boundary = QActivation(quantized_relu(**quantized_relu_param_32), name='boundary_enhance1_act')(x_boundary)
+    x_boundary = QActivation('relu', name='boundary_enhance1_act')(x_boundary)
 
     x_boundary = QConv2D(MODEL_CONFIG['init_filters'], kernel_size=3, padding='same',
                       kernel_quantizer=quantized_bits(**quantized_bits_param_32),
