@@ -45,7 +45,7 @@ import math
 # Define constants
 INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
 INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
-BATCH_SIZE = 8  # Reduced to 1 for memory constraints
+BATCH_SIZE = 2  # Reduced to 2 for memory constraints
 EPOCHS = 200
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
@@ -1189,49 +1189,49 @@ def train_model():
     current_step = initial_epoch * steps_per_epoch
     
     # Create step-aware cosine decay scheduler that handles resumption
-    def step_aware_cosine_schedule(epoch, logs=None):
-        """Cosine decay with warm restarts that properly handles training resumption"""
-        # Calculate global step (accounts for resumed training)
-        global_step = current_step + (epoch - initial_epoch) * steps_per_epoch
+    # def step_aware_cosine_schedule(epoch, logs=None):
+    #     """Cosine decay with warm restarts that properly handles training resumption"""
+    #     # Calculate global step (accounts for resumed training)
+    #     global_step = current_step + (epoch - initial_epoch) * steps_per_epoch
         
-        # Cosine decay with warm restarts parameters
-        initial_lr = 1e-3
-        first_decay_steps = 1000
-        t_mul = 2.0
-        m_mul = 0.9
-        alpha = 0.01  # minimum lr as fraction of initial
+    #     # Cosine decay with warm restarts parameters
+    #     initial_lr = 1e-3
+    #     first_decay_steps = 1000
+    #     t_mul = 2.0
+    #     m_mul = 0.9
+    #     alpha = 0.01  # minimum lr as fraction of initial
         
-        # Find which restart cycle we're in by tracking cumulative steps
-        remaining_steps = global_step
-        cycle = 0
-        current_cycle_length = first_decay_steps
+    #     # Find which restart cycle we're in by tracking cumulative steps
+    #     remaining_steps = global_step
+    #     cycle = 0
+    #     current_cycle_length = first_decay_steps
         
-        # Subtract completed cycles until we find the current cycle
-        while remaining_steps >= current_cycle_length:
-            remaining_steps -= current_cycle_length
-            cycle += 1
-            current_cycle_length = int(first_decay_steps * (t_mul ** cycle))
+    #     # Subtract completed cycles until we find the current cycle
+    #     while remaining_steps >= current_cycle_length:
+    #         remaining_steps -= current_cycle_length
+    #         cycle += 1
+    #         current_cycle_length = int(first_decay_steps * (t_mul ** cycle))
         
-        # remaining_steps is now the position within the current cycle
-        step_in_cycle = remaining_steps
+    #     # remaining_steps is now the position within the current cycle
+    #     step_in_cycle = remaining_steps
         
-        # Calculate learning rate for current position in cycle
-        max_lr = initial_lr * (m_mul ** cycle)
-        min_lr = max_lr * alpha
+    #     # Calculate learning rate for current position in cycle
+    #     max_lr = initial_lr * (m_mul ** cycle)
+    #     min_lr = max_lr * alpha
         
-        # Cosine decay within current cycle
-        cosine_decay = 0.5 * (1 + tf.math.cos(np.pi * step_in_cycle / current_cycle_length))
-        lr = min_lr + (max_lr - min_lr) * cosine_decay
+    #     # Cosine decay within current cycle
+    #     cosine_decay = 0.5 * (1 + tf.math.cos(np.pi * step_in_cycle / current_cycle_length))
+    #     lr = min_lr + (max_lr - min_lr) * cosine_decay
         
-        # Debug info (optional - remove if too verbose)
-        if epoch % 5 == 0:  # Print every 5 epochs
-            print(f"Debug LR: Global step={global_step}, Cycle={cycle}, Step in cycle={step_in_cycle}/{current_cycle_length}, LR={lr:.6f}")
+    #     # Debug info (optional - remove if too verbose)
+    #     if epoch % 5 == 0:  # Print every 5 epochs
+    #         print(f"Debug LR: Global step={global_step}, Cycle={cycle}, Step in cycle={step_in_cycle}/{current_cycle_length}, LR={lr:.6f}")
         
-        return float(lr)
+    #     return float(lr)
     
     callbacks = [
         # Step-aware learning rate scheduler that handles resumption
-        tf.keras.callbacks.LearningRateScheduler(step_aware_cosine_schedule, verbose=1),
+        # tf.keras.callbacks.LearningRateScheduler(step_aware_cosine_schedule, verbose=1),
         
         ModelCheckpoint(
             f'/app/models/best_model{file_extension}',
@@ -1255,15 +1255,15 @@ def train_model():
             restore_best_weights=True,
             verbose=1
         ),
-        # ReduceLROnPlateau(
-        #     monitor='val_iou',
-        #     mode='max',
-        #     factor=0.7,  # Reduce LR by 30% when plateauing
-        #     patience=10,   # Wait 3 epochs before reducing
-        #     min_lr=1e-7,  # Minimum LR
-        #     verbose=1,
-        #     restore_best_weights=False
-        # ),
+        ReduceLROnPlateau(
+            monitor='val_iou',
+            mode='max',
+            factor=0.8,  # Reduce LR by 30% when plateauing
+            patience=20,   # Wait 3 epochs before reducing
+            min_lr=1e-7,  # Minimum LR
+            verbose=1,
+            restore_best_weights=False
+        ),
         MemoryCleanupCallback(),
         TrainingLoggerCallback('/app/models')
     ]
