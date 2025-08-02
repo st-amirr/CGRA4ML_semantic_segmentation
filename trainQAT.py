@@ -36,12 +36,14 @@ from tensorflow.keras.preprocessing.image import load_img
 from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Multiply, Dropout
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu
 from qkeras.utils import model_save_quantized_weights
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard
 import albumentations as A
 from PIL import Image
 import cv2
 from pathlib import Path
 import math
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='HLS4ML Semantic Segmentation with QAT Toggle')
@@ -108,6 +110,10 @@ tf.config.set_soft_device_placement(True)
 #         print("✅ GPU memory limit set to 10GB to utilize more VRAM")
 #     except RuntimeError as e:
 #         print(f"GPU memory growth setup failed: {e}")
+
+# Enable additional TensorFlow optimizations for GPU utilization
+tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utilization
+# tf.config.experimental.enable_op_determinism(False)  # Allow non-deterministic ops for performance
 
 print(f"Eager execution enabled: {tf.executing_eagerly()}")
 tf.debugging.set_log_device_placement(DEBUG_MODE)
@@ -205,55 +211,148 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
         memory_usage = process.memory_info().rss / 1024 / 1024  # Convert to MB
         print(f"\nMemory usage after epoch {epoch}: {memory_usage:.2f} MB")
 
-class TrainingLoggerCallback(tf.keras.callbacks.Callback):
-    def __init__(self, log_dir):
+class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
+    def __init__(self, val_generator, save_dir, num_samples=4, save_frequency=5):
         super().__init__()
-        self.log_file = os.path.join(log_dir, 'log.txt')
-        os.makedirs(log_dir, exist_ok=True)
-        # Ensure the log file exists
-        if not os.path.exists(self.log_file):
-            try:
-                with open(self.log_file, 'w') as f:
-                    f.write('')
-            except Exception as e:
-                print(f"[TrainingLoggerCallback] Could not create log.txt: {e}")
-        self.epoch_start_time = time.time()
-
+        self.val_generator = val_generator
+        self.save_dir = save_dir
+        self.num_samples = num_samples
+        self.save_frequency = save_frequency  # Save every N epochs
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Cityscapes color palette (simplified version)
+        self.colors = [
+            [128, 64, 128],   # road
+            [244, 35, 232],   # sidewalk  
+            [70, 70, 70],     # building
+            [102, 102, 156],  # wall
+            [190, 153, 153],  # fence
+            [153, 153, 153],  # pole
+            [250, 170, 30],   # traffic light
+            [220, 220, 0],    # traffic sign
+            [107, 142, 35],   # vegetation
+            [152, 251, 152],  # terrain
+            [70, 130, 180],   # sky
+            [220, 20, 60],    # person
+            [255, 0, 0],      # rider
+            [0, 0, 142],      # car
+            [0, 0, 70],       # truck
+            [0, 60, 100],     # bus
+            [0, 80, 100],     # train
+            [0, 0, 230],      # motorcycle
+            [119, 11, 32],    # bicycle
+        ]
+        # Extend colors for all 34 classes
+        while len(self.colors) < NUM_CLASSES:
+            self.colors.append([np.random.randint(0, 255) for _ in range(3)])
+    
+    def colorize_mask(self, mask):
+        """Convert class indices to RGB colors"""
+        h, w = mask.shape
+        colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
+        for class_id in range(min(len(self.colors), NUM_CLASSES)):
+            colored_mask[mask == class_id] = self.colors[class_id]
+        return colored_mask
+    
     def on_epoch_end(self, epoch, logs=None):
-        logs = logs or {}
-        # Use self.epoch_start_time if available, else fallback to previous epoch duration
-        if self.epoch_start_time is None:
-            self.epoch_start_time = time.time()
-        epoch_end_time = time.time()
-        epoch_duration = epoch_end_time - self.epoch_start_time
-        self.epoch_start_time = epoch_end_time  # Prepare for next epoch
-        lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
-        # Format metrics for log
-        loss = logs.get('loss', None)
-        accuracy = logs.get('accuracy', None)
-        val_loss = logs.get('val_loss', None)
-        val_accuracy = logs.get('val_accuracy', None)
-        # Format time as seconds
-        time_str = f"{int(epoch_duration)}s"
-        # Compose log line similar to terminal output
-        log_line = f"{time_str} 1s/step - "
-        if loss is not None:
-            log_line += f"loss: {loss:.4f} - "
-        if accuracy is not None:
-            log_line += f"accuracy: {accuracy:.4f} - "
-        if val_loss is not None:
-            log_line += f"val_loss: {val_loss:.4f} - "
-        if val_accuracy is not None:
-            log_line += f"val_accuracy: {val_accuracy:.4f} - "
-        log_line += f"lr: {lr:.6e}\n"
-        # Log model saving info
-        model_prefix = "qat_model" if TRAIN_QAT else "float32_model"
-        log_line += f"Epoch {epoch+1}: saving model to ./models/{model_prefix}_checkpoint_epoch_{epoch+1:02d}.keras\n"
-        try:
-            with open(self.log_file, 'a') as f:
-                f.write(log_line)
-        except Exception as e:
-            print(f"[TrainingLoggerCallback] Could not write to log.txt: {e}")
+        if (epoch + 1) % self.save_frequency == 0:
+            try:
+                # Get a batch of validation data
+                batch_images, batch_masks = self.val_generator[0]
+                
+                # Make predictions
+                predictions = self.model.predict(batch_images, verbose=0)
+                
+                # Process samples
+                for i in range(min(self.num_samples, len(batch_images))):
+                    # Original image
+                    original_img = (batch_images[i] * 255).astype(np.uint8)
+                    
+                    # Ground truth mask
+                    gt_mask = np.argmax(batch_masks[i], axis=-1)
+                    gt_colored = self.colorize_mask(gt_mask)
+                    
+                    # Predicted mask
+                    pred_mask = np.argmax(predictions[i], axis=-1)
+                    pred_colored = self.colorize_mask(pred_mask)
+                    
+                    # Create combined visualization
+                    combined = np.hstack([original_img, gt_colored, pred_colored])
+                    
+                    # Save as image
+                    save_path = os.path.join(self.save_dir, f'epoch_{epoch+1:03d}_sample_{i+1}.png')
+                    cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+                
+                print(f"\n📸 Saved prediction visualizations for epoch {epoch+1} in {self.save_dir}")
+                
+            except Exception as e:
+                print(f"⚠️  Could not save prediction visualizations: {e}")
+
+class DetailedMetricsCallback(tf.keras.callbacks.Callback):
+    def __init__(self, val_generator, save_dir, num_classes=NUM_CLASSES):
+        super().__init__()
+        self.val_generator = val_generator
+        self.save_dir = save_dir
+        self.num_classes = num_classes
+        os.makedirs(save_dir, exist_ok=True)
+        
+    def calculate_iou(self, y_true, y_pred):
+        """Calculate IoU for each class"""
+        ious = []
+        for class_id in range(self.num_classes):
+            true_class = (y_true == class_id)
+            pred_class = (y_pred == class_id)
+            
+            intersection = np.logical_and(true_class, pred_class).sum()
+            union = np.logical_or(true_class, pred_class).sum()
+            
+            if union == 0:
+                iou = 1.0 if intersection == 0 else 0.0
+            else:
+                iou = intersection / union
+            ious.append(iou)
+        
+        return np.array(ious)
+    
+    def on_epoch_end(self, epoch, logs=None):
+        if (epoch + 1) % 5 == 0:  # Calculate detailed metrics every 5 epochs
+            try:
+                print(f"\n📊 Calculating detailed metrics for epoch {epoch+1}...")
+                
+                all_ious = []
+                total_samples = min(10, len(self.val_generator))  # Sample 10 batches
+                
+                for batch_idx in range(total_samples):
+                    batch_images, batch_masks = self.val_generator[batch_idx]
+                    predictions = self.model.predict(batch_images, verbose=0)
+                    
+                    for i in range(len(batch_images)):
+                        gt_mask = np.argmax(batch_masks[i], axis=-1)
+                        pred_mask = np.argmax(predictions[i], axis=-1)
+                        
+                        iou_per_class = self.calculate_iou(gt_mask.flatten(), pred_mask.flatten())
+                        all_ious.append(iou_per_class)
+                
+                # Calculate mean IoU
+                mean_ious = np.mean(all_ious, axis=0)
+                overall_miou = np.mean(mean_ious)
+                
+                print(f"📈 Overall mIoU: {overall_miou:.4f}")
+                print(f"📈 Per-class IoU (top 5): {mean_ious[:5]}")
+                
+                # Save detailed metrics
+                metrics_file = os.path.join(self.save_dir, f'detailed_metrics_epoch_{epoch+1:03d}.txt')
+                with open(metrics_file, 'w') as f:
+                    f.write(f"Epoch {epoch+1} Detailed Metrics\n")
+                    f.write(f"Overall mIoU: {overall_miou:.4f}\n")
+                    f.write("Per-class IoU:\n")
+                    for class_id, iou in enumerate(mean_ious):
+                        f.write(f"  Class {class_id}: {iou:.4f}\n")
+                
+            except Exception as e:
+                print(f"⚠️  Could not calculate detailed metrics: {e}")
+
+
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
     """Data generator for Cityscapes dataset"""
@@ -754,7 +853,8 @@ def train_model():
                     model = create_segmentation_model(use_quantization=False)
                 model.load_weights(os.path.join(model_dir, latest_model))
                 print(f"Successfully loaded weights from {latest_model}")
-                initial_epoch = 0  # Reset epoch if only weights loaded
+                # Keep the extracted epoch number when loading weights
+                print(f"Continuing training from epoch {initial_epoch}")
             except Exception as e_weights:
                 print(f"Failed to load weights: {e_weights}")
                 print("Creating new model")
@@ -798,6 +898,16 @@ def train_model():
     # Create callbacks
     os.makedirs(model_dir, exist_ok=True)
     
+    # Setup TensorBoard logging
+    tensorboard_log_dir = os.path.join(model_dir, 'tb_logs')
+    os.makedirs(tensorboard_log_dir, exist_ok=True)
+    
+    # Setup visualization directories
+    viz_dir = os.path.join(model_dir, 'visualizations')
+    metrics_dir = os.path.join(model_dir, 'metrics')
+    os.makedirs(viz_dir, exist_ok=True)
+    os.makedirs(metrics_dir, exist_ok=True)
+    
     callbacks = [
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
@@ -830,7 +940,24 @@ def train_model():
             verbose=1,
             restore_best_weights=True
         ),
-        TrainingLoggerCallback(model_dir),  # Add logging to log.txt file
+        TensorBoard(
+            log_dir=tensorboard_log_dir,
+            histogram_freq=1,
+            write_graph=True,
+            write_images=False,  # Disable to save space
+            update_freq='epoch',
+            profile_batch=0  # Disable profiling for performance
+        ),
+        PredictionVisualizationCallback(
+            val_generator=val_generator,
+            save_dir=viz_dir,
+            num_samples=4,
+            save_frequency=5  # Save visualizations every 5 epochs
+        ),
+        DetailedMetricsCallback(
+            val_generator=val_generator,
+            save_dir=metrics_dir
+        ),
         MemoryCleanupCallback()
     ]    # Train model
     try:
@@ -867,6 +994,19 @@ def train_model():
             print("Note: Quantized weights saved from clean model (without dropout) for HLS4ML compatibility")
         
         print("Training completed successfully!")
+        
+        # Print TensorBoard access information
+        print(f"\n" + "="*60)
+        print("📊 TensorBoard Monitoring Available!")
+        print(f"📁 Log Directory: {tensorboard_log_dir}")
+        print("🌐 To view training progress in your browser:")
+        print(f"   Run: tensorboard --logdir=\"{tensorboard_log_dir}\" --host=localhost --port=6006")
+        print("   Then open: http://localhost:6006")
+        print("\n📸 Visual Results Available!")
+        print(f"🖼️  Prediction visualizations: {viz_dir}")
+        print(f"📈 Detailed metrics: {metrics_dir}")
+        print("   Check these directories for visual comparisons of model predictions")
+        print("="*60)
         
         # Print training summary
         if hasattr(history, 'history'):

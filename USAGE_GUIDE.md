@@ -128,7 +128,7 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # 3. You're now inside the container - run Phase 1
-python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --subset_ratio=0.9
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --subset_ratio=0.9
 
 # 4. Wait for training to complete (6-8 hours), then check results
 ls -la /app/models/float32_*.keras
@@ -143,8 +143,13 @@ ls -la /app/models/
 ### Monitoring During Training
 
 ```bash
-# In another terminal window, monitor training progress
-docker-compose exec hls4ml-training tail -f /app/models/log.txt
+# Start TensorBoard for real-time monitoring (in separate terminal)
+docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
+# Alternative container name (if using hls4ml-cityscapes)
+docker-compose exec hls4ml-cityscapes tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
+# Then access TensorBoard in your browser at: http://localhost:6006
 
 # Check GPU usage
 docker-compose exec hls4ml-training nvidia-smi
@@ -224,8 +229,8 @@ python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_
 # Check available models
 ls -la /app/models/
 
-# Monitor training
-tail -f /app/models/log.txt
+# Start TensorBoard to monitor training
+tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
 # Check GPU
 nvidia-smi
@@ -260,8 +265,8 @@ python3 /workspace/trainQAT.py --trainQAT=False --epochs=10 --batch_size=2 --sub
 # Phase 1: Training float32 baseline model
 # ============================================================
 
-# Training will take 6-8 hours. Monitor with:
-# tail -f /app/models/log.txt
+# Training will take 6-8 hours. Monitor with TensorBoard:
+# tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 ```
 
 ### Phase 2 - QAT Training (Inside Container, After Phase 1)
@@ -329,10 +334,30 @@ Epoch 20/20: loss: 0.6xxx - iou: 0.49xx - val_iou: 0.46xx # Final quantized mode
 
 ## Monitoring Training
 
+### TensorBoard Data Persistence
+**Good news: TensorBoard data is automatically saved and persists between sessions!**
+
+- **Automatic saving**: All training metrics are saved to `/app/models/tb_logs/` 
+- **Persistent storage**: Data remains available even after stopping/restarting training
+- **Cumulative history**: When you resume training, new data is added to existing logs
+- **Multiple runs**: You can compare different training runs in the same TensorBoard view
+- **No data loss**: Stopping TensorBoard or restarting Docker containers won't lose your training history
+
+### Accessing Historical Data
+```bash
+# Start TensorBoard anytime to view all your training history
+tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
+# View data from previous training sessions, current training, and future runs
+# All data is automatically preserved in the tb_logs directory
+```
+
 ### Inside Container Terminal
 ```bash
-# View live training logs (most important)
-tail -f /app/models/log.txt
+# Start TensorBoard for real-time monitoring
+tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
+# Then open http://localhost:6006 in your browser
 
 # Check GPU usage
 nvidia-smi
@@ -342,15 +367,17 @@ ls -la /app/models/
 
 # Check memory usage
 free -h
-
-# Check training progress (look for IoU improvements)
-grep "val_iou" /app/models/log.txt | tail -10
 ```
 
 ### From Windows Terminal (Alternative)
 ```bash
-# View logs from outside container
-docker-compose exec hls4ml-training tail -f /app/models/log.txt
+# Start TensorBoard from outside container
+docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
+# Alternative container name (if using hls4ml-cityscapes)
+docker-compose exec hls4ml-cityscapes tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
+# Access TensorBoard at: http://localhost:6006
 
 # Check GPU from outside
 docker-compose exec hls4ml-training nvidia-smi
