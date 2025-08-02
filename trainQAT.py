@@ -106,8 +106,6 @@ tf.config.set_soft_device_placement(True)
 #                 gpu,
 #                 [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
 #             )
-#         print("✅ GPU memory growth enabled - VRAM will be allocated as needed")
-#         print("✅ GPU memory limit set to 10GB to utilize more VRAM")
 #     except RuntimeError as e:
 #         print(f"GPU memory growth setup failed: {e}")
 
@@ -289,11 +287,12 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                 print(f"⚠️  Could not save prediction visualizations: {e}")
 
 class DetailedMetricsCallback(tf.keras.callbacks.Callback):
-    def __init__(self, val_generator, save_dir, num_classes=NUM_CLASSES):
+    def __init__(self, val_generator, save_dir, num_classes=NUM_CLASSES, save_frequency=5):
         super().__init__()
         self.val_generator = val_generator
         self.save_dir = save_dir
         self.num_classes = num_classes
+        self.save_frequency = save_frequency
         os.makedirs(save_dir, exist_ok=True)
         
     def calculate_iou(self, y_true, y_pred):
@@ -315,42 +314,73 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
         return np.array(ious)
     
     def on_epoch_end(self, epoch, logs=None):
-        if (epoch + 1) % 5 == 0:  # Calculate detailed metrics every 5 epochs
-            try:
-                print(f"\n📊 Calculating detailed metrics for epoch {epoch+1}...")
+        try:
+            print(f"\n📊 Calculating IoU metrics for epoch {epoch+1}...")
+            
+            all_ious = []
+            total_samples = min(5, len(self.val_generator))  # Sample 5 batches for faster calculation
+            
+            for batch_idx in range(total_samples):
+                batch_images, batch_masks = self.val_generator[batch_idx]
+                predictions = self.model.predict(batch_images, verbose=0)
                 
-                all_ious = []
-                total_samples = min(10, len(self.val_generator))  # Sample 10 batches
-                
-                for batch_idx in range(total_samples):
-                    batch_images, batch_masks = self.val_generator[batch_idx]
-                    predictions = self.model.predict(batch_images, verbose=0)
+                for i in range(len(batch_images)):
+                    gt_mask = np.argmax(batch_masks[i], axis=-1)
+                    pred_mask = np.argmax(predictions[i], axis=-1)
                     
-                    for i in range(len(batch_images)):
-                        gt_mask = np.argmax(batch_masks[i], axis=-1)
-                        pred_mask = np.argmax(predictions[i], axis=-1)
-                        
-                        iou_per_class = self.calculate_iou(gt_mask.flatten(), pred_mask.flatten())
-                        all_ious.append(iou_per_class)
-                
-                # Calculate mean IoU
-                mean_ious = np.mean(all_ious, axis=0)
-                overall_miou = np.mean(mean_ious)
-                
-                print(f"📈 Overall mIoU: {overall_miou:.4f}")
-                print(f"📈 Per-class IoU (top 5): {mean_ious[:5]}")
-                
-                # Save detailed metrics
+                    iou_per_class = self.calculate_iou(gt_mask.flatten(), pred_mask.flatten())
+                    all_ious.append(iou_per_class)
+            
+            # Calculate mean IoU
+            mean_ious = np.mean(all_ious, axis=0)
+            overall_miou = np.mean(mean_ious)
+            
+            print(f"📈 Overall mIoU: {overall_miou:.4f}")
+            print(f"📈 Per-class IoU (top 5): {mean_ious[:5]}")
+            
+            # Log to TensorBoard every epoch with organized metrics
+            if logs is not None:
+                # Main metrics (these appear as separate scalars)
+                logs['epoch_miou'] = overall_miou  # Overall mean IoU across all classes
+
+                # Group per-class IoU metrics under "IoU_Classes" category
+                # TensorBoard will automatically group these by the prefix before the slash
+                logs['IoU_Classes/road'] = mean_ious[0] if len(mean_ious) > 0 else 0.0
+                logs['IoU_Classes/sidewalk'] = mean_ious[1] if len(mean_ious) > 1 else 0.0
+                logs['IoU_Classes/building'] = mean_ious[2] if len(mean_ious) > 2 else 0.0
+                logs['IoU_Classes/wall'] = mean_ious[3] if len(mean_ious) > 3 else 0.0
+                logs['IoU_Classes/fence'] = mean_ious[4] if len(mean_ious) > 4 else 0.0
+                logs['IoU_Classes/pole'] = mean_ious[5] if len(mean_ious) > 5 else 0.0
+                logs['IoU_Classes/traffic_light'] = mean_ious[6] if len(mean_ious) > 6 else 0.0
+                logs['IoU_Classes/traffic_sign'] = mean_ious[7] if len(mean_ious) > 7 else 0.0
+                logs['IoU_Classes/vegetation'] = mean_ious[8] if len(mean_ious) > 8 else 0.0
+                logs['IoU_Classes/sky'] = mean_ious[10] if len(mean_ious) > 10 else 0.0
+                logs['IoU_Classes/person'] = mean_ious[11] if len(mean_ious) > 11 else 0.0
+                logs['IoU_Classes/car'] = mean_ious[13] if len(mean_ious) > 13 else 0.0
+            
+            # Save detailed metrics every save_frequency epochs
+            if (epoch + 1) % self.save_frequency == 0:
+           
                 metrics_file = os.path.join(self.save_dir, f'detailed_metrics_epoch_{epoch+1:03d}.txt')
                 with open(metrics_file, 'w') as f:
                     f.write(f"Epoch {epoch+1} Detailed Metrics\n")
                     f.write(f"Overall mIoU: {overall_miou:.4f}\n")
                     f.write("Per-class IoU:\n")
+                    class_names = [
+                        'road', 'sidewalk', 'building', 'wall', 'fence', 'pole', 
+                        'traffic_light', 'traffic_sign', 'vegetation', 'terrain', 
+                        'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train', 
+                        'motorcycle', 'bicycle'
+                    ]
                     for class_id, iou in enumerate(mean_ious):
-                        f.write(f"  Class {class_id}: {iou:.4f}\n")
-                
-            except Exception as e:
-                print(f"⚠️  Could not calculate detailed metrics: {e}")
+                        class_name = class_names[class_id] if class_id < len(class_names) else f'class_{class_id}'
+                        f.write(f"  {class_name}: {iou:.4f}\n")
+            
+        except Exception as e:
+            print(f"⚠️  Could not calculate IoU metrics: {e}")
+            # Set default values if calculation fails
+            if logs is not None:
+                logs['epoch_miou'] = 0.0
 
 
 
@@ -881,7 +911,7 @@ def train_model():
             learning_rate = 1e-5
         else:
             # Standard learning rate for float32 training
-            learning_rate = 1e-3
+            learning_rate = 7e-4
         
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         model.compile(
@@ -928,7 +958,7 @@ def train_model():
         ReduceLROnPlateau(
             monitor='val_loss',
             mode='min',
-            factor=0.7,
+            factor=0.8,
             patience=5,
             verbose=1,
             min_lr=1e-7
@@ -944,19 +974,20 @@ def train_model():
             log_dir=tensorboard_log_dir,
             histogram_freq=1,
             write_graph=True,
-            write_images=False,  # Disable to save space
+            write_images=True,  # Enable image logging to complement custom visualizations
             update_freq='epoch',
             profile_batch=0  # Disable profiling for performance
         ),
-        PredictionVisualizationCallback(
-            val_generator=val_generator,
-            save_dir=viz_dir,
-            num_samples=4,
-            save_frequency=5  # Save visualizations every 5 epochs
-        ),
+        # PredictionVisualizationCallback(
+        #     val_generator=val_generator,
+        #     save_dir=viz_dir,
+        #     num_samples=4,
+        #     save_frequency=5  # Save visualizations every 5 epochs
+        # ),
         DetailedMetricsCallback(
             val_generator=val_generator,
-            save_dir=metrics_dir
+            save_dir=metrics_dir,
+            save_frequency=5  # Save detailed text files every 5 epochs, but calculate IoU every epoch
         ),
         MemoryCleanupCallback()
     ]    # Train model

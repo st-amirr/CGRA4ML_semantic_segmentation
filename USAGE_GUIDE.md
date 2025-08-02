@@ -146,9 +146,6 @@ ls -la /app/models/
 # Start TensorBoard for real-time monitoring (in separate terminal)
 docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
-# Alternative container name (if using hls4ml-cityscapes)
-docker-compose exec hls4ml-cityscapes tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
-
 # Then access TensorBoard in your browser at: http://localhost:6006
 
 # Check GPU usage
