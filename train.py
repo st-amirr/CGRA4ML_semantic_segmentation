@@ -49,8 +49,8 @@ BATCH_SIZE = 2  # Reduced to 2 for memory constraints
 EPOCHS = 200
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
-SUBSET_RATIO = 1.0  # Use 20% of dataset per epoch
-NUM_WORKERS = 2  # Standard for data loading
+SUBSET_RATIO = 1.0  # Use 100% of dataset per epoch
+NUM_WORKERS = 4 # Standard for data loading
 PREFETCH_SIZE = 2  # Standard prefetch for efficiency
 GRADIENT_ACCUMULATION_STEPS = 2  # No gradient accumulation needed with current setup
 
@@ -692,10 +692,16 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         if self.subset_ratio < 1.0:
             total_samples = len(self.indices)
             subset_size = int(total_samples * self.subset_ratio)
+            # Clear previous epoch_indices to free memory
+            if hasattr(self, 'epoch_indices'):
+                del self.epoch_indices
             # Randomly select subset_size samples
             self.epoch_indices = np.random.choice(self.indices, size=subset_size, replace=False)
             print(f"Selected {subset_size}/{total_samples} samples ({self.subset_ratio*100:.1f}%) for this epoch")
         else:
+            # Clear previous epoch_indices to free memory
+            if hasattr(self, 'epoch_indices'):
+                del self.epoch_indices
             self.epoch_indices = self.indices.copy()
     
     def on_epoch_end(self):
@@ -725,6 +731,10 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             mask_one_hot = np.zeros((INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES), dtype=np.float32)
             np.put_along_axis(mask_one_hot, mask[..., np.newaxis], 1, axis=-1)
             
+            # Explicitly delete intermediate variables to prevent memory accumulation
+            del mask
+            
+            # Apply augmentation if enabled
             if self.augment and self.aug is not None:
                 augmented = self.aug(image=img, mask=mask_one_hot)
                 img = augmented['image']
@@ -764,7 +774,7 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         """Clean up memory at the end of each epoch"""
         gc.collect()
-        tf.keras.backend.clear_session()
+        # tf.keras.backend.clear_session()  # Removed - causes training slowdown after epoch 2
         # Log memory usage
         process = psutil.Process()
         memory_usage = process.memory_info().rss / 1024 / 1024  # Convert to MB
@@ -1277,7 +1287,7 @@ def train_model():
             epochs=EPOCHS,
             callbacks=callbacks,
             workers=NUM_WORKERS,
-            use_multiprocessing=False,
+            use_multiprocessing=True,
             max_queue_size=PREFETCH_SIZE,
             steps_per_epoch=max(1, len(train_gen) // GRADIENT_ACCUMULATION_STEPS),
             initial_epoch= initial_epoch,
