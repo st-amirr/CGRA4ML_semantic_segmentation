@@ -1269,7 +1269,7 @@ def train_model():
             monitor='val_iou',
             mode='max',
             factor=0.8,  # Reduce LR by 30% when plateauing
-            patience=20,   # Wait 3 epochs before reducing
+            patience=7,   # Wait 7 epochs before reducing
             min_lr=1e-7,  # Minimum LR
             verbose=1,
             restore_best_weights=False
