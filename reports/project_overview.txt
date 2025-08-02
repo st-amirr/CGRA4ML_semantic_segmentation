@@ -6,48 +6,61 @@ Project Overview and Objectives
    - Maximize segmentation accuracy while ensuring the model fits and runs efficiently on high-end FPGAs (e.g., Xilinx VCU118).
 
 2. **Technical Context:**
+   - **Training Strategy:** Two-phase approach following hls4ml best practices:
+     * Phase 1: Float32 baseline training for optimal convergence (50-100 epochs)
+     * Phase 2: QAT fine-tuning using trained float32 weights (15-30 epochs)
    - **Frameworks:** TensorFlow/Keras for model definition and training; QKeras for quantization; hls4ml for FPGA conversion.
-   - **Quantization:** Use QKeras layers (QConv2D, QBatchNormalization, QActivation) with 8-bit and 16-bit quantization, and quantized ReLU activations. Quantization-Aware Training (QAT) is required.
+   - **Quantization:** Multi-precision quantization strategy:
+     * 8-bit: Input/output and light encoding layers (encoder1, decoder0)
+     * 16-bit: Medium complexity layers (encoder2, encoder3, decoder1, decoder2)
+     * 32-bit: Critical layers requiring high precision (bridge, decoder3)
    - **Model Architecture:**
-     - U-Net/YOLOv8-inspired encoder-decoder with skip connections, C2f blocks, SPPF, and channel attention modules.
-     - Downsampling is performed using QConv2D with strides=2 (no MaxPooling2D, for hls4ml compatibility).
-     - Input size: 1024x2048x3, output: 1024x2048x34 (Cityscapes dataset, 34 classes).
+     - U-Net encoder-decoder with skip connections, attention blocks, and multi-precision quantization
+     - FPGA-compatible design (no MaxPooling2D, optimized for hls4ml synthesis)
+     - Input size: 512x1024x3, output: 512x1024x34 (Cityscapes dataset, 34 classes)
+     - Configurable dropout layers (automatically removed for HLS4ML export)
    - **Data Pipeline:**
-     - Uses a custom `CityscapesDataGenerator` wrapped with `tf.data.Dataset.from_generator` and `.prefetch(PREFETCH_SIZE)` for efficient data loading.
-     - Batch size is typically 1 due to GPU memory constraints.
+     - Efficient `CityscapesDataGenerator` with Albumentations augmentation
+     - Configurable dataset subset ratios for testing (0.1-1.0)
+     - Optimized batch processing with prefetch buffer
    - **Training Environment:**
-     - Training is performed inside a Docker container (due to host driver issues).
-     - GPU memory is limited (8GB), so model and data pipeline are optimized for low memory usage.
-     - Mixed precision (float16) is **not** used due to QKeras incompatibility; all training is in float32.
-   - **Callbacks:**
-     - Model checkpoints, early stopping, learning rate reduction, memory cleanup, and periodic saving of quantized weights for hls4ml.
-   - **Dependencies:**
-     - Carefully pinned versions for TensorFlow, Keras, QKeras, NumPy, Albumentations, Pydantic, typing_extensions, OpenCV, etc., to avoid compatibility issues.
+     - Docker container with GPU support and comprehensive dependency management
+     - GPU utilization optimizations (XLA JIT, memory growth, non-deterministic ops)
+     - TensorBoard integration for real-time monitoring with comprehensive metrics
+   - **Monitoring & Visualization:**
+     - Real-time TensorBoard logging with organized metric groups
+     - Custom prediction visualizations with Cityscapes color coding
+     - Learning rate tracking and IoU metrics per class
+     - Automatic checkpoint resumption and progress persistence
 
-3. **Key Requirements:**
-   - Model must be compatible with hls4ml (no unsupported layers like MaxPooling2D).
-   - Quantization must be applied throughout the model (QKeras layers only).
-   - Prioritize segmentation accuracy, but model must fit and run on high-end FPGAs (VCU118 or similar).
-   - Minimize GPU memory usage (batch size 1, efficient data pipeline, no unnecessary prefetching).
-   - Save both standard and quantized (hls4ml-compatible) model weights during/after training.
-   - Training can be interrupted and resumed from the latest checkpoint.
+3. **Key Technical Features:**
+   - **Automatic Weight Transfer:** Seamless conversion from float32 to QAT models
+   - **Smart Training Resume:** Automatic detection and resumption from latest checkpoints
+   - **Comprehensive Monitoring:** TensorBoard scalars, images, and custom visualizations
+   - **HLS4ML Export Ready:** Clean models automatically generated without dropout layers
+   - **Resource Optimization:** Configurable batch sizes, subset ratios, and worker processes
 
-4. **Common Issues and Solutions:**
-   - **OOM Errors:**
-     - Reduce model complexity (filter counts), keep batch size at 1, optimize data pipeline.
-   - **Dependency Conflicts:**
-     - Use specific version pins in requirements.txt for all major libraries.
-   - **QKeras/Mixed Precision:**
-     - Do not use mixed_float16 policy; QKeras requires float32.
-   - **hls4ml Compatibility:**
-     - Avoid unsupported layers (e.g., MaxPooling2D); use QConv2D with strides for downsampling.
+4. **Performance Expectations:**
+   - **Phase 1 (Float32):** Expected IoU 0.35-0.55 (significant improvement from previous 0.12-0.14)
+   - **Phase 2 (QAT):** Expected IoU 0.30-0.50 (maintains good performance after quantization)
+   - **Training Time:** ~6-8 hours Phase 1 + 2-3 hours Phase 2 = ~9-11 hours total
 
-5. **Dataset:**
-   - Cityscapes dataset, standard directory structure, 34 classes.
-   - Images and masks are loaded, resized, and one-hot encoded for training.
+5. **Common Issues and Solutions:**
+   - **Previous QAT Issues:** Resolved by implementing two-phase training approach
+   - **GPU Utilization:** Optimized through XLA JIT, proper memory management, and float32 computation
+   - **Monitoring:** Comprehensive TensorBoard integration with persistent data storage
+   - **Model Export:** Automatic generation of clean HLS4ML-compatible models
 
-6. **FPGA Target:**
-   - Model must be exportable to hls4ml and synthesized for Xilinx VCU118 (or similar high-end FPGA).
+6. **Dataset & Environment:**
+   - Cityscapes dataset with standard directory structure (34 classes)
+   - Docker-based training with volume mounting for data persistence
+   - TensorBoard accessible at localhost:6006 for real-time monitoring
+
+7. **FPGA Deployment Pipeline:**
+   - Trained models automatically export HLS4ML-compatible quantized weights
+   - Clean model architecture without training-specific layers (dropout)
+   - Multi-precision quantization optimized for FPGA resource utilization
+   - Target: Xilinx VCU118 or similar high-end FPGA platforms
    - Quantization and architecture choices are made with FPGA resource constraints in mind.
 
 ---
