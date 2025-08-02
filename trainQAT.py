@@ -77,12 +77,12 @@ print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
 print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
 
 # Define constants
-INPUT_HEIGHT = 1024 
-INPUT_WIDTH = 2048
+INPUT_HEIGHT = 512
+INPUT_WIDTH = 1024
 NUM_CLASSES = 34
 DATASET_DIR = '/data'
 NUM_WORKERS = 4
-PREFETCH_SIZE = 2
+PREFETCH_MAX = 10
 
 DEBUG_MODE = False
 
@@ -91,6 +91,23 @@ n_cores = multiprocessing.cpu_count()
 tf.config.threading.set_inter_op_parallelism_threads(n_cores)
 tf.config.threading.set_intra_op_parallelism_threads(n_cores)
 tf.config.set_soft_device_placement(True)
+
+# # Configure GPU to use more VRAM (from train.py)
+# gpus = tf.config.experimental.list_physical_devices('GPU')
+# if gpus:
+#     try:
+#         for gpu in gpus:
+#             # Allow TensorFlow to allocate more GPU memory
+#             tf.config.experimental.set_memory_growth(gpu, True)
+#             # Set memory limit to use more VRAM (10GB limit for better utilization)
+#             tf.config.set_logical_device_configuration(
+#                 gpu,
+#                 [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
+#             )
+#         print("✅ GPU memory growth enabled - VRAM will be allocated as needed")
+#         print("✅ GPU memory limit set to 10GB to utilize more VRAM")
+#     except RuntimeError as e:
+#         print(f"GPU memory growth setup failed: {e}")
 
 print(f"Eager execution enabled: {tf.executing_eagerly()}")
 tf.debugging.set_log_device_placement(DEBUG_MODE)
@@ -213,21 +230,21 @@ class TrainingLoggerCallback(tf.keras.callbacks.Callback):
         lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
         # Format metrics for log
         loss = logs.get('loss', None)
-        mean_iou = logs.get('mean_iou', None)
+        accuracy = logs.get('accuracy', None)
         val_loss = logs.get('val_loss', None)
-        val_mean_iou = logs.get('val_mean_iou', None)
+        val_accuracy = logs.get('val_accuracy', None)
         # Format time as seconds
         time_str = f"{int(epoch_duration)}s"
         # Compose log line similar to terminal output
         log_line = f"{time_str} 1s/step - "
         if loss is not None:
             log_line += f"loss: {loss:.4f} - "
-        if mean_iou is not None:
-            log_line += f"mean_iou: {mean_iou:.4f} - "
+        if accuracy is not None:
+            log_line += f"accuracy: {accuracy:.4f} - "
         if val_loss is not None:
             log_line += f"val_loss: {val_loss:.4f} - "
-        if val_mean_iou is not None:
-            log_line += f"val_mean_iou: {val_mean_iou:.4f} - "
+        if val_accuracy is not None:
+            log_line += f"val_accuracy: {val_accuracy:.4f} - "
         log_line += f"lr: {lr:.6e}\n"
         # Log model saving info
         model_prefix = "qat_model" if TRAIN_QAT else "float32_model"
@@ -784,7 +801,7 @@ def train_model():
     callbacks = [
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
-            save_weights_only=False,
+            save_weights_only=True,
             save_best_only=False,
             monitor='val_loss',
             mode='min',
@@ -792,7 +809,7 @@ def train_model():
         ),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_best.keras'),
-            save_weights_only=False,
+            save_weights_only=True,
             save_best_only=True,
             monitor='val_loss',
             mode='min',
@@ -813,6 +830,7 @@ def train_model():
             verbose=1,
             restore_best_weights=True
         ),
+        TrainingLoggerCallback(model_dir),  # Add logging to log.txt file
         MemoryCleanupCallback()
     ]    # Train model
     try:
@@ -826,7 +844,7 @@ def train_model():
             verbose=1,
             workers=NUM_WORKERS,
             use_multiprocessing=True if NUM_WORKERS > 1 else False,
-            max_queue_size=10
+            max_queue_size=PREFETCH_MAX  # Use PREFETCH_MAX for data prefetching optimization
         )
         
         # Save final model
