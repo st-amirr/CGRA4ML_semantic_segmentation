@@ -45,7 +45,7 @@ import math
 # Define constants
 INPUT_HEIGHT = 512  # Reduced from 1024 to save memory
 INPUT_WIDTH = 1024  # Reduced from 2048 to save memory
-BATCH_SIZE = 2  # Reduced to 1 for memory constraints
+BATCH_SIZE = 8  # Reduced to 1 for memory constraints
 EPOCHS = 200
 NUM_CLASSES = 34
 DATASET_DIR = '/data'  # Updated to match actual path
@@ -841,19 +841,76 @@ class IoULoss(tf.keras.losses.Loss):
         # Return negative mean IoU as loss (since we want to maximize IoU)
         return 1.0 - tf.reduce_mean(iou)
 
-# Combo Loss combining IoU and Cross-Entropy
+# Combo Loss combining IoU and Cross-Entropy with adaptive weighting
 class ComboLoss(tf.keras.losses.Loss):
-    def __init__(self, alpha=0.5, name='combo_loss'):
+    def __init__(self, alpha=0.5, weighting_strategy='adaptive_magnitude', name='combo_loss'):
         super(ComboLoss, self).__init__(name=name)
-        self.alpha = alpha  # Weight for IoU Loss (1-alpha will be weight for CE)
+        self.alpha = alpha  # Base weight for IoU Loss (used in some strategies)
+        self.weighting_strategy = weighting_strategy
         self.iou_loss = IoULoss()
         self.ce_loss = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
+        # Moving averages for adaptive weighting
+        self.iou_ema = tf.Variable(1.0, trainable=False, name='iou_ema')
+        self.ce_ema = tf.Variable(1.0, trainable=False, name='ce_ema')
+        self.ema_decay = 0.9  # Exponential moving average decay
 
     def call(self, y_true, y_pred):
         iou_loss = self.iou_loss(y_true, y_pred)
         ce_loss = self.ce_loss(y_true, y_pred)
-        # Give more weight to IoU loss as it's directly related to our metric
-        return 0.7 * iou_loss + 0.3 * ce_loss  # Increased weight on IoU loss
+        
+        # Handle NaN values
+        iou_loss = tf.where(tf.math.is_finite(iou_loss), iou_loss, 0.0)
+        ce_loss = tf.where(tf.math.is_finite(ce_loss), ce_loss, 0.0)
+        
+        if self.weighting_strategy == 'static':
+            # Original static weighting
+            alpha_iou = 0.7
+            alpha_ce = 0.3
+            
+        elif self.weighting_strategy == 'adaptive_magnitude':
+            # Adaptive weighting based on loss magnitudes
+            # Update exponential moving averages
+            self.iou_ema.assign(self.ema_decay * self.iou_ema + (1 - self.ema_decay) * iou_loss)
+            self.ce_ema.assign(self.ema_decay * self.ce_ema + (1 - self.ema_decay) * ce_loss)
+            
+            # Calculate relative magnitudes
+            total_magnitude = self.iou_ema + self.ce_ema + 1e-8
+            # Inverse weighting: give more weight to the loss that's currently smaller
+            alpha_iou = self.ce_ema / total_magnitude
+            alpha_ce = self.iou_ema / total_magnitude
+            
+        elif self.weighting_strategy == 'confidence_based':
+            # Weight based on prediction confidence
+            y_pred_max = tf.reduce_max(y_pred, axis=-1, keepdims=True)
+            confidence = tf.reduce_mean(y_pred_max)
+            # Higher confidence -> more weight on IoU, lower confidence -> more weight on CE
+            alpha_iou = 0.5 + 0.3 * confidence  # Range: [0.5, 0.8]
+            alpha_ce = 1.0 - alpha_iou
+            
+        elif self.weighting_strategy == 'balanced_focal':
+            # Focal loss inspired weighting based on prediction difficulty
+            y_pred_entropy = -tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-8), axis=-1)
+            avg_entropy = tf.reduce_mean(y_pred_entropy)
+            # Higher entropy (more uncertain) -> more weight on CE
+            # Lower entropy (more certain) -> more weight on IoU
+            entropy_weight = tf.clip_by_value(avg_entropy / tf.math.log(float(NUM_CLASSES)), 0.0, 1.0)
+            alpha_ce = 0.2 + 0.6 * entropy_weight  # Range: [0.2, 0.8]
+            alpha_iou = 1.0 - alpha_ce
+            
+        else:  # default to static
+            alpha_iou = 0.7
+            alpha_ce = 0.3
+        
+        # Ensure weights are finite and sum to 1
+        alpha_iou = tf.where(tf.math.is_finite(alpha_iou), alpha_iou, 0.7)
+        alpha_ce = tf.where(tf.math.is_finite(alpha_ce), alpha_ce, 0.3)
+        
+        # Normalize to ensure they sum to 1
+        total_alpha = alpha_iou + alpha_ce + 1e-8
+        alpha_iou = alpha_iou / total_alpha
+        alpha_ce = alpha_ce / total_alpha
+        
+        return alpha_iou * iou_loss + alpha_ce * ce_loss
 
 # Custom IoU metric for semantic segmentation
 class IoUMetric(tf.keras.metrics.Metric):
@@ -1096,7 +1153,7 @@ def train_model():
         
         model.compile(
             optimizer=optimizer,
-            loss='categorical_crossentropy',
+            loss=ComboLoss(weighting_strategy='adaptive_magnitude'),  # Use dynamic weighting instead of static
             metrics=[IoUMetric()],
             run_eagerly=False,
             # Ensure device placement is respected during compilation
@@ -1127,17 +1184,54 @@ def train_model():
     # Determine file extension based on HLS4ML compatibility setting
     file_extension = '.h5' if SAVE_HLS4ML_COMPATIBLE else '.keras'
     
+    # Calculate current step based on resumed epoch and steps per epoch
+    steps_per_epoch = max(1, len(train_gen) // GRADIENT_ACCUMULATION_STEPS)
+    current_step = initial_epoch * steps_per_epoch
+    
+    # Create step-aware cosine decay scheduler that handles resumption
+    def step_aware_cosine_schedule(epoch, logs=None):
+        """Cosine decay with warm restarts that properly handles training resumption"""
+        # Calculate global step (accounts for resumed training)
+        global_step = current_step + (epoch - initial_epoch) * steps_per_epoch
+        
+        # Cosine decay with warm restarts parameters
+        initial_lr = 1e-3
+        first_decay_steps = 1000
+        t_mul = 2.0
+        m_mul = 0.9
+        alpha = 0.01  # minimum lr as fraction of initial
+        
+        # Find which restart cycle we're in by tracking cumulative steps
+        remaining_steps = global_step
+        cycle = 0
+        current_cycle_length = first_decay_steps
+        
+        # Subtract completed cycles until we find the current cycle
+        while remaining_steps >= current_cycle_length:
+            remaining_steps -= current_cycle_length
+            cycle += 1
+            current_cycle_length = int(first_decay_steps * (t_mul ** cycle))
+        
+        # remaining_steps is now the position within the current cycle
+        step_in_cycle = remaining_steps
+        
+        # Calculate learning rate for current position in cycle
+        max_lr = initial_lr * (m_mul ** cycle)
+        min_lr = max_lr * alpha
+        
+        # Cosine decay within current cycle
+        cosine_decay = 0.5 * (1 + tf.math.cos(np.pi * step_in_cycle / current_cycle_length))
+        lr = min_lr + (max_lr - min_lr) * cosine_decay
+        
+        # Debug info (optional - remove if too verbose)
+        if epoch % 5 == 0:  # Print every 5 epochs
+            print(f"Debug LR: Global step={global_step}, Cycle={cycle}, Step in cycle={step_in_cycle}/{current_cycle_length}, LR={lr:.6f}")
+        
+        return float(lr)
+    
     callbacks = [
-        # Cosine Decay with Warm Restarts scheduler
-        tf.keras.callbacks.LearningRateScheduler(
-            tf.keras.optimizers.schedules.CosineDecayRestarts(
-                initial_learning_rate=1e-3,  # Initial learning rate
-                first_decay_steps=1000,      # Steps in first cycle
-                t_mul=2.0,                   # Each restart cycle will be twice as long
-                m_mul=0.9,                   # Each restart max lr will be 90% of previous
-                alpha=0.01                   # Minimum learning rate will be 1% of initial
-            )
-        ),
+        # Step-aware learning rate scheduler that handles resumption
+        tf.keras.callbacks.LearningRateScheduler(step_aware_cosine_schedule, verbose=1),
         
         ModelCheckpoint(
             f'/app/models/best_model{file_extension}',
