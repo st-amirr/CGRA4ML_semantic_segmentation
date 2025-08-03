@@ -83,8 +83,8 @@ INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
 NUM_CLASSES = 34
 DATASET_DIR = '/data'
-NUM_WORKERS = 4
-PREFETCH_MAX = 10
+NUM_WORKERS = 8
+PREFETCH_MAX = 8
 
 DEBUG_MODE = False
 
@@ -315,7 +315,7 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
     
     def on_epoch_end(self, epoch, logs=None):
         try:
-            print(f"\n📊 Calculating IoU metrics for epoch {epoch+1}...")
+            print(f"\n📊  Calculating IoU metrics for epoch {epoch+1}...")
             
             all_ious = []
             total_samples = min(5, len(self.val_generator))  # Sample 5 batches for faster calculation
@@ -335,8 +335,8 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
             mean_ious = np.mean(all_ious, axis=0)
             overall_miou = np.mean(mean_ious)
             
-            print(f"📈 Overall mIoU: {overall_miou:.4f}")
-            print(f"📈 Per-class IoU (top 5): {mean_ious[:5]}")
+            print(f"📈  Overall mIoU: {overall_miou:.4f}")
+            print(f"📈  Per-class IoU (top 5): {mean_ious[:5]}")
             
             # Log to TensorBoard every epoch with organized metrics
             if logs is not None:
@@ -413,9 +413,10 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         # Create augmentation pipeline
         if self.augment:
             self.transform = A.Compose([
-                A.HorizontalFlip(p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-                A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
+                A.HorizontalFlip(p=0.3),
+                A.Rotate(limit=15, p=0.4, border_mode=cv2.BORDER_CONSTANT, value=0),  # Add rotation ±15 degrees
+                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
+                A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.3),
             ])
         else:
             self.transform = None
@@ -975,24 +976,24 @@ def train_model():
             verbose=1,
             restore_best_weights=True
         ),
-        TensorBoard(
-            log_dir=tensorboard_log_dir,
-            histogram_freq=1,
-            write_graph=True,
-            write_images=True,  # Enable image logging to complement custom visualizations
-            update_freq='epoch',
-            profile_batch=0  # Disable profiling for performance
+        PredictionVisualizationCallback(
+            val_generator=val_generator,
+            save_dir=viz_dir,
+            num_samples=4,
+            save_frequency=5  # Save visualizations every 5 epochs
         ),
-        # PredictionVisualizationCallback(
-        #     val_generator=val_generator,
-        #     save_dir=viz_dir,
-        #     num_samples=4,
-        #     save_frequency=5  # Save visualizations every 5 epochs
-        # ),
         DetailedMetricsCallback(
             val_generator=val_generator,
             save_dir=metrics_dir,
             save_frequency=5  # Save detailed text files every 5 epochs, but calculate IoU every epoch
+        ),
+        TensorBoard(
+            log_dir=tensorboard_log_dir,
+            histogram_freq=1,
+            write_graph=True,
+            write_images=False,  # Enable image logging to complement custom visualizations
+            update_freq='epoch',
+            profile_batch=0  # Disable profiling for performance
         ),
         MemoryCleanupCallback()
     ]    # Train model
