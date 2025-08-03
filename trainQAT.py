@@ -17,6 +17,10 @@ Key Features:
 - Same architecture with quantized/non-quantized layer swapping
 - Memory-efficient data pipeline
 - FPGA-compatible architecture (no MaxPooling, etc.)
+
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=False --subset_ratio=0.9 -- LR=5e-5
+docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
 """
 
 import os
@@ -59,16 +63,20 @@ parser.add_argument('--use_dropout', type=str, default='True',
                    help='Enable dropout during training (True/False). Default: True')
 parser.add_argument('--subset_ratio', type=float, default=1.0,
                    help='Fraction of dataset to use per epoch (0.1-1.0). Default: 1.0 (full dataset)')
+parser.add_argument('--LR', type=float, default=None,
+                   help='Override default learning rate. If not set, uses recommended value for float32/QAT.')
 
 args = parser.parse_args()
 
-# Convert string to boolean
+
+# Convert string to boolean and parse args
 TRAIN_QAT = args.trainQAT.lower() == 'true'
 LOAD_MODEL_PATH = args.load_model
 EPOCHS = args.epochs
 BATCH_SIZE = args.batch_size
 USE_DROPOUT_DURING_TRAINING = args.use_dropout.lower() == 'true'
 SUBSET_RATIO = args.subset_ratio
+USER_LR = args.LR
 
 print(f"Training Configuration:")
 print(f"  QAT Training: {TRAIN_QAT}")
@@ -83,7 +91,7 @@ INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
 NUM_CLASSES = 34
 DATASET_DIR = '/data'
-NUM_WORKERS = 8
+NUM_WORKERS = 4
 PREFETCH_MAX = 8
 
 DEBUG_MODE = False
@@ -912,13 +920,17 @@ def train_model():
     
     # Compile model (only if not already compiled)
     if not skip_compilation:
-        if TRAIN_QAT:
-            # Use lower learning rate for QAT fine-tuning
+        # Use user-specified learning rate if provided, else recommended defaults
+        if USER_LR is not None:
+            learning_rate = USER_LR
+            print(f"Using user-specified learning rate: {learning_rate}")
+        elif TRAIN_QAT:
             learning_rate = 1e-5
+            print(f"Using recommended QAT learning rate: {learning_rate}")
         else:
-            # Standard learning rate for float32 training
-            learning_rate = 7e-4
-        
+            learning_rate = 3e-4
+            print(f"Using recommended float32 learning rate: {learning_rate}")
+
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         model.compile(
             optimizer=optimizer,
@@ -964,8 +976,8 @@ def train_model():
         ReduceLROnPlateau(
             monitor='val_loss',
             mode='min',
-            factor=0.8,
-            patience=5,
+            factor=0.5,
+            patience=4,
             verbose=1,
             min_lr=1e-7
         ),

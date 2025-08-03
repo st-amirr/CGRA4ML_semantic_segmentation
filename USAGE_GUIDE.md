@@ -21,7 +21,7 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # Inside container - train float32 baseline
-python3 /workspace/trainQAT.py --trainQAT=False --epochs=200 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=200 --batch_size=2 --LR=0.0007  # You can override LR (default: 0.0007)
 ```
 
 **Why start with Float32?**
@@ -41,7 +41,7 @@ docker-compose exec hls4ml-training /bin/bash
 ls -la /app/models/float32_*.keras
 
 # Apply QAT to your best float32 model
-python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2
+python3 /workspace/trainQAT.py --trainQAT=True --load_model=/app/models/float32_best.keras --epochs=20 --batch_size=2 --LR=0.00001  # You can override LR (default: 0.00001)
 ```
 
 **QAT Fine-tuning:**
@@ -128,7 +128,7 @@ docker-compose up -d
 docker-compose exec hls4ml-training /bin/bash
 
 # 3. You're now inside the container - run Phase 1
-python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --subset_ratio=0.9
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9
 
 ## TensorBoard Monitoring Metrics
 
