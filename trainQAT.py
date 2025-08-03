@@ -68,7 +68,6 @@ parser.add_argument('--LR', type=float, default=None,
 
 args = parser.parse_args()
 
-
 # Convert string to boolean and parse args
 TRAIN_QAT = args.trainQAT.lower() == 'true'
 LOAD_MODEL_PATH = args.load_model
