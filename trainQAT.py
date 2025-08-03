@@ -20,7 +20,7 @@ Key Features:
 
 python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 
 """
 
@@ -102,20 +102,20 @@ tf.config.threading.set_inter_op_parallelism_threads(n_cores)
 tf.config.threading.set_intra_op_parallelism_threads(n_cores)
 tf.config.set_soft_device_placement(True)
 
-# # Configure GPU to use more VRAM (from train.py)
-# gpus = tf.config.experimental.list_physical_devices('GPU')
-# if gpus:
-#     try:
-#         for gpu in gpus:
-#             # Allow TensorFlow to allocate more GPU memory
-#             tf.config.experimental.set_memory_growth(gpu, True)
-#             # Set memory limit to use more VRAM (10GB limit for better utilization)
-#             tf.config.set_logical_device_configuration(
-#                 gpu,
-#                 [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
-#             )
-#     except RuntimeError as e:
-#         print(f"GPU memory growth setup failed: {e}")
+# Configure GPU to use more VRAM (from train.py)
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            # Allow TensorFlow to allocate more GPU memory
+            tf.config.experimental.set_memory_growth(gpu, True)
+            # Set memory limit to use more VRAM (10GB limit for better utilization)
+            tf.config.set_logical_device_configuration(
+                gpu,
+                [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
+            )
+    except RuntimeError as e:
+        print(f"GPU memory growth setup failed: {e}")
 
 # Enable additional TensorFlow optimizations for GPU utilization
 tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utilization
