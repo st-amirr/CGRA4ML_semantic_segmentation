@@ -18,7 +18,7 @@ Key Features:
 - Memory-efficient data pipeline
 - FPGA-compatible architecture (no MaxPooling, etc.)
 
-python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=False --subset_ratio=0.9 -- LR=5e-5
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=False --subset_ratio=0.9 --LR=1e-4
 docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
 """
@@ -192,9 +192,6 @@ quantized_relu_32_config = {
     'use_stochastic_rounding': True
 }
 
-# Default configs for backward compatibility
-quantized_bits_config = quantized_bits_8_config  # Default to 8-bit
-quantized_relu_config = quantized_relu_8_config
 
 def get_memory_usage():
     """Get current memory usage in MB"""
@@ -932,12 +929,29 @@ def train_model():
             print(f"Using recommended float32 learning rate: {learning_rate}")
 
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+        # Dice loss implementation for multi-class segmentation
+        def dice_loss(y_true, y_pred, smooth=1e-6):
+            y_true_f = tf.reshape(y_true, [-1, NUM_CLASSES])
+            y_pred_f = tf.reshape(y_pred, [-1, NUM_CLASSES])
+            intersection = tf.reduce_sum(y_true_f * y_pred_f, axis=0)
+            denominator = tf.reduce_sum(y_true_f, axis=0) + tf.reduce_sum(y_pred_f, axis=0)
+            dice = (2. * intersection + smooth) / (denominator + smooth)
+            return 1 - tf.reduce_mean(dice)
+
+        def dice_coef(y_true, y_pred, smooth=1e-6):
+            y_true_f = tf.reshape(y_true, [-1, NUM_CLASSES])
+            y_pred_f = tf.reshape(y_pred, [-1, NUM_CLASSES])
+            intersection = tf.reduce_sum(y_true_f * y_pred_f, axis=0)
+            denominator = tf.reduce_sum(y_true_f, axis=0) + tf.reduce_sum(y_pred_f, axis=0)
+            dice = (2. * intersection + smooth) / (denominator + smooth)
+            return tf.reduce_mean(dice)
+
         model.compile(
             optimizer=optimizer,
-            loss='categorical_crossentropy',  # Standard categorical crossentropy loss
-            metrics=['accuracy']  # Use accuracy metric
+            loss=dice_loss,
+            metrics=['accuracy', dice_coef]
         )
-        print(f"Model compiled with learning rate: {learning_rate}")
+        print(f"Model compiled with Dice loss, Dice coefficient metric, and learning rate: {learning_rate}")
     else:
         print("Skipping compilation - using loaded model with existing optimizer state")
     
