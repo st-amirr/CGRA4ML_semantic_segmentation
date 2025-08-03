@@ -6,4 +6,6 @@ old models/**
 old_models/**/*
 models/** 
 models/** /*
+old/** 
+old/** /*
 __pycache__/*

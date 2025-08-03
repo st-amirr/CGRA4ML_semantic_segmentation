@@ -1,5 +1,5 @@
-Project Overview and Objectives
-==============================
+Project Overview and Objectives - UPDATED August 4, 2025
+============================================================
 
 1. **Primary Goal:**
    - Train a semantic segmentation model for FPGA implementation using hls4ml and QKeras with Quantization-Aware Training (QAT).
@@ -10,12 +10,12 @@ Project Overview and Objectives
      * Phase 1: Float32 baseline training for optimal convergence (50-100 epochs)
      * Phase 2: QAT fine-tuning using trained float32 weights (15-30 epochs)
    - **Frameworks:** TensorFlow/Keras for model definition and training; QKeras for quantization; hls4ml for FPGA conversion.
-   - **Quantization:** Multi-precision quantization strategy:
-     * 8-bit: Input/output and light encoding layers (encoder1, decoder0)
-     * 16-bit: Medium complexity layers (encoder2, encoder3, decoder1, decoder2)
-     * 32-bit: Critical layers requiring high precision (bridge, decoder3)
+   - **Optimized Quantization:** Data-driven multi-precision quantization based on actual trained model analysis:
+     * 8-bit: Input/output layers - 4 integer bits, 4 fractional bits (range: [-16, 15.9375])
+     * 16-bit: Encoder/decoder layers - 4 integer bits, 12 fractional bits (range: [-16, 15.999756])
+     * 32-bit: Bridge/critical layers - 3 integer bits, 29 fractional bits (range: [-8, 7.999999999])
    - **Model Architecture:**
-     - U-Net encoder-decoder with skip connections, attention blocks, and multi-precision quantization
+     - U-Net encoder-decoder with skip connections, attention blocks, and optimized multi-precision quantization
      - FPGA-compatible design (no MaxPooling2D, optimized for hls4ml synthesis)
      - Input size: 512x1024x3, output: 512x1024x34 (Cityscapes dataset, 34 classes)
      - Configurable dropout layers (automatically removed for HLS4ML export)
@@ -25,31 +25,38 @@ Project Overview and Objectives
      - Optimized batch processing with prefetch buffer
    - **Training Environment:**
      - Docker container with GPU support and comprehensive dependency management
-     - GPU utilization optimizations (XLA JIT, memory growth, non-deterministic ops)
+     - GPU utilization optimizations (mixed precision, memory growth management)
      - TensorBoard integration for real-time monitoring with comprehensive metrics
    - **Monitoring & Visualization:**
      - Real-time TensorBoard logging with organized metric groups
      - Custom prediction visualizations with Cityscapes color coding
      - Learning rate tracking and IoU metrics per class
+     - Weight histogram analysis and distribution monitoring
      - Automatic checkpoint resumption and progress persistence
 
 3. **Key Technical Features:**
+   - **Data-Driven Quantization:** Optimized based on actual model weight analysis from epoch 70
    - **Automatic Weight Transfer:** Seamless conversion from float32 to QAT models
    - **Smart Training Resume:** Automatic detection and resumption from latest checkpoints
-   - **Comprehensive Monitoring:** TensorBoard scalars, images, and custom visualizations
+   - **Comprehensive Monitoring:** TensorBoard scalars, images, weight histograms, and custom visualizations
    - **HLS4ML Export Ready:** Clean models automatically generated without dropout layers
    - **Resource Optimization:** Configurable batch sizes, subset ratios, and worker processes
 
-4. **Performance Expectations:**
-   - **Phase 1 (Float32):** Expected IoU 0.35-0.55 (significant improvement from previous 0.12-0.14)
-   - **Phase 2 (QAT):** Expected IoU 0.30-0.50 (maintains good performance after quantization)
+4. **Performance Achievements:**
+   - **Phase 1 (Float32):** Successfully achieved IoU improvement with comprehensive monitoring
+   - **Weight Analysis:** Completed detailed analysis of trained model (epoch 70) revealing optimal quantization settings
+   - **Quantization Optimization:** Integer bits optimized from generic 4/8/8 to data-driven 4/4/3 configuration
    - **Training Time:** ~6-8 hours Phase 1 + 2-3 hours Phase 2 = ~9-11 hours total
 
-5. **Common Issues and Solutions:**
-   - **Previous QAT Issues:** Resolved by implementing two-phase training approach
-   - **GPU Utilization:** Optimized through XLA JIT, proper memory management, and float32 computation
-   - **Monitoring:** Comprehensive TensorBoard integration with persistent data storage
-   - **Model Export:** Automatic generation of clean HLS4ML-compatible models
+5. **Current Status - Recent Achievements:**
+   - **Completed 80 epochs of float32 training** with comprehensive monitoring
+   - **Analyzed actual model weights** from epoch 70 checkpoint to determine optimal quantization parameters
+   - **Updated quantization configuration** based on data-driven analysis:
+     * Input/output layers: Range [-6.52, 1.82] → 4 integer bits needed
+     * Encoder/decoder layers: Range [-2.92, 6.66] → 4 integer bits needed  
+     * Bridge/critical layers: Range [-2.13, 2.55] → 3 integer bits needed
+   - **Optimized fractional precision** providing up to 32x better precision in 16-bit layers
+   - **Memory management improvements** addressing GPU OOM issues
 
 6. **Dataset & Environment:**
    - Cityscapes dataset with standard directory structure (34 classes)
@@ -59,10 +66,16 @@ Project Overview and Objectives
 7. **FPGA Deployment Pipeline:**
    - Trained models automatically export HLS4ML-compatible quantized weights
    - Clean model architecture without training-specific layers (dropout)
-   - Multi-precision quantization optimized for FPGA resource utilization
+   - Optimized multi-precision quantization based on actual weight distributions
    - Target: Xilinx VCU118 or similar high-end FPGA platforms
-   - Quantization and architecture choices are made with FPGA resource constraints in mind.
+   - Quantization parameters precisely tuned for FPGA resource efficiency
+
+8. **Next Steps:**
+   - Apply optimized quantization configuration in QAT training phase
+   - Validate improved performance with data-driven quantization settings
+   - Export final optimized models for HLS4ML synthesis
+   - Conduct FPGA implementation and performance validation
 
 ---
 
-**This file is intended as a persistent reference for anyone working on or reviewing this project.** 
+**This file serves as a persistent reference documenting the evolution from initial architecture through data-driven quantization optimization based on actual trained model analysis.**
