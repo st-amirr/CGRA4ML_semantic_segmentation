@@ -18,8 +18,9 @@ Key Features:
 - Memory-efficient data pipeline
 - FPGA-compatible architecture (no MaxPooling, etc.)
 
-python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=False --subset_ratio=0.9 --LR=1e-4
-docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
 
 """
 
@@ -366,31 +367,12 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
                 logs['IoU_Classes/sky'] = mean_ious[10] if len(mean_ious) > 10 else 0.0
                 logs['IoU_Classes/person'] = mean_ious[11] if len(mean_ious) > 11 else 0.0
                 logs['IoU_Classes/car'] = mean_ious[13] if len(mean_ious) > 13 else 0.0
-            
-            # Save detailed metrics every save_frequency epochs
-            if (epoch + 1) % self.save_frequency == 0:
-           
-                metrics_file = os.path.join(self.save_dir, f'detailed_metrics_epoch_{epoch+1:03d}.txt')
-                with open(metrics_file, 'w') as f:
-                    f.write(f"Epoch {epoch+1} Detailed Metrics\n")
-                    f.write(f"Overall mIoU: {overall_miou:.4f}\n")
-                    f.write("Per-class IoU:\n")
-                    class_names = [
-                        'road', 'sidewalk', 'building', 'wall', 'fence', 'pole', 
-                        'traffic_light', 'traffic_sign', 'vegetation', 'terrain', 
-                        'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train', 
-                        'motorcycle', 'bicycle'
-                    ]
-                    for class_id, iou in enumerate(mean_ious):
-                        class_name = class_names[class_id] if class_id < len(class_names) else f'class_{class_id}'
-                        f.write(f"  {class_name}: {iou:.4f}\n")
-            
+                            
         except Exception as e:
             print(f"⚠️  Could not calculate IoU metrics: {e}")
             # Set default values if calculation fails
             if logs is not None:
                 logs['epoch_miou'] = 0.0
-
 
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
@@ -825,21 +807,21 @@ def train_model():
     """Main training function"""
     print(f"Starting training with QAT={'Enabled' if TRAIN_QAT else 'Disabled'}")
     print(f"Memory usage at start: {get_memory_usage():.2f} MB")
-    
+
     # Create data generators
     train_generator, val_generator = create_data_generators()
-    
+
     # Create models directory if it doesn't exist
     model_dir = './models'
     os.makedirs(model_dir, exist_ok=True)
-    
+
     # Check for existing models to resume training automatically
     model_files = [f for f in os.listdir(model_dir) if f.endswith(('.keras', '.h5'))]
     initial_epoch = 0
     skip_compilation = False
     model = None
     model_prefix = "qat_model" if TRAIN_QAT else "float32_model"
-    
+
     # Filter model files by training type (float32 vs QAT)
     if TRAIN_QAT:
         # Look for QAT models when in QAT mode
@@ -847,12 +829,12 @@ def train_model():
     else:
         # Look for float32 models when in float32 mode
         relevant_models = [f for f in model_files if 'float32_model' in f and 'checkpoint' in f]
-    
+
     if relevant_models and not LOAD_MODEL_PATH:
         # Sort by modification time to get the latest
         latest_model = max(relevant_models, key=lambda x: os.path.getmtime(os.path.join(model_dir, x)))
         print(f"\nFound latest checkpoint: {latest_model}")
-        
+
         # Extract epoch number if it exists in filename
         if 'epoch_' in latest_model:
             try:
@@ -860,14 +842,14 @@ def train_model():
                     epoch_part = latest_model.split('checkpoint_epoch_')[1]
                 else:
                     epoch_part = latest_model.split('epoch_')[1]
-                
+
                 # Extract epoch number from filename
                 initial_epoch = int(epoch_part.split('.')[0])
                 print(f"Resuming from epoch {initial_epoch}")
             except:
                 print("Could not extract epoch number, starting from epoch 0")
                 initial_epoch = 0
-        
+
         # Try to load as full model first, then as weights only
         try:
             print(f"Trying to load full model from {latest_model}")
@@ -881,7 +863,7 @@ def train_model():
                                                })
             print(f"Successfully loaded model from {latest_model}")
             skip_compilation = True  # Model already compiled
-            
+
         except Exception as e_model:
             print(f"Failed to load full model: {e_model}")
             try:
@@ -900,7 +882,7 @@ def train_model():
                 print("Creating new model")
                 model = None
                 initial_epoch = 0
-    
+
     # Create or load model if not already loaded
     if model is None:
         if TRAIN_QAT and LOAD_MODEL_PATH:
@@ -913,7 +895,7 @@ def train_model():
         else:
             print("Creating float32 baseline model")
             model = create_segmentation_model(use_quantization=False)
-    
+
     # Compile model (only if not already compiled)
     if not skip_compilation:
         # Use user-specified learning rate if provided, else recommended defaults
@@ -928,47 +910,31 @@ def train_model():
             print(f"Using recommended float32 learning rate: {learning_rate}")
 
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-        # Dice loss implementation for multi-class segmentation
-        def dice_loss(y_true, y_pred, smooth=1e-6):
-            y_true_f = tf.reshape(y_true, [-1, NUM_CLASSES])
-            y_pred_f = tf.reshape(y_pred, [-1, NUM_CLASSES])
-            intersection = tf.reduce_sum(y_true_f * y_pred_f, axis=0)
-            denominator = tf.reduce_sum(y_true_f, axis=0) + tf.reduce_sum(y_pred_f, axis=0)
-            dice = (2. * intersection + smooth) / (denominator + smooth)
-            return 1 - tf.reduce_mean(dice)
-
-        def dice_coef(y_true, y_pred, smooth=1e-6):
-            y_true_f = tf.reshape(y_true, [-1, NUM_CLASSES])
-            y_pred_f = tf.reshape(y_pred, [-1, NUM_CLASSES])
-            intersection = tf.reduce_sum(y_true_f * y_pred_f, axis=0)
-            denominator = tf.reduce_sum(y_true_f, axis=0) + tf.reduce_sum(y_pred_f, axis=0)
-            dice = (2. * intersection + smooth) / (denominator + smooth)
-            return tf.reduce_mean(dice)
 
         model.compile(
             optimizer=optimizer,
-            loss=dice_loss,
-            metrics=['accuracy', dice_coef]
+            loss="categorical_crossentropy",  # Standard categorical crossentropy loss
+            metrics=["accuracy"],  # Use accuracy metric
         )
-        print(f"Model compiled with Dice loss, Dice coefficient metric, and learning rate: {learning_rate}")
+        print(f"Model compiled with learning rate: {learning_rate}")
     else:
         print("Skipping compilation - using loaded model with existing optimizer state")
-    
+
     model.summary()
-    
+
     # Create callbacks
     os.makedirs(model_dir, exist_ok=True)
-    
+
     # Setup TensorBoard logging
     tensorboard_log_dir = os.path.join(model_dir, 'tb_logs')
     os.makedirs(tensorboard_log_dir, exist_ok=True)
-    
+
     # Setup visualization directories
     viz_dir = os.path.join(model_dir, 'visualizations')
     metrics_dir = os.path.join(model_dir, 'metrics')
     os.makedirs(viz_dir, exist_ok=True)
     os.makedirs(metrics_dir, exist_ok=True)
-    
+
     callbacks = [
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
@@ -1035,28 +1001,28 @@ def train_model():
             use_multiprocessing=True if NUM_WORKERS > 1 else False,
             max_queue_size=PREFETCH_MAX  # Use PREFETCH_MAX for data prefetching optimization
         )
-        
+
         # Save final model
         final_model_path = os.path.join(model_dir, f'{model_prefix}_final.keras')
         model.save(final_model_path)
         print(f"Final model saved to: {final_model_path}")
-        
+
         # Create and save clean model for HLS4ML export (without dropout)
         print("Creating clean model for HLS4ML export...")
         clean_model = create_hls4ml_export_model(trained_model=model, use_quantization=TRAIN_QAT)
         clean_model_path = os.path.join(model_dir, f'{model_prefix}_clean_for_hls4ml.keras')
         clean_model.save(clean_model_path)
         print(f"Clean model (no dropout) saved to: {clean_model_path}")
-        
+
         # If QAT training, save quantized weights for hls4ml
         if TRAIN_QAT:
             quantized_weights_path = os.path.join(model_dir, f'{model_prefix}_quantized_weights.h5')
             model_save_quantized_weights(clean_model, quantized_weights_path)  # Use clean model for quantized weights
             print(f"Quantized weights saved to: {quantized_weights_path}")
             print("Note: Quantized weights saved from clean model (without dropout) for HLS4ML compatibility")
-        
+
         print("Training completed successfully!")
-        
+
         # Print TensorBoard access information
         print(f"\n" + "="*60)
         print("📊 TensorBoard Monitoring Available!")
@@ -1069,20 +1035,20 @@ def train_model():
         print(f"📈 Detailed metrics: {metrics_dir}")
         print("   Check these directories for visual comparisons of model predictions")
         print("="*60)
-        
+
         # Print training summary
         if hasattr(history, 'history'):
             final_loss = history.history['loss'][-1]
             final_val_loss = history.history['val_loss'][-1]
             final_accuracy = history.history['accuracy'][-1]
             final_val_accuracy = history.history['val_accuracy'][-1]
-            
+
             print(f"\nFinal Training Results:")
             print(f"  Training Loss: {final_loss:.4f}")
             print(f"  Validation Loss: {final_val_loss:.4f}")
             print(f"  Training Accuracy: {final_accuracy:.4f}")
             print(f"  Validation Accuracy: {final_val_accuracy:.4f}")
-        
+
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
         interrupt_model_path = os.path.join(model_dir, f'{model_prefix}_interrupted.keras')
