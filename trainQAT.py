@@ -144,10 +144,11 @@ tf.config.optimizer.set_experimental_options({
 # QKeras quantization parameters (used only when TRAIN_QAT=True)
 # Multi-precision quantization based on analyze_weights.txt recommendations
 
-# 8-bit quantization for light layers (input, encoder1, decoder0, output)
+# Optimized quantization based on actual trained model weight analysis (epoch 70)
+# 8-bit for input/output layers: max weight range [-6.52, 1.82] → 4 integer bits needed
 quantized_bits_8_config = {
     'bits': 8,
-    'integer': 4,
+    'integer': 4,  # Based on actual analysis: max 4 bits needed for input/output layers
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
@@ -156,14 +157,14 @@ quantized_bits_8_config = {
 
 quantized_relu_8_config = {
     'bits': 8,
-    'integer': 4,
+    'integer': 4,  # Ensures sufficient range for activation values
     'use_stochastic_rounding': True
 }
 
-# 16-bit quantization for medium layers (encoder2, encoder3, decoder1, decoder2)
+# 16-bit for encoder/decoder layers: max weight range [-2.92, 6.66] → 4 integer bits needed
 quantized_bits_16_config = {
     'bits': 16,
-    'integer': 8,
+    'integer': 4,  # Based on actual analysis: max 4 bits needed for encoder/decoder layers
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
@@ -172,14 +173,14 @@ quantized_bits_16_config = {
 
 quantized_relu_16_config = {
     'bits': 16,
-    'integer': 8,
+    'integer': 4,  # Provides 12 fractional bits for high precision
     'use_stochastic_rounding': True
 }
 
-# 32-bit quantization for critical layers (bridge, decoder3)
+# 32-bit for bridge/critical layers: max weight range [-2.13, 2.55] → 3 integer bits needed
 quantized_bits_32_config = {
     'bits': 32,
-    'integer': 8,
+    'integer': 3,  # Based on actual analysis: max 3 bits needed for bridge layers
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
@@ -188,7 +189,7 @@ quantized_bits_32_config = {
 
 quantized_relu_32_config = {
     'bits': 32,
-    'integer': 8,
+    'integer': 3,  # Provides 29 fractional bits for maximum precision
     'use_stochastic_rounding': True
 }
 
