@@ -142,10 +142,10 @@ tf.debugging.set_log_device_placement(DEBUG_MODE)
 
 # Model architecture configuration - GRADUAL CHANNEL SCALING FOR BETTER DETAIL RECOVERY
 MODEL_CONFIG = {
-    'init_filters': INPUT_HEIGHT // 21,  # 24 (512//21 = 24)
-    'stage1_filters': INPUT_HEIGHT // 11,  # 48 (512//11 = 48)
-    'stage2_filters': INPUT_HEIGHT // 5,  # 102 (512//5 = 102)
-    'stage3_filters': INPUT_HEIGHT // 3,  # 170 (512//3 = 170)
+    'init_filters': INPUT_HEIGHT // 32,  # 24 (512//32 = 16)
+    'stage1_filters': INPUT_HEIGHT // 16,  # 48 (512//16 = 32)
+    'stage2_filters': INPUT_HEIGHT // 8,  # 85 (512//8 = 64)
+    'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128)
     'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256)
 }
 
@@ -707,11 +707,11 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, pre
         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_qact')(x)
     else:
         # Use standard float32 layers
-        x = Conv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
+        x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                   name=f'{name}_conv')(x)
-        x = BatchNormalization(name=f'{name}_bn')(x)
-        x = Activation('relu', name=f'{name}_act')(x)
+        x = QBatchNormalization(name=f'{name}_bn')(x)
+        x = QActivation('relu', name=f'{name}_act')(x)
     
     return x
 
@@ -743,7 +743,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
             qbits_config = quantized_bits_16_config
             qrelu_config = quantized_relu_config
         # Reduce channels then restore (SE block)
-        y = QConv2D(max(1, channels // 8), kernel_size=1, padding='same',
+        y = QConv2D(max(1, channels // 4), kernel_size=1, padding='same',
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
                    name=f'{name}_qconv1')(y)
@@ -754,7 +754,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
                    name=f'{name}_qconv2')(y)
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     else:
-        y = QConv2D(max(1, channels // 8), kernel_size=1, padding='same',
+        y = QConv2D(max(1, channels // 4), kernel_size=1, padding='same',
                    kernel_quantizer=quantized_bits(**quantized_bits_16_config),
                    bias_quantizer=quantized_bits(**quantized_bits_16_config),
                    name=f'{name}_qconv1')(y)
