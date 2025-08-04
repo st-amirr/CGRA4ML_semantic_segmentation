@@ -826,6 +826,7 @@ class TrainingStateCallback(tf.keras.callbacks.Callback):
         super().__init__()
         self.model_dir = model_dir
         self.model_prefix = model_prefix
+        self.cumulative_history = {}
 
     def on_train_begin(self, logs=None):
         """Save initial training state"""
@@ -838,17 +839,23 @@ class TrainingStateCallback(tf.keras.callbacks.Callback):
         print("Training state file created.")
 
     def on_epoch_end(self, epoch, logs=None):
-        """Update training state and save"""
+        """Update training state and save cumulative history"""
         # Convert logs to JSON-serializable format
         serializable_logs = convert_numpy_to_python(logs) if logs else {}
         
+        # Accumulate history for all metrics
+        for key, value in serializable_logs.items():
+            if key not in self.cumulative_history:
+                self.cumulative_history[key] = []
+            self.cumulative_history[key].append(value)
+        
         training_state = {
             'epoch': epoch + 1,
-            'history': serializable_logs
+            'history': self.cumulative_history
         }
         with open(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'), 'w') as f:
             json.dump(training_state, f)
-        print(f"Training state saved for epoch {epoch + 1}")
+        print(f"Training state saved for epoch {epoch + 1} with {len(self.cumulative_history)} metrics")
 
     def on_train_end(self, logs=None):
         """Clean up training state file"""
