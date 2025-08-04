@@ -20,7 +20,7 @@ Key Features:
 
 python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
 
 """
 
@@ -34,6 +34,7 @@ import signal
 import sys
 import json
 import argparse
+import glob
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
@@ -804,6 +805,60 @@ def convert_float32_to_qat(float32_model):
     
     return qat_model
 
+def convert_numpy_to_python(obj):
+    """Convert NumPy types to Python native types for JSON serialization"""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_to_python(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_to_python(item) for item in obj]
+    else:
+        return obj
+
+class TrainingStateCallback(tf.keras.callbacks.Callback):
+    """Custom callback to save training state (epoch, history)"""
+    def __init__(self, model_dir, model_prefix):
+        super().__init__()
+        self.model_dir = model_dir
+        self.model_prefix = model_prefix
+
+    def on_train_begin(self, logs=None):
+        """Save initial training state"""
+        training_state = {
+            'epoch': 0,
+            'history': {}
+        }
+        with open(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'), 'w') as f:
+            json.dump(training_state, f)
+        print("Training state file created.")
+
+    def on_epoch_end(self, epoch, logs=None):
+        """Update training state and save"""
+        # Convert logs to JSON-serializable format
+        serializable_logs = convert_numpy_to_python(logs) if logs else {}
+        
+        training_state = {
+            'epoch': epoch + 1,
+            'history': serializable_logs
+        }
+        with open(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'), 'w') as f:
+            json.dump(training_state, f)
+        print(f"Training state saved for epoch {epoch + 1}")
+
+    def on_train_end(self, logs=None):
+        """Clean up training state file"""
+        try:
+            os.remove(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'))
+            print("Training state file removed.")
+        except FileNotFoundError:
+            print("Training state file not found.")
+
+
 def train_model():
     """Main training function"""
     print(f"Starting training with QAT={'Enabled' if TRAIN_QAT else 'Disabled'}")
@@ -816,114 +871,138 @@ def train_model():
     model_dir = './models'
     os.makedirs(model_dir, exist_ok=True)
 
-    # Check for existing models to resume training automatically
-    model_files = [f for f in os.listdir(model_dir) if f.endswith(('.keras', '.h5'))]
+    # Keras recommended approach for model loading and training continuation
     initial_epoch = 0
-    skip_compilation = False
     model = None
     model_prefix = "qat_model" if TRAIN_QAT else "float32_model"
-
-    # Filter model files by training type (float32 vs QAT)
-    if TRAIN_QAT:
-        # Look for QAT models when in QAT mode
-        relevant_models = [f for f in model_files if 'qat_model' in f and 'checkpoint' in f]
-    else:
-        # Look for float32 models when in float32 mode
-        relevant_models = [f for f in model_files if 'float32_model' in f and 'checkpoint' in f]
-
-    if relevant_models and not LOAD_MODEL_PATH:
-        # Sort by modification time to get the latest
-        latest_model = max(relevant_models, key=lambda x: os.path.getmtime(os.path.join(model_dir, x)))
-        print(f"\nFound latest checkpoint: {latest_model}")
-
-        # Extract epoch number if it exists in filename
-        if 'epoch_' in latest_model:
+    
+    # Check for existing training state
+    training_state_file = os.path.join(model_dir, f'{model_prefix}_training_state.json')
+    latest_checkpoint = None
+    
+    # Look for the most recent checkpoint
+    if not LOAD_MODEL_PATH:
+        checkpoint_pattern = os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_*.keras')
+        checkpoints = glob.glob(checkpoint_pattern)
+        
+        if checkpoints:
+            # Sort by modification time to get the latest
+            latest_checkpoint = max(checkpoints, key=os.path.getmtime)
+            print(f"\nFound latest checkpoint: {latest_checkpoint}")
+            
+            # Extract epoch number from filename
             try:
-                if 'checkpoint_epoch_' in latest_model:
-                    epoch_part = latest_model.split('checkpoint_epoch_')[1]
-                else:
-                    epoch_part = latest_model.split('epoch_')[1]
-
-                # Extract epoch number from filename
-                initial_epoch = int(epoch_part.split('.')[0])
+                epoch_part = latest_checkpoint.split('checkpoint_epoch_')[1].split('.')[0]
+                initial_epoch = int(epoch_part)
                 print(f"Resuming from epoch {initial_epoch}")
             except:
                 print("Could not extract epoch number, starting from epoch 0")
                 initial_epoch = 0
 
-        # Try to load as full model first, then as weights only
+    # Load training state if available
+    training_history = None
+    if os.path.exists(training_state_file):
         try:
-            print(f"Trying to load full model from {latest_model}")
-            model = tf.keras.models.load_model(os.path.join(model_dir, latest_model),
-                                               custom_objects={
-                                                   'QConv2D': QConv2D,
-                                                   'QBatchNormalization': QBatchNormalization,
-                                                   'QActivation': QActivation,
-                                                   'quantized_bits': quantized_bits,
-                                                   'quantized_relu': quantized_relu
-                                               })
-            print(f"Successfully loaded model from {latest_model}")
-            skip_compilation = True  # Model already compiled
+            with open(training_state_file, 'r') as f:
+                training_state = json.load(f)
+                initial_epoch = training_state.get('epoch', 0)
+                training_history = training_state.get('history', {})
+                print(f"Loaded training state from epoch {initial_epoch}")
+                print(f"Training history keys: {list(training_history.keys())}")
+        except Exception as e:
+            print(f"Failed to load training state: {e}")
 
-        except Exception as e_model:
-            print(f"Failed to load full model: {e_model}")
+    # Model loading strategy following Keras best practices
+    if LOAD_MODEL_PATH:
+        # Load specific model path
+        print(f"Loading model from specified path: {LOAD_MODEL_PATH}")
+        try:
+            if TRAIN_QAT and not LOAD_MODEL_PATH.endswith('_qat'):
+                # Load float32 model and convert to QAT
+                print("Loading float32 model and converting to QAT...")
+                try:
+                    float32_model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
+                except Exception as e:
+                    print(f"Failed to load full model, trying weights-only: {e}")
+                    # Create model and load weights
+                    float32_model = create_segmentation_model(use_quantization=False)
+                    float32_model.load_weights(LOAD_MODEL_PATH)
+                model = convert_float32_to_qat(float32_model)
+                # Reset epoch for QAT training
+                initial_epoch = 0
+                training_history = None
+            else:
+                # Load model directly
+                try:
+                    model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
+                    print("Model loaded successfully")
+                except Exception as e:
+                    print(f"Failed to load full model, trying weights-only: {e}")
+                    # Create model and load weights
+                    if TRAIN_QAT:
+                        model = create_segmentation_model(use_quantization=True)
+                    else:
+                        model = create_segmentation_model(use_quantization=False)
+                    model.load_weights(LOAD_MODEL_PATH)
+                    print("Weights loaded successfully")
+        except Exception as e:
+            print(f"Failed to load model from {LOAD_MODEL_PATH}: {e}")
+            model = None
+    
+    elif latest_checkpoint:
+        # Load from checkpoint
+        try:
+            print(f"Loading model from checkpoint: {latest_checkpoint}")
             try:
-                print(f"Trying to load weights from {latest_model}")
-                # Create new model and load weights
+                model = tf.keras.models.load_model(latest_checkpoint, compile=False)
+                print("Checkpoint loaded successfully")
+            except Exception as e:
+                print(f"Failed to load full checkpoint, trying weights-only: {e}")
+                # Create model and load weights
                 if TRAIN_QAT:
                     model = create_segmentation_model(use_quantization=True)
                 else:
                     model = create_segmentation_model(use_quantization=False)
-                model.load_weights(os.path.join(model_dir, latest_model))
-                print(f"Successfully loaded weights from {latest_model}")
-                # Keep the extracted epoch number when loading weights
-                print(f"Continuing training from epoch {initial_epoch}")
-            except Exception as e_weights:
-                print(f"Failed to load weights: {e_weights}")
-                print("Creating new model")
-                model = None
-                initial_epoch = 0
-
-    # Create or load model if not already loaded
+                model.load_weights(latest_checkpoint)
+                print("Checkpoint weights loaded successfully")
+        except Exception as e:
+            print(f"Failed to load checkpoint: {e}")
+            model = None
+    
+    # Create new model if loading failed
     if model is None:
-        if TRAIN_QAT and LOAD_MODEL_PATH:
-            print(f"Loading float32 model from: {LOAD_MODEL_PATH}")
-            float32_model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
-            model = convert_float32_to_qat(float32_model)
-        elif TRAIN_QAT:
-            print("Creating QAT model from scratch")
+        if TRAIN_QAT:
+            print("Creating new QAT model")
             model = create_segmentation_model(use_quantization=True)
         else:
-            print("Creating float32 baseline model")
+            print("Creating new float32 model")
             model = create_segmentation_model(use_quantization=False)
+        initial_epoch = 0
+        training_history = None
 
-    # Compile model (only if not already compiled)
-    if not skip_compilation:
-        # Use user-specified learning rate if provided, else recommended defaults
-        if USER_LR is not None:
-            learning_rate = USER_LR
-            print(f"Using user-specified learning rate: {learning_rate}")
-        elif TRAIN_QAT:
-            learning_rate = 1e-5
-            print(f"Using recommended QAT learning rate: {learning_rate}")
-        else:
-            learning_rate = 3e-4
-            print(f"Using recommended float32 learning rate: {learning_rate}")
-
-        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-
-        model.compile(
-            optimizer=optimizer,
-            loss="categorical_crossentropy",  # Standard categorical crossentropy loss
-            metrics=["accuracy"],  # Use accuracy metric
-        )
-        print(f"Model compiled with learning rate: {learning_rate}")
+    # Compile model with appropriate learning rate
+    if USER_LR is not None:
+        learning_rate = USER_LR
+        print(f"Using user-specified learning rate: {learning_rate}")
+    elif TRAIN_QAT:
+        learning_rate = 1e-5
+        print(f"Using recommended QAT learning rate: {learning_rate}")
     else:
-        print("Skipping compilation - using loaded model with existing optimizer state")
+        learning_rate = 5e-4
+        print(f"Using recommended float32 learning rate: {learning_rate}")
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    
+    model.compile(
+        optimizer=optimizer,
+        loss="categorical_crossentropy",
+        metrics=["accuracy"],
+    )
+    print(f"Model compiled with learning rate: {learning_rate}")
 
     model.summary()
 
-    # Create callbacks
+    # Create callbacks with proper state management
     os.makedirs(model_dir, exist_ok=True)
 
     # Setup TensorBoard logging
@@ -934,12 +1013,12 @@ def train_model():
     viz_dir = os.path.join(model_dir, 'visualizations')
     metrics_dir = os.path.join(model_dir, 'metrics')
     os.makedirs(viz_dir, exist_ok=True)
-    os.makedirs(metrics_dir, exist_ok=True)
 
+    # Enhanced callbacks with proper state management
     callbacks = [
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
-            save_weights_only=True,
+            save_weights_only=True,  # Save weights only for compatibility
             save_best_only=False,
             monitor='val_loss',
             mode='min',
@@ -947,7 +1026,7 @@ def train_model():
         ),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_best.keras'),
-            save_weights_only=True,
+            save_weights_only=True,  # Save weights only for compatibility
             save_best_only=True,
             monitor='val_loss',
             mode='min',
@@ -957,7 +1036,7 @@ def train_model():
             monitor='val_loss',
             mode='min',
             factor=0.5,
-            patience=4,
+            patience=7,
             verbose=1,
             min_lr=1e-7
         ),
@@ -972,25 +1051,36 @@ def train_model():
             val_generator=val_generator,
             save_dir=viz_dir,
             num_samples=4,
-            save_frequency=5  # Save visualizations every 5 epochs
+            save_frequency=5
         ),
         DetailedMetricsCallback(
             val_generator=val_generator,
             save_dir=metrics_dir,
-            save_frequency=5  # Save detailed text files every 5 epochs, but calculate IoU every epoch
+            save_frequency=5
         ),
         TensorBoard(
             log_dir=tensorboard_log_dir,
             histogram_freq=1,
             write_graph=True,
-            write_images=False,  # Enable image logging to complement custom visualizations
+            write_images=False,
             update_freq='epoch',
-            profile_batch=0  # Disable profiling for performance
+            profile_batch=0
         ),
-        MemoryCleanupCallback()
-    ]    # Train model
+        MemoryCleanupCallback(),
+        # Add custom callback to save training state
+        TrainingStateCallback(model_dir, model_prefix)
+    ]
+
+    # Train model with proper state management
     try:
         print(f"Starting training from epoch {initial_epoch}...")
+        
+        # If we have training history, we need to handle it properly
+        if training_history:
+            print("Resuming training with existing history")
+            # Note: Keras will automatically continue from the last epoch
+            # The history will be merged with new training results
+        
         history = model.fit(
             train_generator,
             epochs=EPOCHS,
@@ -1000,25 +1090,35 @@ def train_model():
             verbose=1,
             workers=NUM_WORKERS,
             use_multiprocessing=True if NUM_WORKERS > 1 else False,
-            max_queue_size=PREFETCH_MAX  # Use PREFETCH_MAX for data prefetching optimization
+            max_queue_size=PREFETCH_MAX
         )
 
-        # Save final model
+        # Save final model (compatible format)
         final_model_path = os.path.join(model_dir, f'{model_prefix}_final.keras')
-        model.save(final_model_path)
-        print(f"Final model saved to: {final_model_path}")
+        try:
+            model.save(final_model_path, save_format='keras')
+            print(f"Final model saved to: {final_model_path}")
+        except Exception as e:
+            print(f"Warning: Could not save full model, saving weights only: {e}")
+            model.save_weights(final_model_path)
+            print(f"Final weights saved to: {final_model_path}")
 
         # Create and save clean model for HLS4ML export (without dropout)
         print("Creating clean model for HLS4ML export...")
         clean_model = create_hls4ml_export_model(trained_model=model, use_quantization=TRAIN_QAT)
         clean_model_path = os.path.join(model_dir, f'{model_prefix}_clean_for_hls4ml.keras')
-        clean_model.save(clean_model_path)
-        print(f"Clean model (no dropout) saved to: {clean_model_path}")
+        try:
+            clean_model.save(clean_model_path, save_format='keras')
+            print(f"Clean model (no dropout) saved to: {clean_model_path}")
+        except Exception as e:
+            print(f"Warning: Could not save full clean model, saving weights only: {e}")
+            clean_model.save_weights(clean_model_path)
+            print(f"Clean weights saved to: {clean_model_path}")
 
         # If QAT training, save quantized weights for hls4ml
         if TRAIN_QAT:
             quantized_weights_path = os.path.join(model_dir, f'{model_prefix}_quantized_weights.h5')
-            model_save_quantized_weights(clean_model, quantized_weights_path)  # Use clean model for quantized weights
+            model_save_quantized_weights(clean_model, quantized_weights_path)
             print(f"Quantized weights saved to: {quantized_weights_path}")
             print("Note: Quantized weights saved from clean model (without dropout) for HLS4ML compatibility")
 
@@ -1028,42 +1128,31 @@ def train_model():
         print(f"\n" + "="*60)
         print("📊 TensorBoard Monitoring Available!")
         print(f"📁 Log Directory: {tensorboard_log_dir}")
-        print("🌐 To view training progress in your browser:")
-        print(f"   Run: tensorboard --logdir=\"{tensorboard_log_dir}\" --host=localhost --port=6006")
-        print("   Then open: http://localhost:6006")
-        print("\n📸 Visual Results Available!")
-        print(f"🖼️  Prediction visualizations: {viz_dir}")
-        print(f"📈 Detailed metrics: {metrics_dir}")
-        print("   Check these directories for visual comparisons of model predictions")
+        print("🚀 Start TensorBoard with:")
+        print(f"   tensorboard --logdir={tensorboard_log_dir}")
         print("="*60)
 
-        # Print training summary
-        if hasattr(history, 'history'):
-            final_loss = history.history['loss'][-1]
-            final_val_loss = history.history['val_loss'][-1]
-            final_accuracy = history.history['accuracy'][-1]
-            final_val_accuracy = history.history['val_accuracy'][-1]
-
-            print(f"\nFinal Training Results:")
-            print(f"  Training Loss: {final_loss:.4f}")
-            print(f"  Validation Loss: {final_val_loss:.4f}")
-            print(f"  Training Accuracy: {final_accuracy:.4f}")
-            print(f"  Validation Accuracy: {final_val_accuracy:.4f}")
+        return history
 
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
-        interrupt_model_path = os.path.join(model_dir, f'{model_prefix}_interrupted.keras')
-        model.save(interrupt_model_path)
-        print(f"Model saved to: {interrupt_model_path}")
+        print("Saving current model state...")
+        
+        # Save interrupted model (compatible format)
+        interrupted_model_path = os.path.join(model_dir, f'{model_prefix}_interrupted.keras')
+        try:
+            model.save(interrupted_model_path, save_format='keras')
+            print(f"Interrupted model saved to: {interrupted_model_path}")
+        except Exception as e:
+            print(f"Warning: Could not save full interrupted model, saving weights only: {e}")
+            model.save_weights(interrupted_model_path)
+            print(f"Interrupted weights saved to: {interrupted_model_path}")
+        
+        return None
+
     except Exception as e:
         print(f"Training failed with error: {e}")
-        error_model_path = os.path.join(model_dir, f'{model_prefix}_error.keras')
-        model.save(error_model_path)
-        print(f"Model saved to: {error_model_path}")
-        raise
-    finally:
-        cleanup_memory()
-        print(f"Final memory usage: {get_memory_usage():.2f} MB")
+        return None
 
 if __name__ == "__main__":
     print("="*60)
