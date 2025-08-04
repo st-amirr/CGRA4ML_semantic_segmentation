@@ -901,16 +901,21 @@ def train_model():
 
     # Load training state if available
     training_history = None
+    training_state_epoch = 0
     if os.path.exists(training_state_file):
         try:
             with open(training_state_file, 'r') as f:
                 training_state = json.load(f)
-                initial_epoch = training_state.get('epoch', 0)
+                training_state_epoch = training_state.get('epoch', 0)
                 training_history = training_state.get('history', {})
-                print(f"Loaded training state from epoch {initial_epoch}")
+                print(f"Loaded training state from epoch {training_state_epoch}")
                 print(f"Training history keys: {list(training_history.keys())}")
         except Exception as e:
             print(f"Failed to load training state: {e}")
+    
+    # Use the maximum epoch to ensure we don't go backwards
+    initial_epoch = max(initial_epoch, training_state_epoch)
+    print(f"Final initial_epoch determined: {initial_epoch}")
 
     # Model loading strategy following Keras best practices
     if LOAD_MODEL_PATH:
@@ -1007,7 +1012,24 @@ def train_model():
 
     # Setup TensorBoard logging
     tensorboard_log_dir = os.path.join(model_dir, 'tb_logs')
-    os.makedirs(tensorboard_log_dir, exist_ok=True)
+    try:
+        os.makedirs(tensorboard_log_dir, exist_ok=True)
+    except FileExistsError:
+        # If the path exists as a file, remove it and create directory
+        if os.path.isfile(tensorboard_log_dir):
+            os.remove(tensorboard_log_dir)
+            os.makedirs(tensorboard_log_dir, exist_ok=True)
+        else:
+            # If it's a directory but we still get FileExistsError, try with a different name
+            tensorboard_log_dir = os.path.join(model_dir, f'tb_logs_{int(time.time())}')
+            os.makedirs(tensorboard_log_dir, exist_ok=True)
+            print(f"Using alternative TensorBoard log directory: {tensorboard_log_dir}")
+    except Exception as e:
+        print(f"Warning: Could not create TensorBoard log directory: {e}")
+        # Use a fallback directory
+        tensorboard_log_dir = os.path.join(model_dir, 'logs')
+        os.makedirs(tensorboard_log_dir, exist_ok=True)
+        print(f"Using fallback log directory: {tensorboard_log_dir}")
 
     # Setup visualization directories
     viz_dir = os.path.join(model_dir, 'visualizations')
