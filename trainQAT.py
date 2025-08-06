@@ -855,10 +855,12 @@ class TrainingStateCallback(tf.keras.callbacks.Callback):
     def on_train_end(self, logs=None):
         """Clean up training state file"""
         try:
-            os.remove(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'))
+            os.remove(os.path.join(self.model_dir, f'{model_prefix}_training_state.json'))
             print("Training state file removed.")
         except FileNotFoundError:
             print("Training state file not found.")
+
+
 
 
 def train_model():
@@ -920,6 +922,7 @@ def train_model():
     print(f"Final initial_epoch determined: {initial_epoch}")
 
     # Model loading strategy following Keras best practices
+    
     if LOAD_MODEL_PATH:
         # Load specific model path
         print(f"Loading model from specified path: {LOAD_MODEL_PATH}")
@@ -935,6 +938,7 @@ def train_model():
                     float32_model = create_segmentation_model(use_quantization=False)
                     float32_model.load_weights(LOAD_MODEL_PATH)
                 model = convert_float32_to_qat(float32_model)
+                
                 # Reset epoch for QAT training
                 initial_epoch = 0
                 training_history = None
@@ -1012,8 +1016,14 @@ def train_model():
     # Create callbacks with proper state management
     os.makedirs(model_dir, exist_ok=True)
 
-    # Setup TensorBoard logging
-    tensorboard_log_dir = os.path.join(model_dir, 'tb_logs')
+    # Setup TensorBoard logging with separate directories for QAT and non-QAT
+    if TRAIN_QAT:
+        tensorboard_log_dir = os.path.join(model_dir, 'tb_logs_qat')
+        print(f"Using QAT TensorBoard log directory: {tensorboard_log_dir}")
+    else:
+        tensorboard_log_dir = os.path.join(model_dir, 'tb_logs')
+        print(f"Using float32 TensorBoard log directory: {tensorboard_log_dir}")
+    
     try:
         os.makedirs(tensorboard_log_dir, exist_ok=True)
     except FileExistsError:
@@ -1023,13 +1033,14 @@ def train_model():
             os.makedirs(tensorboard_log_dir, exist_ok=True)
         else:
             # If it's a directory but we still get FileExistsError, try with a different name
-            tensorboard_log_dir = os.path.join(model_dir, f'tb_logs_{int(time.time())}')
+            timestamp = int(time.time())
+            tensorboard_log_dir = os.path.join(model_dir, f'tb_logs_{"qat" if TRAIN_QAT else ""}_{timestamp}')
             os.makedirs(tensorboard_log_dir, exist_ok=True)
             print(f"Using alternative TensorBoard log directory: {tensorboard_log_dir}")
     except Exception as e:
         print(f"Warning: Could not create TensorBoard log directory: {e}")
         # Use a fallback directory
-        tensorboard_log_dir = os.path.join(model_dir, 'logs')
+        tensorboard_log_dir = os.path.join(model_dir, f'logs_{"qat" if TRAIN_QAT else ""}')
         os.makedirs(tensorboard_log_dir, exist_ok=True)
         print(f"Using fallback log directory: {tensorboard_log_dir}")
 
