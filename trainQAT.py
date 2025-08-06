@@ -20,7 +20,8 @@ Key Features:
 
 python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_70.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-7
 
 """
 
@@ -146,51 +147,41 @@ tf.config.optimizer.set_experimental_options({
 # Multi-precision quantization based on analyze_weights.txt recommendations
 
 # Optimized quantization based on actual trained model weight analysis (epoch 70)
-# 8-bit for input/output layers: max weight range [-6.52, 1.82] → 4 integer bits needed
+# Optimized quantization based on actual trained model weight analysis (epoch 70)
+# For Kernels and Biases with small range (<1): boundary_enhance2_conv (0.251861), final_reduce_conv (0.634985)
 quantized_bits_8_config = {
     'bits': 8,
-    'integer': 4,  # Based on actual analysis: max 4 bits needed for input/output layers
+    'integer': 1,  # for values within ±2 range
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
 
-quantized_relu_8_config = {
-    'bits': 8,
-    'integer': 4,  # Ensures sufficient range for activation values
-    'use_stochastic_rounding': True
-}
-
-# 16-bit for encoder/decoder layers: max weight range [-2.92, 6.66] → 4 integer bits needed
+# For Kernels and Biases with medium range (~1 to ~4): final_reduce_bn (1.903646), boundary_enhance2_bn (1.524222)
 quantized_bits_16_config = {
-    'bits': 16,
-    'integer': 4,  # Based on actual analysis: max 4 bits needed for encoder/decoder layers
+    'bits': 8,
+    'integer': 2,  # for values within ±4 range
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
 
-quantized_relu_16_config = {
-    'bits': 16,
-    'integer': 4,  # Provides 12 fractional bits for high precision
-    'use_stochastic_rounding': True
-}
-
-# 32-bit for bridge/critical layers: max weight range [-2.13, 2.55] → 3 integer bits needed
+# For Output Layer and large range layers: already set correctly
 quantized_bits_32_config = {
-    'bits': 32,
-    'integer': 3,  # Based on actual analysis: max 3 bits needed for bridge layers
+    'bits': 16,
+    'integer': 8,  # already set correctly
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
     'scale_axis': None
 }
 
-quantized_relu_32_config = {
-    'bits': 32,
-    'integer': 3,  # Provides 29 fractional bits for maximum precision
+# General activations: safely increase integer bits to avoid saturation or overflow
+quantized_relu_config = {
+    'bits': 8,
+    'integer': 6,  # increase from 4 to 6 (max activation ~±64)
     'use_stochastic_rounding': True
 }
 
@@ -498,17 +489,17 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, pre
         # Select quantization config based on precision
         if precision == '8bit':
             qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_8_config
+            qrelu_config = quantized_relu_config
         elif precision == '16bit':
             qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_16_config
+            qrelu_config = quantized_relu_config
         elif precision == '32bit':
             qbits_config = quantized_bits_32_config
-            qrelu_config = quantized_relu_32_config
+            qrelu_config = quantized_relu_config
         else:
-            # Default to 8-bit for unknown precision
+            # Default to small config for unknown precision
             qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_8_config
+            qrelu_config = quantized_relu_config
         
         # Use QKeras quantized layers
         x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
@@ -549,19 +540,23 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
     
     # Attention mechanism
     if use_quantization:
-        # Select quantization config based on precision
+        # Select quantization config based on precision and layer characteristics
         if precision == '8bit':
+            # Attention blocks in 8-bit layers use small config
             qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_8_config
+            qrelu_config = quantized_relu_config
         elif precision == '16bit':
+            # Attention blocks in 16-bit layers use medium config
             qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_16_config
+            qrelu_config = quantized_relu_config
         elif precision == '32bit':
+            # Attention blocks in 32-bit layers use large config
             qbits_config = quantized_bits_32_config
-            qrelu_config = quantized_relu_32_config
+            qrelu_config = quantized_relu_config
         else:
-            qbits_config = quantized_bits_16_config  # Default to 16-bit for attention
-            qrelu_config = quantized_relu_16_config
+            # Default to medium config for attention blocks
+            qbits_config = quantized_bits_16_config
+            qrelu_config = quantized_relu_config
         
         y = QConv2D(channels // 4, kernel_size=1, padding='same',
                    kernel_quantizer=quantized_bits(**qbits_config),
@@ -669,8 +664,8 @@ def create_segmentation_model(use_quantization=False):
     # Output layer (OUTPUT block - 8-bit precision)
     if use_quantization:
         outputs = QConv2D(NUM_CLASSES, kernel_size=1, padding='same',
-                         kernel_quantizer=quantized_bits(**quantized_bits_8_config),
-                         bias_quantizer=quantized_bits(**quantized_bits_8_config),
+                         kernel_quantizer=quantized_bits(**quantized_bits_32_config),
+                         bias_quantizer=quantized_bits(**quantized_bits_32_config),
                          activation='softmax', name='output_qconv')(x)
     else:
         outputs = Conv2D(NUM_CLASSES, kernel_size=1, padding='same',
@@ -997,7 +992,7 @@ def train_model():
         learning_rate = USER_LR
         print(f"Using user-specified learning rate: {learning_rate}")
     elif TRAIN_QAT:
-        learning_rate = 1e-5
+        learning_rate = 1e-7
         print(f"Using recommended QAT learning rate: {learning_rate}")
     else:
         learning_rate = 5e-4
