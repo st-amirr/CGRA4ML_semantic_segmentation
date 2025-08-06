@@ -20,7 +20,10 @@ Key Features:
 
 python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-4
+
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-5
+
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_70.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-7
 
 """
@@ -600,25 +603,25 @@ def create_segmentation_model(use_quantization=False):
     # Encoder block 1 (ENCODER1 block - 8-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], strides=2, use_quantization=use_quantization, precision='8bit', name='enc1_down')
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='enc1_conv')
+    skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.2, name='dropout_encoder1')(x)
-    skip_connections.append(x)
+        x = Dropout(0.1, name='dropout_encoder1')(x)
     
     # Encoder block 2 (ENCODER2 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='enc2_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_att')
+    skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.25, name='dropout_encoder2')(x)
-    skip_connections.append(x)
+        x = Dropout(0.15, name='dropout_encoder2')(x)
     
     # Encoder block 3 (ENCODER3 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='enc3_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_att')
+    skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.3, name='dropout_encoder3')(x)
-    skip_connections.append(x)
+        x = Dropout(0.2, name='dropout_encoder3')(x)
     
     # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
@@ -626,7 +629,7 @@ def create_segmentation_model(use_quantization=False):
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv2')
     x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_att')
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.35, name='dropout_bridge')(x)
+        x = Dropout(0.25, name='dropout_bridge')(x)
     
     # Decoder path
     # Decoder block 3 (DECODER3 block - 32-bit precision for critical features)
@@ -635,7 +638,7 @@ def create_segmentation_model(use_quantization=False):
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='32bit', name='dec3_conv1')
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='32bit', name='dec3_conv2')
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.25, name='dropout_decoder3')(x)
+        x = Dropout(0.2, name='dropout_decoder3')(x)
     
     # Decoder block 2 (DECODER2 block - 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
@@ -643,7 +646,7 @@ def create_segmentation_model(use_quantization=False):
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv1')
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv2')
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.2, name='dropout_decoder2')(x)
+        x = Dropout(0.15, name='dropout_decoder2')(x)
     
     # Decoder block 1 (DECODER1 block - 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec1_up')(x)
@@ -651,7 +654,7 @@ def create_segmentation_model(use_quantization=False):
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='16bit', name='dec1_conv1')
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='16bit', name='dec1_conv2')
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.15, name='dropout_decoder1')(x)
+        x = Dropout(0.1, name='dropout_decoder1')(x)
     
     # Final upsampling to original resolution
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='final_up')(x)
@@ -659,7 +662,7 @@ def create_segmentation_model(use_quantization=False):
     # Final convolution before output (DECODER0 block - 8-bit precision)
     x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='final_conv')
     if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.1, name='dropout_final')(x)
+        x = Dropout(0.05, name='dropout_final')(x)
     
     # Output layer (OUTPUT block - 8-bit precision)
     if use_quantization:
@@ -861,8 +864,6 @@ class TrainingStateCallback(tf.keras.callbacks.Callback):
             print("Training state file not found.")
 
 
-
-
 def train_model():
     """Main training function"""
     print(f"Starting training with QAT={'Enabled' if TRAIN_QAT else 'Disabled'}")
@@ -999,7 +1000,7 @@ def train_model():
         learning_rate = 1e-7
         print(f"Using recommended QAT learning rate: {learning_rate}")
     else:
-        learning_rate = 5e-4
+        learning_rate = 7e-4
         print(f"Using recommended float32 learning rate: {learning_rate}")
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
@@ -1070,10 +1071,10 @@ def train_model():
         ReduceLROnPlateau(
             monitor='val_loss',
             mode='min',
-            factor=0.5,
-            patience=7,
+            factor=0.5 if TRAIN_QAT else 0.3,
+            patience=10 if TRAIN_QAT else 7,
             verbose=1,
-            min_lr=1e-7
+            min_lr=1e-8 if TRAIN_QAT else 1e-6
         ),
         EarlyStopping(
             monitor='val_loss',
