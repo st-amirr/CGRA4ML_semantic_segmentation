@@ -30,7 +30,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-5
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=False --subset_ratio=0.9 --LR=1e-5
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_70.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-7
 
@@ -64,6 +64,140 @@ import math
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 import tensorflow.keras.backend as K
+
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='HLS4ML Semantic Segmentation with QAT Toggle')
+parser.add_argument('--trainQAT', type=str, default='False', 
+                   help='Enable QAT training (True/False). Default: False for float32 baseline')
+parser.add_argument('--load_model', type=str, default='', 
+                   help='Path to float32 model to load for QAT training')
+parser.add_argument('--epochs', type=int, default=50, 
+                   help='Number of epochs to train')
+parser.add_argument('--batch_size', type=int, default=2, 
+                   help='Batch size for training')
+parser.add_argument('--use_dropout', type=str, default='True',
+                   help='Enable dropout during training (True/False). Default: True')
+parser.add_argument('--subset_ratio', type=float, default=1.0,
+                   help='Fraction of dataset to use per epoch (0.1-1.0). Default: 1.0 (full dataset)')
+parser.add_argument('--LR', type=float, default=None,
+                   help='Override default learning rate. If not set, uses recommended value for float32/QAT.')
+
+args = parser.parse_args()
+
+# Convert string to boolean and parse args
+TRAIN_QAT = args.trainQAT.lower() == 'true'
+LOAD_MODEL_PATH = args.load_model
+EPOCHS = args.epochs
+BATCH_SIZE = args.batch_size
+USE_DROPOUT_DURING_TRAINING = args.use_dropout.lower() == 'true'
+SUBSET_RATIO = args.subset_ratio
+USER_LR = args.LR
+
+print(f"Training Configuration:")
+print(f"  QAT Training: {TRAIN_QAT}")
+print(f"  Load Model: {LOAD_MODEL_PATH if LOAD_MODEL_PATH else 'None (training from scratch)'}")
+print(f"  Epochs: {EPOCHS}")
+print(f"  Batch Size: {BATCH_SIZE}")
+print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
+print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
+
+# Define constants
+INPUT_HEIGHT = 512
+INPUT_WIDTH = 1024
+NUM_CLASSES = 34
+DATASET_DIR = '/data'
+NUM_WORKERS = 4
+PREFETCH_MAX = 8
+
+DEBUG_MODE = False
+
+# Configure TensorFlow
+n_cores = multiprocessing.cpu_count()
+tf.config.threading.set_inter_op_parallelism_threads(n_cores)
+tf.config.threading.set_intra_op_parallelism_threads(n_cores)
+tf.config.set_soft_device_placement(True)
+
+# Configure GPU to use more VRAM (from train.py)
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            # Allow TensorFlow to allocate more GPU memory
+            tf.config.experimental.set_memory_growth(gpu, True)
+            # Set memory limit to use more VRAM (10GB limit for better utilization)
+            tf.config.set_logical_device_configuration(
+                gpu,
+                [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
+            )
+    except RuntimeError as e:
+        print(f"GPU memory growth setup failed: {e}")
+
+# Enable additional TensorFlow optimizations for GPU utilization
+tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utilization
+# tf.config.experimental.enable_op_determinism(False)  # Allow non-deterministic ops for performance
+
+print(f"Eager execution enabled: {tf.executing_eagerly()}")
+tf.debugging.set_log_device_placement(DEBUG_MODE)
+
+# Model architecture configuration
+MODEL_CONFIG = {
+    'init_filters': INPUT_HEIGHT // 32,  # 16
+    'stage1_filters': INPUT_HEIGHT // 16, # 32
+    'stage2_filters': INPUT_HEIGHT // 8,  # 64
+    'stage3_filters': INPUT_HEIGHT // 4,  # 128
+    'stage4_filters': INPUT_HEIGHT // 2,  # 256
+}
+
+# Disable layout optimizer to prevent conflicts with QKeras
+tf.config.optimizer.set_experimental_options({
+    'layout_optimizer': False,
+    'constant_folding': True,
+    'shape_optimization': True,
+    'remapping': True,
+})
+
+# QKeras quantization parameters (used only when TRAIN_QAT=True)
+# Multi-precision quantization based on analyze_weights.txt recommendations
+
+# Optimized quantization based on actual trained model weight analysis (epoch 70)
+# Optimized quantization based on actual trained model weight analysis (epoch 70)
+# For Kernels and Biases with small range (<1): boundary_enhance2_conv (0.251861), final_reduce_conv (0.634985)
+quantized_bits_8_config = {
+    'bits': 8,
+    'integer': 1,  # for values within ±2 range
+    'symmetric': True,
+    'alpha': 'auto_po2',
+    'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+
+# For Kernels and Biases with medium range (~1 to ~4): final_reduce_bn (1.903646), boundary_enhance2_bn (1.524222)
+quantized_bits_16_config = {
+    'bits': 8,
+    'integer': 2,  # for values within ±4 range
+    'symmetric': True,
+    'alpha': 'auto_po2',
+    'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+
+# For Output Layer and large range layers: already set correctly
+quantized_bits_32_config = {
+    'bits': 16,
+    'integer': 8,  # already set correctly
+    'symmetric': True,
+    'alpha': 'auto_po2',
+    'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+
+# General activations: safely increase integer bits to avoid saturation or overflow
+quantized_relu_config = {
+    'bits': 8,
+    'integer': 6,  # increase from 4 to 6 (max activation ~±64)
+    'use_stochastic_rounding': True
+}
 
 # Add these loss functions after the imports
 def dice_loss(y_true, y_pred, smooth=1e-7):
@@ -257,139 +391,6 @@ def f1_score_metric(y_true, y_pred):
     del precision, recall
     return f1
 
-
-# Parse command line arguments
-parser = argparse.ArgumentParser(description='HLS4ML Semantic Segmentation with QAT Toggle')
-parser.add_argument('--trainQAT', type=str, default='False', 
-                   help='Enable QAT training (True/False). Default: False for float32 baseline')
-parser.add_argument('--load_model', type=str, default='', 
-                   help='Path to float32 model to load for QAT training')
-parser.add_argument('--epochs', type=int, default=50, 
-                   help='Number of epochs to train')
-parser.add_argument('--batch_size', type=int, default=2, 
-                   help='Batch size for training')
-parser.add_argument('--use_dropout', type=str, default='True',
-                   help='Enable dropout during training (True/False). Default: True')
-parser.add_argument('--subset_ratio', type=float, default=1.0,
-                   help='Fraction of dataset to use per epoch (0.1-1.0). Default: 1.0 (full dataset)')
-parser.add_argument('--LR', type=float, default=None,
-                   help='Override default learning rate. If not set, uses recommended value for float32/QAT.')
-
-args = parser.parse_args()
-
-# Convert string to boolean and parse args
-TRAIN_QAT = args.trainQAT.lower() == 'true'
-LOAD_MODEL_PATH = args.load_model
-EPOCHS = args.epochs
-BATCH_SIZE = args.batch_size
-USE_DROPOUT_DURING_TRAINING = args.use_dropout.lower() == 'true'
-SUBSET_RATIO = args.subset_ratio
-USER_LR = args.LR
-
-print(f"Training Configuration:")
-print(f"  QAT Training: {TRAIN_QAT}")
-print(f"  Load Model: {LOAD_MODEL_PATH if LOAD_MODEL_PATH else 'None (training from scratch)'}")
-print(f"  Epochs: {EPOCHS}")
-print(f"  Batch Size: {BATCH_SIZE}")
-print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
-print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
-
-# Define constants
-INPUT_HEIGHT = 512
-INPUT_WIDTH = 1024
-NUM_CLASSES = 34
-DATASET_DIR = '/data'
-NUM_WORKERS = 4
-PREFETCH_MAX = 8
-
-DEBUG_MODE = False
-
-# Configure TensorFlow
-n_cores = multiprocessing.cpu_count()
-tf.config.threading.set_inter_op_parallelism_threads(n_cores)
-tf.config.threading.set_intra_op_parallelism_threads(n_cores)
-tf.config.set_soft_device_placement(True)
-
-# Configure GPU to use more VRAM (from train.py)
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            # Allow TensorFlow to allocate more GPU memory
-            tf.config.experimental.set_memory_growth(gpu, True)
-            # Set memory limit to use more VRAM (10GB limit for better utilization)
-            tf.config.set_logical_device_configuration(
-                gpu,
-                [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
-            )
-    except RuntimeError as e:
-        print(f"GPU memory growth setup failed: {e}")
-
-# Enable additional TensorFlow optimizations for GPU utilization
-tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utilization
-# tf.config.experimental.enable_op_determinism(False)  # Allow non-deterministic ops for performance
-
-print(f"Eager execution enabled: {tf.executing_eagerly()}")
-tf.debugging.set_log_device_placement(DEBUG_MODE)
-
-# Model architecture configuration
-MODEL_CONFIG = {
-    'init_filters': INPUT_HEIGHT // 32,  # 16
-    'stage1_filters': INPUT_HEIGHT // 16, # 32
-    'stage2_filters': INPUT_HEIGHT // 8,  # 64
-    'stage3_filters': INPUT_HEIGHT // 4,  # 128
-    'stage4_filters': INPUT_HEIGHT // 2,  # 256
-}
-
-# Disable layout optimizer to prevent conflicts with QKeras
-tf.config.optimizer.set_experimental_options({
-    'layout_optimizer': False,
-    'constant_folding': True,
-    'shape_optimization': True,
-    'remapping': True,
-})
-
-# QKeras quantization parameters (used only when TRAIN_QAT=True)
-# Multi-precision quantization based on analyze_weights.txt recommendations
-
-# Optimized quantization based on actual trained model weight analysis (epoch 70)
-# Optimized quantization based on actual trained model weight analysis (epoch 70)
-# For Kernels and Biases with small range (<1): boundary_enhance2_conv (0.251861), final_reduce_conv (0.634985)
-quantized_bits_8_config = {
-    'bits': 8,
-    'integer': 1,  # for values within ±2 range
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# For Kernels and Biases with medium range (~1 to ~4): final_reduce_bn (1.903646), boundary_enhance2_bn (1.524222)
-quantized_bits_16_config = {
-    'bits': 8,
-    'integer': 2,  # for values within ±4 range
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# For Output Layer and large range layers: already set correctly
-quantized_bits_32_config = {
-    'bits': 16,
-    'integer': 8,  # already set correctly
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
-
-# General activations: safely increase integer bits to avoid saturation or overflow
-quantized_relu_config = {
-    'bits': 8,
-    'integer': 6,  # increase from 4 to 6 (max activation ~±64)
-    'use_stochastic_rounding': True
-}
 
 
 def get_memory_usage():
