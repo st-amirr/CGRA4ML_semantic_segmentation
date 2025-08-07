@@ -150,7 +150,11 @@ def mean_iou(y_true, y_pred):
         iou = tf.where(union > 0, intersection / union, 0.0)
         ious.append(iou)
     
-    return tf.reduce_mean(ious)
+    result = tf.reduce_mean(ious)
+    
+    # Clean up intermediate tensors
+    del ious, intersection, union, iou
+    return result
 
 def precision_metric(y_true, y_pred):
     """
@@ -167,7 +171,11 @@ def precision_metric(y_true, y_pred):
         precision = tf.where(tp + fp > 0, tp / (tp + fp), 0.0)
         precisions.append(precision)
     
-    return tf.reduce_mean(precisions)
+    result = tf.reduce_mean(precisions)
+    
+    # Clean up intermediate tensors
+    del precisions, tp, fp, precision
+    return result
 
 def recall_metric(y_true, y_pred):
     """
@@ -184,7 +192,11 @@ def recall_metric(y_true, y_pred):
         recall = tf.where(tp + fn > 0, tp / (tp + fn), 0.0)
         recalls.append(recall)
     
-    return tf.reduce_mean(recalls)
+    result = tf.reduce_mean(recalls)
+    
+    # Clean up intermediate tensors
+    del recalls, tp, fn, recall
+    return result
 
 def f1_score_metric(y_true, y_pred):
     """
@@ -193,6 +205,9 @@ def f1_score_metric(y_true, y_pred):
     precision = precision_metric(y_true, y_pred)
     recall = recall_metric(y_true, y_pred)
     f1 = tf.where(precision + recall > 0, 2 * (precision * recall) / (precision + recall), 0.0)
+    
+    # Clean up intermediate tensors
+    del precision, recall
     return f1
 
 
@@ -334,11 +349,6 @@ def get_memory_usage():
     """Get current memory usage in MB"""
     process = psutil.Process(os.getpid())
     return process.memory_info().rss / 1024 / 1024
-
-def cleanup_memory():
-    """Cleanup memory and run garbage collection"""
-    gc.collect()
-    tf.keras.backend.clear_session()
 
 # Custom callbacks for better training monitoring
 class MemoryCleanupCallback(tf.keras.callbacks.Callback):
@@ -1025,93 +1035,6 @@ class TrainingStateCallback(tf.keras.callbacks.Callback):
             print("Training state file not found.")
 
 
-class PostProcessingCallback(tf.keras.callbacks.Callback):
-    """
-    Post-processing callback to clean up scattered pixel predictions
-    """
-    def __init__(self, val_generator, save_dir, save_frequency=5):
-        super().__init__()
-        self.val_generator = val_generator
-        self.save_dir = save_dir
-        self.save_frequency = save_frequency
-        os.makedirs(save_dir, exist_ok=True)
-    
-    def clean_predictions(self, predictions):
-        """
-        Clean scattered pixel predictions using morphological operations
-        """
-        cleaned_predictions = []
-        
-        for pred in predictions:
-            # Convert to class predictions
-            pred_classes = np.argmax(pred, axis=-1)
-            
-            # Apply morphological operations to clean scattered pixels
-            cleaned_pred = pred_classes.copy()
-            
-            # For each class, apply morphological operations
-            for class_id in range(1, NUM_CLASSES):  # Skip background class
-                class_mask = (pred_classes == class_id).astype(np.uint8)
-                
-                if np.sum(class_mask) > 0:
-                    # Remove small isolated regions
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                    cleaned_mask = cv2.morphologyEx(class_mask, cv2.MORPH_CLOSE, kernel)
-                    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
-                    
-                    # Remove very small regions (less than 50 pixels)
-                    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned_mask, connectivity=8)
-                    for i in range(1, num_labels):  # Skip background
-                        if stats[i, cv2.CC_STAT_AREA] < 50:
-                            cleaned_mask[labels == i] = 0
-                    
-                    # Update cleaned prediction
-                    cleaned_pred[cleaned_mask == 1] = class_id
-            
-            # Convert back to one-hot encoding
-            cleaned_one_hot = tf.keras.utils.to_categorical(cleaned_pred, num_classes=NUM_CLASSES)
-            cleaned_predictions.append(cleaned_one_hot)
-        
-        return np.array(cleaned_predictions)
-    
-    def on_epoch_end(self, epoch, logs=None):
-        if epoch % self.save_frequency == 0:
-            # Get sample predictions
-            sample_images, sample_masks = self.val_generator[0]
-            predictions = self.model.predict(sample_images, verbose=0)
-            
-            # Clean predictions
-            cleaned_predictions = self.clean_predictions(predictions)
-            
-            # Save comparison
-            for i in range(min(4, len(sample_images))):
-                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-                
-                # Original image
-                axes[0].imshow(sample_images[i])
-                axes[0].set_title('Original Image')
-                axes[0].axis('off')
-                
-                # Raw prediction
-                raw_pred = np.argmax(predictions[i], axis=-1)
-                axes[1].imshow(raw_pred, cmap='tab20')
-                axes[1].set_title('Raw Prediction')
-                axes[1].axis('off')
-                
-                # Cleaned prediction
-                cleaned_pred = np.argmax(cleaned_predictions[i], axis=-1)
-                axes[2].imshow(cleaned_pred, cmap='tab20')
-                axes[2].set_title('Cleaned Prediction')
-                axes[2].axis('off')
-                
-                plt.tight_layout()
-                plt.savefig(os.path.join(self.save_dir, f'postprocessing_epoch_{epoch:03d}_sample_{i+1}.png'), 
-                           dpi=150, bbox_inches='tight')
-                plt.close()
-            
-            print(f"Post-processing comparison saved for epoch {epoch}")
-
-
 def train_model():
     """Main training function"""
     print(f"Starting training with QAT={'Enabled' if TRAIN_QAT else 'Disabled'}")
@@ -1259,10 +1182,10 @@ def train_model():
         metrics=[
             "accuracy",
             dice_loss,
-            mean_iou,
-            precision_metric,
-            recall_metric,
-            f1_score_metric
+            mean_iou
+            # precision_metric,
+            # recall_metric,
+            # f1_score_metric
         ],
     )
     print(f"Model compiled with learning rate: {learning_rate}")
@@ -1360,7 +1283,7 @@ def train_model():
         MemoryCleanupCallback(),
         # Add custom callback to save training state
         TrainingStateCallback(model_dir, model_prefix),
-        PostProcessingCallback(val_generator, os.path.join(viz_dir, 'postprocessing_comparison'))
+        # PostProcessingCallback(val_generator, os.path.join(viz_dir, 'postprocessing_comparison'))  # Removed - only for visuals, causes memory overhead
     ]
 
     # Train model with proper state management
