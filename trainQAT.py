@@ -28,7 +28,8 @@ Key improvements:
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-5
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_70.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-7
@@ -43,7 +44,7 @@ import psutil
 import gc
 import signal
 import sys
-import json
+
 import argparse
 import glob
 from concurrent.futures import ThreadPoolExecutor
@@ -64,10 +65,23 @@ from matplotlib.colors import ListedColormap
 import tensorflow.keras.backend as K
 
 # Add these loss functions after the imports
-def dice_loss(y_true, y_pred, smooth=1e-6):
+def dice_loss(y_true, y_pred, smooth=1e-7):
     """
-    Dice loss for semantic segmentation
-    Helps with class imbalance and scattered pixels
+    Dice loss for semantic segmentation - measures overlap between predicted and ground truth masks
+    
+    FUNCTIONALITY:
+    - Calculates intersection over union (IoU) between predictions and ground truth
+    - Dice coefficient = (2 * intersection) / (sum_true + sum_pred)
+    - Loss = 1 - dice_coefficient (lower is better)
+    
+    BENEFITS:
+    - Handles class imbalance better than crossentropy
+    - Reduces scattered pixel predictions
+    - Focuses on shape and boundary accuracy
+    - Works well for small objects and rare classes
+    
+    PARAMETERS:
+    - smooth: Prevents division by zero (default: 1e-6)
     """
     y_true_f = K.flatten(y_true)
     y_pred_f = K.flatten(y_pred)
@@ -77,8 +91,22 @@ def dice_loss(y_true, y_pred, smooth=1e-6):
 
 def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     """
-    Focal loss for handling class imbalance
-    Reduces scattered pixel predictions
+    Focal loss for handling class imbalance - downweights easy examples and focuses on hard ones
+    
+    FUNCTIONALITY:
+    - Modifies crossentropy to focus on hard-to-classify examples
+    - pt = probability of correct classification
+    - focal_loss = -alpha * (1-pt)^gamma * log(pt)
+    
+    BENEFITS:
+    - Reduces scattered pixel predictions by focusing on hard examples
+    - Handles class imbalance by downweighting easy background pixels
+    - Improves boundary accuracy and small object detection
+    - Prevents model from being dominated by background classes
+    
+    PARAMETERS:
+    - alpha: Weighting factor for rare classes (default: 0.25)
+    - gamma: Focusing parameter - higher values focus more on hard examples (default: 2.0)
     """
     y_true_f = K.flatten(y_true)
     y_pred_f = K.flatten(y_pred)
@@ -92,32 +120,32 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     return K.mean(focal_loss)
 
 
-
 def weighted_categorical_crossentropy(y_true, y_pred, class_weights=None):
     """
     Weighted categorical crossentropy for class imbalance
     """
     if class_weights is None:
-        # Define weights based on Cityscapes class distribution
+        # Define weights based on Cityscapes class distribution for all 34 classes
         class_weights = {
-            0: 1.5,   # road
-            1: 1.5,   # sidewalk
-            2: 1.0,   # building
-            3: 1.0,   # wall
-            4: 2.0,   # fence (rare class)
-            5: 1.0,   # pole
-            6: 2.0,   # traffic light (rare class)
-            7: 2.0,   # traffic sign (rare class)
-            8: 1.0,   # vegetation
-            9: 1.0,   # sky
-            10: 2.0,  # person
-            11: 2.0,  # car (important class)
-            # Add weights for other classes...
+            0: 2, 1: 1.5, 2: 1.0,    # road, sidewalk, building
+            3: 1.0, 4: 2.0, 5: 2.0,    # wall, fence, pole
+            6: 2.0, 7: 2.0, 8: 1.0,    # traffic_light, traffic_sign, vegetation
+            9: 1.0, 10: 1.0, 11: 2.0,  # terrain, sky, person
+            12: 2.0, 13: 3.0, 14: 2.0, # rider, car (increased), truck
+            15: 2.0, 16: 2.0, 17: 2.0, # bus, train, motorcycle
+            18: 2.0, 19: 1.0, 20: 1.0, # bicycle, void, unlabeled
+            21: 1.0, 22: 1.0, 23: 1.0, # ego_vehicle, rectification_border, out_of_roi
+            24: 1.0, 25: 1.0, 26: 1.0, # static, dynamic, ground
+            27: 1.0, 28: 1.0, 29: 1.0, # parking, rail_track, guard_rail
+            30: 1.0, 31: 1.0, 32: 1.0, # traffic_cone, construction, vegetation_2
+            33: 1.0,                     # sky_2
         }
-    
+        # # No class weights - all classes have equal weight of 1.0
+        # class_weights = {i: 1.0 for i in range(NUM_CLASSES)}
+
     # Convert to tensor
     weights = tf.constant([class_weights.get(i, 1.0) for i in range(NUM_CLASSES)], dtype=tf.float32)
-    
+
     # Calculate weighted loss
     ce_loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
     weighted_loss = ce_loss * tf.reduce_sum(y_true * weights, axis=-1)
@@ -131,12 +159,12 @@ def weighted_combined_loss(y_true, y_pred):
     weighted_ce = weighted_categorical_crossentropy(y_true, y_pred)
     dice = dice_loss(y_true, y_pred)
     focal = focal_loss(y_true, y_pred)
-    return 0.4 * weighted_ce + 0.4 * dice + 0.2 * focal
+    return 0.45 * weighted_ce + 0.5 * dice + 0.05 * focal
 
 # Add custom metrics for better monitoring
 def mean_iou(y_true, y_pred):
     """
-    Mean IoU metric for semantic segmentation
+    Mean IoU metric for semantic segmentation - corrected to match calculate_iou logic
     """
     # Convert to class predictions
     y_pred = tf.argmax(y_pred, axis=-1)
@@ -147,7 +175,10 @@ def mean_iou(y_true, y_pred):
     for class_id in range(NUM_CLASSES):
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
-        iou = tf.where(union > 0, intersection / union, 0.0)
+        
+        # Match the correct calculate_iou logic
+        iou = tf.where(union > 0, intersection / union, 
+                       tf.where(intersection == 0, 1.0, 0.0))  # 1.0 if both intersection and union are 0
         ious.append(iou)
     
     result = tf.reduce_mean(ious)
@@ -158,7 +189,22 @@ def mean_iou(y_true, y_pred):
 
 def precision_metric(y_true, y_pred):
     """
-    Precision metric for semantic segmentation
+    Precision metric for semantic segmentation - measures accuracy of predictions
+    
+    FUNCTIONALITY:
+    - Calculates True Positives / (True Positives + False Positives)
+    - Measures how many predicted pixels of each class were actually correct
+    - Precision = TP / (TP + FP) for each class, then averaged
+    
+    BENEFITS:
+    - Shows if model is making false positive predictions (low precision = over-prediction)
+    - Important for background classes - ensures they're not being over-predicted
+    - Helps identify if model is too aggressive in predictions
+    - Good for detecting scattered pixel issues (low precision = false scattered pixels)
+    
+    INTERPRETATION:
+    - High precision: Model's predictions are mostly correct
+    - Low precision: Model makes many false positive predictions (over-segmentation)
     """
     y_pred = tf.argmax(y_pred, axis=-1)
     y_true = tf.argmax(y_true, axis=-1)
@@ -179,7 +225,22 @@ def precision_metric(y_true, y_pred):
 
 def recall_metric(y_true, y_pred):
     """
-    Recall metric for semantic segmentation
+    Recall metric for semantic segmentation - measures completeness of predictions
+    
+    FUNCTIONALITY:
+    - Calculates True Positives / (True Positives + False Negatives)
+    - Measures how many actual pixels of each class were correctly predicted
+    - Recall = TP / (TP + FN) for each class, then averaged
+    
+    BENEFITS:
+    - Shows if model is missing objects/classes (low recall = missing predictions)
+    - Important for rare classes - ensures they're not being ignored
+    - Helps identify if model is too conservative in predictions
+    - Good for detecting scattered pixel issues (low recall = missing scattered pixels)
+    
+    INTERPRETATION:
+    - High recall: Model finds most actual instances of each class
+    - Low recall: Model misses many instances (under-segmentation)
     """
     y_pred = tf.argmax(y_pred, axis=-1)
     y_true = tf.argmax(y_true, axis=-1)
@@ -200,7 +261,23 @@ def recall_metric(y_true, y_pred):
 
 def f1_score_metric(y_true, y_pred):
     """
-    F1 score metric for semantic segmentation
+    F1 score metric for semantic segmentation - harmonic mean of precision and recall
+    
+    FUNCTIONALITY:
+    - Calculates harmonic mean of precision and recall: F1 = 2 * (P * R) / (P + R)
+    - Balances both precision and recall in a single metric
+    - F1 = 2 * (precision * recall) / (precision + recall)
+    
+    BENEFITS:
+    - Single metric that considers both false positives and false negatives
+    - Good for imbalanced datasets - penalizes both over and under-prediction
+    - More robust than accuracy for semantic segmentation
+    - Helps identify optimal balance between precision and recall
+    
+    INTERPRETATION:
+    - High F1: Good balance between precision and recall
+    - Low F1: Either low precision, low recall, or both
+    - F1 = 1.0: Perfect predictions (rare in practice)
     """
     precision = precision_metric(y_true, y_pred)
     recall = recall_metric(y_true, y_pred)
@@ -502,18 +579,18 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
 
                 # Group per-class IoU metrics under "IoU_Classes" category
                 # TensorBoard will automatically group these by the prefix before the slash
-                logs['IoU_Classes/road'] = mean_ious[0] if len(mean_ious) > 0 else 0.0
-                logs['IoU_Classes/sidewalk'] = mean_ious[1] if len(mean_ious) > 1 else 0.0
-                logs['IoU_Classes/building'] = mean_ious[2] if len(mean_ious) > 2 else 0.0
-                logs['IoU_Classes/wall'] = mean_ious[3] if len(mean_ious) > 3 else 0.0
-                logs['IoU_Classes/fence'] = mean_ious[4] if len(mean_ious) > 4 else 0.0
-                logs['IoU_Classes/pole'] = mean_ious[5] if len(mean_ious) > 5 else 0.0
-                logs['IoU_Classes/traffic_light'] = mean_ious[6] if len(mean_ious) > 6 else 0.0
-                logs['IoU_Classes/traffic_sign'] = mean_ious[7] if len(mean_ious) > 7 else 0.0
-                logs['IoU_Classes/vegetation'] = mean_ious[8] if len(mean_ious) > 8 else 0.0
-                logs['IoU_Classes/sky'] = mean_ious[10] if len(mean_ious) > 10 else 0.0
-                logs['IoU_Classes/person'] = mean_ious[11] if len(mean_ious) > 11 else 0.0
-                logs['IoU_Classes/car'] = mean_ious[13] if len(mean_ious) > 13 else 0.0
+                # Cityscapes class names (34 classes)
+                class_names = [
+                    'road', 'sidewalk', 'building', 'wall', 'fence', 'pole', 'traffic_light', 'traffic_sign',
+                    'vegetation', 'terrain', 'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train',
+                    'motorcycle', 'bicycle', 'void', 'unlabeled', 'ego_vehicle', 'rectification_border',
+                    'out_of_roi', 'static', 'dynamic', 'ground', 'parking', 'rail_track', 'guard_rail',
+                    'traffic_cone', 'construction', 'vegetation_2', 'sky_2'
+                ]
+                
+                # Log all 34 classes
+                for i in range(min(len(mean_ious), len(class_names))):
+                    logs[f'IoU_Classes/{class_names[i]}'] = mean_ious[i]
                             
         except Exception as e:
             print(f"⚠️  Could not calculate IoU metrics: {e}")
@@ -974,65 +1051,10 @@ def convert_float32_to_qat(float32_model):
     
     return qat_model
 
-def convert_numpy_to_python(obj):
-    """Convert NumPy types to Python native types for JSON serialization"""
-    if isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, dict):
-        return {key: convert_numpy_to_python(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_to_python(item) for item in obj]
-    else:
-        return obj
+# Removed convert_numpy_to_python function - no longer needed with TensorFlow's built-in methods
 
-class TrainingStateCallback(tf.keras.callbacks.Callback):
-    """Custom callback to save training state (epoch, history)"""
-    def __init__(self, model_dir, model_prefix):
-        super().__init__()
-        self.model_dir = model_dir
-        self.model_prefix = model_prefix
-        self.cumulative_history = {}
-
-    def on_train_begin(self, logs=None):
-        """Save initial training state"""
-        training_state = {
-            'epoch': 0,
-            'history': {}
-        }
-        with open(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'), 'w') as f:
-            json.dump(training_state, f)
-        print("Training state file created.")
-
-    def on_epoch_end(self, epoch, logs=None):
-        """Update training state and save cumulative history"""
-        # Convert logs to JSON-serializable format
-        serializable_logs = convert_numpy_to_python(logs) if logs else {}
-        
-        # Accumulate history for all metrics
-        for key, value in serializable_logs.items():
-            if key not in self.cumulative_history:
-                self.cumulative_history[key] = []
-            self.cumulative_history[key].append(value)
-        
-        training_state = {
-            'epoch': epoch + 1,
-            'history': self.cumulative_history
-        }
-        with open(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'), 'w') as f:
-            json.dump(training_state, f)
-        print(f"Training state saved for epoch {epoch + 1} with {len(self.cumulative_history)} metrics")
-
-    def on_train_end(self, logs=None):
-        """Clean up training state file"""
-        try:
-            os.remove(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'))
-            print("Training state file removed.")
-        except FileNotFoundError:
-            print("Training state file not found.")
+# Removed custom TrainingStateCallback - using TensorFlow's built-in CSVLogger instead
+# This provides better integration with TensorFlow's ecosystem and automatic CSV logging
 
 
 def train_model():
@@ -1052,8 +1074,7 @@ def train_model():
     model = None
     model_prefix = "qat_model" if TRAIN_QAT else "float32_model"
     
-    # Check for existing training state
-    training_state_file = os.path.join(model_dir, f'{model_prefix}_training_state.json')
+    # Check for existing checkpoints
     latest_checkpoint = None
     
     # Look for the most recent checkpoint
@@ -1075,22 +1096,11 @@ def train_model():
                 print("Could not extract epoch number, starting from epoch 0")
                 initial_epoch = 0
 
-    # Load training state if available
+    # TensorFlow automatically handles training history through model.fit()
+    # The history object is returned by model.fit() and contains all training metrics
     training_history = None
-    training_state_epoch = 0
-    if os.path.exists(training_state_file):
-        try:
-            with open(training_state_file, 'r') as f:
-                training_state = json.load(f)
-                training_state_epoch = training_state.get('epoch', 0)
-                training_history = training_state.get('history', {})
-                print(f"Loaded training state from epoch {training_state_epoch}")
-                print(f"Training history keys: {list(training_history.keys())}")
-        except Exception as e:
-            print(f"Failed to load training state: {e}")
+    print(f"Training history will be managed by TensorFlow's built-in history object")
     
-    # Use the maximum epoch to ensure we don't go backwards
-    initial_epoch = max(initial_epoch, training_state_epoch)
     print(f"Final initial_epoch determined: {initial_epoch}")
 
     # Model loading strategy following Keras best practices
@@ -1249,8 +1259,8 @@ def train_model():
         ReduceLROnPlateau(
             monitor='val_mean_iou',  # Monitor IoU instead of loss
             mode='max',  # Higher IoU is better
-            factor=0.7,  # More conservative reduction
-            patience=8,   # Slightly more patience
+            factor=0.5,  # More aggressive reduction for car performance
+            patience=5,   # Less patience to react faster
             verbose=1,
             min_lr=1e-7   # Lower minimum learning rate
         ),
@@ -1281,8 +1291,12 @@ def train_model():
             profile_batch=0
         ),
         MemoryCleanupCallback(),
-        # Add custom callback to save training state
-        TrainingStateCallback(model_dir, model_prefix),
+        # Use TensorFlow's built-in CSVLogger instead of custom TrainingStateCallback
+        tf.keras.callbacks.CSVLogger(
+            filename=os.path.join(model_dir, f'{model_prefix}_training_log.csv'),
+            separator=',',
+            append=True
+        ),
         # PostProcessingCallback(val_generator, os.path.join(viz_dir, 'postprocessing_comparison'))  # Removed - only for visuals, causes memory overhead
     ]
 

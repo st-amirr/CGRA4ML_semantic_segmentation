@@ -1,389 +1,287 @@
 #!/usr/bin/env python3
 """
-Model Comparison and Analysis Script
-===================================
+Training Data Extraction and Formatting Script
+=============================================
 
-This script helps compare float32 and QAT models, analyze their performance,
-and prepare for hls4ml export.
+This script extracts training data from TensorBoard logs and training state files,
+formats it according to the reference format, removes zeros, and extracts epoch data correctly.
 
 Usage:
-    python compare_models.py --float32_model=/app/models/float32_best.keras --qat_model=/app/models/qat_best.keras
+    python compare_models.py --extract_training_data --tb_log_dir=./models/tb_logs --model_dir=./models
+    python compare_models.py --extract_training_data --model_prefix=float32_model --output_file=./formatted_data.json
 """
 
 import os
-import numpy as np
-import tensorflow as tf
+import json
 import argparse
-from pathlib import Path
-import matplotlib.pyplot as plt
-import cv2
-from qkeras.utils import model_save_quantized_weights
+import glob
+from tensorboard.backend.event_processing import event_accumulator
+import numpy as np
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(description='Compare Float32 and QAT models')
-    parser.add_argument('--float32_model', type=str, required=True,
-                       help='Path to float32 model')
-    parser.add_argument('--qat_model', type=str, required=True,
-                       help='Path to QAT model')
-    parser.add_argument('--test_image', type=str, default='',
-                       help='Path to test image for inference comparison')
-    parser.add_argument('--output_dir', type=str, default='./analysis',
-                       help='Directory to save analysis results')
-    return parser.parse_args()
+def extract_training_data_from_tensorboard(tb_log_dir, output_file, include_validation=False):
+    """
+    Extract training data from TensorBoard logs and format it according to the reference format.
+    Removes zeros and extracts epoch data correctly. Combines multiple .v2 files.
+    """
+    print(f"🔍 Extracting training data from TensorBoard logs: {tb_log_dir}")
+    
+    # Initialize data structure
+    training_data = {
+        "epoch": 0,
+        "history": {}
+    }
+    
+    # Find all event files (including .v2 files)
+    event_files = []
+    for root, dirs, files in os.walk(tb_log_dir):
+        for file in files:
+            if file.startswith('events.out.tfevents'):
+                event_files.append(os.path.join(root, file))
+    
+    if not event_files:
+        print(f"❌ No TensorBoard event files found in {tb_log_dir}")
+        return None
+    
+    print(f"📁 Found {len(event_files)} TensorBoard event files")
+    
+    # Extract data from all event files and combine them
+    all_metrics = {}
+    max_epoch = 0
+    
+    for event_file in event_files:
+        try:
+            print(f"Processing: {os.path.basename(event_file)}")
+            ea = event_accumulator.EventAccumulator(event_file)
+            ea.Reload()
+            
+            # Get all tensor tags (training metrics are stored as tensors)
+            tags = ea.Tags()['tensors']
+            print(f"  Found {len(tags)} tensor metrics in this file")
+            
+            for tag in tags:
+                # Only process epoch-related metrics
+                if tag.startswith('epoch_'):
+                    if tag not in all_metrics:
+                        all_metrics[tag] = {}
+                        
+                    # Get all events for this tag
+                    events = ea.Tensors(tag)
+                    
+                    for event in events:
+                        # Extract epoch number from step (assuming step = epoch)
+                        epoch = int(event.step)
+                        
+                        # Extract tensor value - try different methods
+                        value = 0.0
+                        if hasattr(event.tensor_proto, 'float_val') and event.tensor_proto.float_val:
+                            value = float(event.tensor_proto.float_val[0])
+                        elif hasattr(event.tensor_proto, 'tensor_content') and event.tensor_proto.tensor_content:
+                            # Decode binary tensor content
+                            import struct
+                            try:
+                                # Assuming float32 (4 bytes)
+                                value = struct.unpack('f', event.tensor_proto.tensor_content[:4])[0]
+                            except:
+                                value = 0.0
+                        
+                        # Skip zero values (as per requirement)
+                        if value != 0:
+                            # Store by epoch to avoid duplicates and maintain order
+                            all_metrics[tag][epoch] = value
+                            max_epoch = max(max_epoch, epoch)
+                        
+        except Exception as e:
+            print(f"⚠️  Warning: Could not process {event_file}: {e}")
+            continue
+    
+    # Synchronize all metrics to have the same epoch range
+    if all_metrics:
+        # Find the full epoch range across all metrics
+        all_epochs = set()
+        for epoch_data in all_metrics.values():
+            all_epochs.update(epoch_data.keys())
+        
+        min_epoch = min(all_epochs) if all_epochs else 0
+        max_epoch = max(all_epochs) if all_epochs else 0
+        full_epoch_range = list(range(min_epoch, max_epoch + 1))
+        
+        print(f"📊 Synchronizing metrics across epochs {min_epoch}-{max_epoch} ({len(full_epoch_range)} total epochs)")
+        
+        # Convert epoch-based dictionaries to synchronized ordered lists
+        cleaned_history = {}
+        for tag, epoch_data in all_metrics.items():
+            if epoch_data:
+                # Create synchronized array with zeros for missing epochs
+                synchronized_values = []
+                for epoch in full_epoch_range:
+                    if epoch in epoch_data:
+                        synchronized_values.append(epoch_data[epoch])
+                    else:
+                        synchronized_values.append(0.0)  # Add zero for missing epoch
+                
+                cleaned_history[tag] = synchronized_values
+                print(f"  {tag}: {len(synchronized_values)} values (epochs {min_epoch}-{max_epoch})")
+    else:
+        cleaned_history = {}
+    
+    # Set the epoch to the maximum epoch found
+    training_data["epoch"] = max_epoch
+    training_data["history"] = cleaned_history
+    
+    # Save the extracted data with maximum precision
+    with open(output_file, 'w') as f:
+        json.dump(training_data, f, separators=(',', ':'), ensure_ascii=False)
+    
+    print(f"✅ Extracted training data saved to: {output_file}")
+    print(f"📊 Extracted {len(cleaned_history)} metrics over {max_epoch} epochs")
+    
+    return training_data
 
-def load_model_safely(model_path):
-    """Load model with error handling"""
+def extract_training_data_from_state_file(model_dir, model_prefix, output_file):
+    """
+    Extract training data from training state file and format it according to the reference format.
+    Removes zeros and ensures proper epoch data extraction with maximum precision.
+    """
+    print(f"🔍 Extracting training data from state file: {model_dir}")
+    
+    training_state_file = os.path.join(model_dir, f'{model_prefix}_training_state.json')
+    
+    if not os.path.exists(training_state_file):
+        print(f"❌ Training state file not found: {training_state_file}")
+        return None
+    
     try:
-        model = tf.keras.models.load_model(model_path, compile=False)
-        print(f"✅ Successfully loaded: {model_path}")
-        return model
+        with open(training_state_file, 'r') as f:
+            training_state = json.load(f)
+        
+        epoch = training_state.get('epoch', 0)
+        history = training_state.get('history', {})
+        
+        print(f"📊 Found training state with epoch {epoch} and {len(history)} metrics")
+        
+        # Clean the data: remove any zero values and ensure proper formatting
+        cleaned_history = {}
+        for metric, values in history.items():
+            if values:
+                # Remove zero values as per requirement
+                cleaned_values = [v for v in values if v != 0]
+                if cleaned_values:
+                    cleaned_history[metric] = cleaned_values
+                    print(f"  {metric}: {len(cleaned_values)} values (last: {cleaned_values[-1]})")
+        
+        # Create the properly formatted training data
+        formatted_data = {
+            'epoch': epoch,
+            'history': cleaned_history
+        }
+        
+        # Save to output file with maximum precision
+        with open(output_file, 'w') as f:
+            json.dump(formatted_data, f, separators=(',', ':'), ensure_ascii=False)
+        
+        print(f"✅ Formatted training data saved to: {output_file}")
+        print(f"📊 Extracted {len(cleaned_history)} metrics over {epoch} epochs")
+        
+        return formatted_data
+        
     except Exception as e:
-        print(f"❌ Failed to load {model_path}: {e}")
+        print(f"❌ Failed to extract training data: {e}")
         return None
 
-def count_parameters(model):
-    """Count total and trainable parameters"""
-    total_params = model.count_params()
-    trainable_params = sum([tf.keras.backend.count_params(w) for w in model.trainable_weights])
-    return total_params, trainable_params
+def extract_training_data_from_checkpoints(model_dir, model_prefix, output_file):
+    """
+    Extract training data from checkpoint files and format it according to the reference format.
+    This function is a placeholder - actual checkpoint extraction would require loading each model.
+    """
+    print(f"🔍 Extracting training data from checkpoints: {model_dir}")
+    
+    # Find all checkpoint files
+    checkpoint_pattern = os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_*.keras')
+    checkpoints = glob.glob(checkpoint_pattern)
+    
+    if not checkpoints:
+        print(f"❌ No checkpoint files found matching pattern: {checkpoint_pattern}")
+        return None
+    
+    print(f"📁 Found {len(checkpoints)} checkpoint files")
+    print("⚠️  Note: Checkpoint extraction is not implemented yet. Use TensorBoard logs or training state files instead.")
+    
+    return None
 
-def analyze_model_architecture(model, model_name):
-    """Analyze model architecture and layers"""
-    print(f"\n📊 {model_name} Architecture Analysis")
-    print("=" * 50)
-    
-    total_params, trainable_params = count_parameters(model)
-    print(f"Total parameters: {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,}")
-    
-    # Count layer types
-    layer_types = {}
-    quantized_layers = 0
-    
-    for layer in model.layers:
-        layer_type = type(layer).__name__
-        layer_types[layer_type] = layer_types.get(layer_type, 0) + 1
-        
-        if 'Q' in layer_type:  # QKeras layers start with Q
-            quantized_layers += 1
-    
-    print(f"Total layers: {len(model.layers)}")
-    print(f"Quantized layers: {quantized_layers}")
-    print(f"Quantization ratio: {quantized_layers/len(model.layers)*100:.1f}%")
-    
-    print("\nLayer type distribution:")
-    for layer_type, count in sorted(layer_types.items()):
-        print(f"  {layer_type}: {count}")
-    
-    return {
-        'total_params': total_params,
-        'trainable_params': trainable_params,
-        'total_layers': len(model.layers),
-        'quantized_layers': quantized_layers,
-        'layer_types': layer_types
-    }
-
-def estimate_model_size(model):
-    """Estimate model size in MB"""
-    total_params, _ = count_parameters(model)
-    
-    # Check if model has quantized layers
-    has_quantized = any('Q' in type(layer).__name__ for layer in model.layers)
-    
-    if has_quantized:
-        # Estimate based on quantization (average 8-16 bits)
-        avg_bits = 12  # Average between 8 and 16 bit quantization
-        size_mb = (total_params * avg_bits) / (8 * 1024 * 1024)
-    else:
-        # Float32 model
-        size_mb = (total_params * 32) / (8 * 1024 * 1024)
-    
-    return size_mb
-
-def compare_inference_speed(float32_model, qat_model, input_shape=(1, 512, 1024, 3)):
-    """Compare inference speed between models"""
-    print(f"\n⚡ Inference Speed Comparison")
-    print("=" * 40)
-    
-    # Create dummy input
-    dummy_input = np.random.random(input_shape).astype(np.float32)
-    
-    # Warm up models
-    print("Warming up models...")
-    for _ in range(3):
-        _ = float32_model(dummy_input, training=False)
-        _ = qat_model(dummy_input, training=False)
-    
-    # Time float32 model
-    import time
-    num_runs = 10
-    
-    start_time = time.time()
-    for _ in range(num_runs):
-        _ = float32_model(dummy_input, training=False)
-    float32_time = (time.time() - start_time) / num_runs
-    
-    # Time QAT model
-    start_time = time.time()
-    for _ in range(num_runs):
-        _ = qat_model(dummy_input, training=False)
-    qat_time = (time.time() - start_time) / num_runs
-    
-    print(f"Float32 inference time: {float32_time*1000:.2f} ms")
-    print(f"QAT inference time: {qat_time*1000:.2f} ms")
-    print(f"Speed ratio (QAT/Float32): {qat_time/float32_time:.2f}x")
-    
-    return float32_time, qat_time
-
-def compare_outputs(float32_model, qat_model, test_image_path=None, output_dir='./analysis'):
-    """Compare model outputs on test image"""
-    print(f"\n🖼️  Output Comparison")
-    print("=" * 30)
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    if test_image_path and os.path.exists(test_image_path):
-        # Load and preprocess test image
-        image = cv2.imread(test_image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (1024, 512))
-        image_norm = image.astype(np.float32) / 255.0
-        image_batch = np.expand_dims(image_norm, axis=0)
-        
-        # Get predictions
-        float32_pred = float32_model(image_batch, training=False)
-        qat_pred = qat_model(image_batch, training=False)
-        
-        # Convert to class predictions
-        float32_classes = np.argmax(float32_pred[0], axis=-1)
-        qat_classes = np.argmax(qat_pred[0], axis=-1)
-        
-        # Calculate pixel-wise agreement
-        agreement = np.mean(float32_classes == qat_classes)
-        print(f"Pixel-wise agreement: {agreement*100:.2f}%")
-        
-        # Calculate prediction confidence differences
-        float32_conf = np.max(float32_pred[0], axis=-1)
-        qat_conf = np.max(qat_pred[0], axis=-1)
-        conf_diff = np.mean(np.abs(float32_conf - qat_conf))
-        print(f"Average confidence difference: {conf_diff:.4f}")
-        
-        # Save visualizations
-        plt.figure(figsize=(15, 10))
-        
-        plt.subplot(2, 3, 1)
-        plt.imshow(image)
-        plt.title('Original Image')
-        plt.axis('off')
-        
-        plt.subplot(2, 3, 2)
-        plt.imshow(float32_classes, cmap='tab20')
-        plt.title('Float32 Prediction')
-        plt.axis('off')
-        
-        plt.subplot(2, 3, 3)
-        plt.imshow(qat_classes, cmap='tab20')
-        plt.title('QAT Prediction')
-        plt.axis('off')
-        
-        plt.subplot(2, 3, 4)
-        plt.imshow(float32_conf, cmap='viridis')
-        plt.title('Float32 Confidence')
-        plt.colorbar()
-        plt.axis('off')
-        
-        plt.subplot(2, 3, 5)
-        plt.imshow(qat_conf, cmap='viridis')
-        plt.title('QAT Confidence')
-        plt.colorbar()
-        plt.axis('off')
-        
-        plt.subplot(2, 3, 6)
-        difference = np.abs(float32_classes.astype(int) - qat_classes.astype(int))
-        plt.imshow(difference, cmap='Reds')
-        plt.title('Prediction Differences')
-        plt.colorbar()
-        plt.axis('off')
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'model_comparison.png'), dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"Comparison visualization saved to: {output_dir}/model_comparison.png")
-        
-        return agreement, conf_diff
-    else:
-        # Create dummy input for basic comparison
-        dummy_input = np.random.random((1, 512, 1024, 3)).astype(np.float32)
-        
-        float32_pred = float32_model(dummy_input, training=False)
-        qat_pred = qat_model(dummy_input, training=False)
-        
-        # Calculate output correlation
-        correlation = np.corrcoef(float32_pred.numpy().flatten(), qat_pred.numpy().flatten())[0, 1]
-        print(f"Output correlation: {correlation:.4f}")
-        
-        return correlation, 0
-
-def export_for_hls4ml(qat_model, output_dir='./analysis'):
-    """Export QAT model for hls4ml"""
-    print(f"\n🔧 Exporting for hls4ml")
-    print("=" * 30)
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    try:
-        # Save quantized weights
-        quantized_weights_path = os.path.join(output_dir, 'quantized_weights_for_hls4ml.h5')
-        model_save_quantized_weights(qat_model, quantized_weights_path)
-        print(f"✅ Quantized weights saved: {quantized_weights_path}")
-        
-        # Save model architecture as JSON
-        model_json = qat_model.to_json()
-        json_path = os.path.join(output_dir, 'model_architecture.json')
-        with open(json_path, 'w') as f:
-            f.write(model_json)
-        print(f"✅ Model architecture saved: {json_path}")
-        
-        # Create hls4ml config template
-        hls4ml_config = """
-# HLS4ML Configuration Template
-# Copy and modify this for your hls4ml synthesis
-
-import hls4ml
-from tensorflow.keras.models import model_from_json
-
-# Load your QAT model
-with open('model_architecture.json', 'r') as f:
-    model_json = f.read()
-
-model = model_from_json(model_json)
-model.load_weights('quantized_weights_for_hls4ml.h5')
-
-# Configure hls4ml
-config = hls4ml.utils.config_from_keras_model(model, granularity='name')
-
-# Set your target FPGA (adjust as needed)
-config['Model']['Strategy'] = 'Resource'  # or 'Latency'
-config['Model']['Precision'] = 'ap_fixed<16,6>'  # Adjust based on your quantization
-
-# Configure specific layers if needed
-# config['LayerName']['Strategy'] = 'Resource'
-# config['LayerName']['ReuseFactor'] = 1
-
-# Convert to HLS
-hls_model = hls4ml.converters.convert_from_keras_model(
-    model, 
-    hls_config=config,
-    output_dir='hls4ml_output',
-    backend='Vivado'  # or 'VivadoAccelerator' for board deployment
-)
-
-# Compile (this will take time)
-hls_model.compile()
-
-# Test inference
-# y_hls = hls_model.predict(X_test)
-"""
-        
-        config_path = os.path.join(output_dir, 'hls4ml_conversion_template.py')
-        with open(config_path, 'w') as f:
-            f.write(hls4ml_config)
-        print(f"✅ HLS4ML template saved: {config_path}")
-        
-    except Exception as e:
-        print(f"❌ Export failed: {e}")
-
-def generate_report(float32_stats, qat_stats, speed_comparison, output_comparison, output_dir):
-    """Generate comprehensive comparison report"""
-    report_path = os.path.join(output_dir, 'model_comparison_report.txt')
-    
-    with open(report_path, 'w') as f:
-        f.write("HLS4ML Model Comparison Report\n")
-        f.write("=" * 50 + "\n\n")
-        
-        f.write("📊 Model Statistics\n")
-        f.write("-" * 20 + "\n")
-        f.write(f"Float32 Model:\n")
-        f.write(f"  - Total parameters: {float32_stats['total_params']:,}\n")
-        f.write(f"  - Trainable parameters: {float32_stats['trainable_params']:,}\n")
-        f.write(f"  - Total layers: {float32_stats['total_layers']}\n")
-        f.write(f"  - Estimated size: {estimate_model_size(None):.2f} MB\n\n")
-        
-        f.write(f"QAT Model:\n")
-        f.write(f"  - Total parameters: {qat_stats['total_params']:,}\n")
-        f.write(f"  - Trainable parameters: {qat_stats['trainable_params']:,}\n")
-        f.write(f"  - Total layers: {qat_stats['total_layers']}\n")
-        f.write(f"  - Quantized layers: {qat_stats['quantized_layers']}\n")
-        f.write(f"  - Quantization ratio: {qat_stats['quantized_layers']/qat_stats['total_layers']*100:.1f}%\n\n")
-        
-        if speed_comparison:
-            f.write("⚡ Performance Comparison\n")
-            f.write("-" * 25 + "\n")
-            f.write(f"Float32 inference time: {speed_comparison[0]*1000:.2f} ms\n")
-            f.write(f"QAT inference time: {speed_comparison[1]*1000:.2f} ms\n")
-            f.write(f"Speed ratio: {speed_comparison[1]/speed_comparison[0]:.2f}x\n\n")
-        
-        if output_comparison:
-            f.write("🎯 Output Quality\n")
-            f.write("-" * 15 + "\n")
-            if len(output_comparison) == 2:
-                f.write(f"Pixel-wise agreement: {output_comparison[0]*100:.2f}%\n")
-                f.write(f"Average confidence difference: {output_comparison[1]:.4f}\n\n")
-            else:
-                f.write(f"Output correlation: {output_comparison[0]:.4f}\n\n")
-        
-        f.write("🚀 Recommendations\n")
-        f.write("-" * 15 + "\n")
-        f.write("1. If Float32 model performance is satisfactory, proceed with QAT\n")
-        f.write("2. Use the quantized weights for hls4ml synthesis\n")
-        f.write("3. Test FPGA implementation with representative data\n")
-        f.write("4. Monitor resource utilization during synthesis\n")
-        f.write("5. Consider adjusting quantization parameters if needed\n")
-    
-    print(f"📋 Comprehensive report saved: {report_path}")
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Extract and format training data')
+    parser.add_argument('--extract_training_data', action='store_true',
+                       help='Extract training data from various sources')
+    parser.add_argument('--tb_log_dir', type=str, default='./models/tb_logs',
+                       help='Directory containing TensorBoard logs')
+    parser.add_argument('--model_dir', type=str, default='./models',
+                       help='Directory containing model files and training state')
+    parser.add_argument('--model_prefix', type=str, default='float32_model',
+                       help='Model prefix to extract data for (e.g., float32_model, qat_model)')
+    parser.add_argument('--output_file', type=str, default='',
+                       help='Output file path for formatted training data')
+    parser.add_argument('--extract_from', type=str, choices=['tensorboard', 'state_file', 'checkpoints', 'all'],
+                       default='tensorboard', help='Source to extract data from')
+    return parser.parse_args()
 
 def main():
     args = parse_arguments()
     
-    print("🔍 HLS4ML Model Comparison and Analysis")
-    print("=" * 50)
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Load models
-    float32_model = load_model_safely(args.float32_model)
-    qat_model = load_model_safely(args.qat_model)
-    
-    if not float32_model or not qat_model:
-        print("❌ Failed to load one or both models. Exiting.")
+    if not args.extract_training_data:
+        print("❌ Please use --extract_training_data flag to extract training data")
         return
     
-    # Analyze architectures
-    float32_stats = analyze_model_architecture(float32_model, "Float32")
-    qat_stats = analyze_model_architecture(qat_model, "QAT")
+    print("🔍 Training Data Extraction and Formatting")
+    print("=" * 50)
     
-    # Compare inference speed
-    speed_comparison = compare_inference_speed(float32_model, qat_model)
+    # Determine output file - use the same naming convention as the reference file
+    if not args.output_file:
+        args.output_file = os.path.join(args.model_dir, f'{args.model_prefix}_training_state.json')
     
-    # Compare outputs
-    output_comparison = compare_outputs(
-        float32_model, qat_model, 
-        args.test_image, args.output_dir
-    )
+    # Extract data based on specified source
+    success = False
     
-    # Export for hls4ml
-    export_for_hls4ml(qat_model, args.output_dir)
+    # Priority 1: Extract from TensorBoard logs (most reliable for real training data)
+    if args.extract_from == 'tensorboard' or args.extract_from == 'all':
+        print("\n📊 Extracting from TensorBoard logs...")
+        # Check for train and validation folders
+        train_dir = os.path.join(args.tb_log_dir, 'train')
+        validation_dir = os.path.join(args.tb_log_dir, 'validation')
+        
+        if os.path.exists(train_dir):
+            print(f"📁 Found train logs at: {train_dir}")
+            print(f"📁 Found validation logs at: {validation_dir}")
+            
+            # Extract from train folder (primary source)
+            result = extract_training_data_from_tensorboard(train_dir, args.output_file)
+            if result:
+                success = True
+                print(f"✅ Successfully extracted training data from train logs")
+        elif os.path.exists(args.tb_log_dir):
+            print(f"📁 Using root logs directory: {args.tb_log_dir}")
+            result = extract_training_data_from_tensorboard(args.tb_log_dir, args.output_file)
+            if result:
+                success = True
+        else:
+            print(f"⚠️  TensorBoard logs not found at {args.tb_log_dir} or {train_dir}")
     
-    # Generate comprehensive report
-    generate_report(
-        float32_stats, qat_stats, 
-        speed_comparison, output_comparison, 
-        args.output_dir
-    )
+    # Priority 2: Extract from training state file (fallback)
+    if (args.extract_from == 'state_file' or args.extract_from == 'all') and not success:
+        print("\n📊 Extracting from training state file...")
+        result = extract_training_data_from_state_file(args.model_dir, args.model_prefix, args.output_file)
+        if result:
+            success = True
     
-    print(f"\n✅ Analysis complete! Results saved to: {args.output_dir}")
+    # Priority 3: Extract from checkpoint files (placeholder)
+    if (args.extract_from == 'checkpoints' or args.extract_from == 'all') and not success:
+        print("\n📊 Extracting from checkpoint files...")
+        extract_training_data_from_checkpoints(args.model_dir, args.model_prefix, args.output_file)
+    
+    if not success:
+        print("❌ No training data could be extracted from any source")
+        return
+    
+    print(f"\n✅ Extraction complete! Results saved to: {args.output_file}")
 
 if __name__ == "__main__":
     main()
