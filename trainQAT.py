@@ -34,6 +34,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_70.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-7
 
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 analyze_iou.py
 """
 
 import os
