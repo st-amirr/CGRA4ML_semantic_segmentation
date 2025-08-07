@@ -45,7 +45,7 @@ import psutil
 import gc
 import signal
 import sys
-
+import json
 import argparse
 import glob
 from concurrent.futures import ThreadPoolExecutor
@@ -1260,10 +1260,10 @@ def train_model():
         ReduceLROnPlateau(
             monitor='val_mean_iou',  # Monitor IoU instead of loss
             mode='max',  # Higher IoU is better
-            factor=0.5,  # More aggressive reduction for car performance
-            patience=5,   # Less patience to react faster
+            factor=0.5 if TRAIN_QAT else 0.7,  # More aggressive reduction for car performance
+            patience=12 if TRAIN_QAT else 8,   # Less patience to react faster
             verbose=1,
-            min_lr=1e-7   # Lower minimum learning rate
+            min_lr=1e-8 if TRAIN_QAT else 5e-6   # Lower minimum learning rate
         ),
         EarlyStopping(
             monitor='val_mean_iou',  # Monitor IoU instead of loss
