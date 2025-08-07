@@ -18,7 +18,14 @@ Key Features:
 - Memory-efficient data pipeline
 - FPGA-compatible architecture (no MaxPooling, etc.)
 
-python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
+Recommended training command for improved results (reduces scattered pixels):
+Key improvements:
+- Combined loss function (categorical crossentropy + dice loss)
+- Enhanced data augmentation with geometric and color transformations
+- Post-processing callback to clean scattered pixels
+- More conservative learning rate scheduling
+- Lower initial learning rate for stability
+
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 --LR=1e-4
@@ -54,6 +61,140 @@ from pathlib import Path
 import math
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
+import tensorflow.keras.backend as K
+
+# Add these loss functions after the imports
+def dice_loss(y_true, y_pred, smooth=1e-6):
+    """
+    Dice loss for semantic segmentation
+    Helps with class imbalance and scattered pixels
+    """
+    y_true_f = K.flatten(y_true)
+    y_pred_f = K.flatten(y_pred)
+    intersection = K.sum(y_true_f * y_pred_f)
+    dice_coeff = (2. * intersection + smooth) / (K.sum(y_true_f) + K.sum(y_pred_f) + smooth)
+    return 1 - dice_coeff
+
+def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
+    """
+    Focal loss for handling class imbalance
+    Reduces scattered pixel predictions
+    """
+    y_true_f = K.flatten(y_true)
+    y_pred_f = K.flatten(y_pred)
+    
+    # Clip predictions to prevent log(0)
+    y_pred_f = K.clip(y_pred_f, K.epsilon(), 1.0 - K.epsilon())
+    
+    # Calculate focal loss
+    pt = y_true_f * y_pred_f + (1 - y_true_f) * (1 - y_pred_f)
+    focal_loss = -alpha * K.pow(1 - pt, gamma) * K.log(pt)
+    return K.mean(focal_loss)
+
+
+
+def weighted_categorical_crossentropy(y_true, y_pred, class_weights=None):
+    """
+    Weighted categorical crossentropy for class imbalance
+    """
+    if class_weights is None:
+        # Define weights based on Cityscapes class distribution
+        class_weights = {
+            0: 1.5,   # road
+            1: 1.5,   # sidewalk
+            2: 1.0,   # building
+            3: 1.0,   # wall
+            4: 2.0,   # fence (rare class)
+            5: 1.0,   # pole
+            6: 2.0,   # traffic light (rare class)
+            7: 2.0,   # traffic sign (rare class)
+            8: 1.0,   # vegetation
+            9: 1.0,   # sky
+            10: 2.0,  # person
+            11: 2.0,  # car (important class)
+            # Add weights for other classes...
+        }
+    
+    # Convert to tensor
+    weights = tf.constant([class_weights.get(i, 1.0) for i in range(NUM_CLASSES)], dtype=tf.float32)
+    
+    # Calculate weighted loss
+    ce_loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+    weighted_loss = ce_loss * tf.reduce_sum(y_true * weights, axis=-1)
+    return tf.reduce_mean(weighted_loss)
+
+def weighted_combined_loss(y_true, y_pred):
+    """
+    Combined weighted crossentropy, dice loss, and focal loss
+    Best of all three worlds for class imbalance and segmentation
+    """
+    weighted_ce = weighted_categorical_crossentropy(y_true, y_pred)
+    dice = dice_loss(y_true, y_pred)
+    focal = focal_loss(y_true, y_pred)
+    return 0.4 * weighted_ce + 0.4 * dice + 0.2 * focal
+
+# Add custom metrics for better monitoring
+def mean_iou(y_true, y_pred):
+    """
+    Mean IoU metric for semantic segmentation
+    """
+    # Convert to class predictions
+    y_pred = tf.argmax(y_pred, axis=-1)
+    y_true = tf.argmax(y_true, axis=-1)
+    
+    # Calculate IoU for each class
+    ious = []
+    for class_id in range(NUM_CLASSES):
+        intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
+        union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
+        iou = tf.where(union > 0, intersection / union, 0.0)
+        ious.append(iou)
+    
+    return tf.reduce_mean(ious)
+
+def precision_metric(y_true, y_pred):
+    """
+    Precision metric for semantic segmentation
+    """
+    y_pred = tf.argmax(y_pred, axis=-1)
+    y_true = tf.argmax(y_true, axis=-1)
+    
+    # Calculate precision for each class
+    precisions = []
+    for class_id in range(NUM_CLASSES):
+        tp = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
+        fp = tf.reduce_sum(tf.cast(tf.logical_and(tf.not_equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
+        precision = tf.where(tp + fp > 0, tp / (tp + fp), 0.0)
+        precisions.append(precision)
+    
+    return tf.reduce_mean(precisions)
+
+def recall_metric(y_true, y_pred):
+    """
+    Recall metric for semantic segmentation
+    """
+    y_pred = tf.argmax(y_pred, axis=-1)
+    y_true = tf.argmax(y_true, axis=-1)
+    
+    # Calculate recall for each class
+    recalls = []
+    for class_id in range(NUM_CLASSES):
+        tp = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
+        fn = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.not_equal(y_pred, class_id)), tf.float32))
+        recall = tf.where(tp + fn > 0, tp / (tp + fn), 0.0)
+        recalls.append(recall)
+    
+    return tf.reduce_mean(recalls)
+
+def f1_score_metric(y_true, y_pred):
+    """
+    F1 score metric for semantic segmentation
+    """
+    precision = precision_metric(y_true, y_pred)
+    recall = recall_metric(y_true, y_pred)
+    f1 = tf.where(precision + recall > 0, 2 * (precision * recall) / (precision + recall), 0.0)
+    return f1
+
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='HLS4ML Semantic Segmentation with QAT Toggle')
@@ -392,13 +533,33 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         
         print(f"Found {len(self.image_paths)} images")
         
-        # Create augmentation pipeline
+        # Create balanced augmentation pipeline with reduced probabilities
         if self.augment:
             self.transform = A.Compose([
+                # Geometric augmentations
                 A.HorizontalFlip(p=0.3),
-                A.Rotate(limit=15, p=0.4, border_mode=cv2.BORDER_CONSTANT, value=0),  # Add rotation ±15 degrees
-                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
-                A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.3),
+                A.VerticalFlip(p=0.1),
+                A.Rotate(limit=30, p=0.3, border_mode=cv2.BORDER_CONSTANT),
+                A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.2),
+                A.ElasticTransform(alpha=1, sigma=50, p=0.1),
+                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.1),
+                
+                # Color and contrast augmentations
+                A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.3),
+                A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1, p=0.2),
+                A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.2),
+                
+                # Noise and blur augmentations
+                A.GaussNoise(var_limit=(10.0, 50.0), p=0.15),
+                A.GaussianBlur(blur_limit=(3, 7), p=0.1),
+                A.MotionBlur(blur_limit=7, p=0.1),
+                
+                # Weather and lighting effects
+                A.RandomRain(drop_length=20, drop_width=1, drop_color=(200, 200, 200), blur_value=3, brightness_coefficient=0.7, rain_type='drizzle', p=0.05),
+                A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.05),
+                
+                # Occlusion and masking
+                A.CoarseDropout(max_holes=8, max_height=32, max_width=32, min_holes=1, min_height=8, min_width=8, p=0.1),
             ])
         else:
             self.transform = None
@@ -858,10 +1019,97 @@ class TrainingStateCallback(tf.keras.callbacks.Callback):
     def on_train_end(self, logs=None):
         """Clean up training state file"""
         try:
-            os.remove(os.path.join(self.model_dir, f'{model_prefix}_training_state.json'))
+            os.remove(os.path.join(self.model_dir, f'{self.model_prefix}_training_state.json'))
             print("Training state file removed.")
         except FileNotFoundError:
             print("Training state file not found.")
+
+
+class PostProcessingCallback(tf.keras.callbacks.Callback):
+    """
+    Post-processing callback to clean up scattered pixel predictions
+    """
+    def __init__(self, val_generator, save_dir, save_frequency=5):
+        super().__init__()
+        self.val_generator = val_generator
+        self.save_dir = save_dir
+        self.save_frequency = save_frequency
+        os.makedirs(save_dir, exist_ok=True)
+    
+    def clean_predictions(self, predictions):
+        """
+        Clean scattered pixel predictions using morphological operations
+        """
+        cleaned_predictions = []
+        
+        for pred in predictions:
+            # Convert to class predictions
+            pred_classes = np.argmax(pred, axis=-1)
+            
+            # Apply morphological operations to clean scattered pixels
+            cleaned_pred = pred_classes.copy()
+            
+            # For each class, apply morphological operations
+            for class_id in range(1, NUM_CLASSES):  # Skip background class
+                class_mask = (pred_classes == class_id).astype(np.uint8)
+                
+                if np.sum(class_mask) > 0:
+                    # Remove small isolated regions
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                    cleaned_mask = cv2.morphologyEx(class_mask, cv2.MORPH_CLOSE, kernel)
+                    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
+                    
+                    # Remove very small regions (less than 50 pixels)
+                    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned_mask, connectivity=8)
+                    for i in range(1, num_labels):  # Skip background
+                        if stats[i, cv2.CC_STAT_AREA] < 50:
+                            cleaned_mask[labels == i] = 0
+                    
+                    # Update cleaned prediction
+                    cleaned_pred[cleaned_mask == 1] = class_id
+            
+            # Convert back to one-hot encoding
+            cleaned_one_hot = tf.keras.utils.to_categorical(cleaned_pred, num_classes=NUM_CLASSES)
+            cleaned_predictions.append(cleaned_one_hot)
+        
+        return np.array(cleaned_predictions)
+    
+    def on_epoch_end(self, epoch, logs=None):
+        if epoch % self.save_frequency == 0:
+            # Get sample predictions
+            sample_images, sample_masks = self.val_generator[0]
+            predictions = self.model.predict(sample_images, verbose=0)
+            
+            # Clean predictions
+            cleaned_predictions = self.clean_predictions(predictions)
+            
+            # Save comparison
+            for i in range(min(4, len(sample_images))):
+                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+                
+                # Original image
+                axes[0].imshow(sample_images[i])
+                axes[0].set_title('Original Image')
+                axes[0].axis('off')
+                
+                # Raw prediction
+                raw_pred = np.argmax(predictions[i], axis=-1)
+                axes[1].imshow(raw_pred, cmap='tab20')
+                axes[1].set_title('Raw Prediction')
+                axes[1].axis('off')
+                
+                # Cleaned prediction
+                cleaned_pred = np.argmax(cleaned_predictions[i], axis=-1)
+                axes[2].imshow(cleaned_pred, cmap='tab20')
+                axes[2].set_title('Cleaned Prediction')
+                axes[2].axis('off')
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(self.save_dir, f'postprocessing_epoch_{epoch:03d}_sample_{i+1}.png'), 
+                           dpi=150, bbox_inches='tight')
+                plt.close()
+            
+            print(f"Post-processing comparison saved for epoch {epoch}")
 
 
 def train_model():
@@ -1007,8 +1255,15 @@ def train_model():
     
     model.compile(
         optimizer=optimizer,
-        loss="categorical_crossentropy",
-        metrics=["accuracy"],
+        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        metrics=[
+            "accuracy",
+            dice_loss,
+            mean_iou,
+            precision_metric,
+            recall_metric,
+            f1_score_metric
+        ],
     )
     print(f"Model compiled with learning rate: {learning_rate}")
 
@@ -1056,29 +1311,29 @@ def train_model():
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
             save_weights_only=True,  # Save weights only for compatibility
             save_best_only=False,
-            monitor='val_loss',
-            mode='min',
+            monitor='val_mean_iou',  # Monitor IoU instead of loss
+            mode='max',  # Higher IoU is better
             verbose=1
         ),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_best.keras'),
             save_weights_only=True,  # Save weights only for compatibility
             save_best_only=True,
-            monitor='val_loss',
-            mode='min',
+            monitor='val_mean_iou',  # Monitor IoU instead of loss
+            mode='max',  # Higher IoU is better
             verbose=1
         ),
         ReduceLROnPlateau(
-            monitor='val_loss',
-            mode='min',
-            factor=0.5 if TRAIN_QAT else 0.3,
-            patience=10 if TRAIN_QAT else 7,
+            monitor='val_mean_iou',  # Monitor IoU instead of loss
+            mode='max',  # Higher IoU is better
+            factor=0.7,  # More conservative reduction
+            patience=8,   # Slightly more patience
             verbose=1,
-            min_lr=1e-8 if TRAIN_QAT else 1e-6
+            min_lr=1e-7   # Lower minimum learning rate
         ),
         EarlyStopping(
-            monitor='val_loss',
-            mode='min',
+            monitor='val_mean_iou',  # Monitor IoU instead of loss
+            mode='max',  # Higher IoU is better
             patience=15,
             verbose=1,
             restore_best_weights=True
@@ -1104,7 +1359,8 @@ def train_model():
         ),
         MemoryCleanupCallback(),
         # Add custom callback to save training state
-        TrainingStateCallback(model_dir, model_prefix)
+        TrainingStateCallback(model_dir, model_prefix),
+        PostProcessingCallback(val_generator, os.path.join(viz_dir, 'postprocessing_comparison'))
     ]
 
     # Train model with proper state management
