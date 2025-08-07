@@ -121,46 +121,15 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     return K.mean(focal_loss)
 
 
-def weighted_categorical_crossentropy(y_true, y_pred, class_weights=None):
-    """
-    Weighted categorical crossentropy for class imbalance
-    """
-    if class_weights is None:
-        # Define weights based on Cityscapes class distribution for all 34 classes
-        class_weights = {
-            0: 2, 1: 1.5, 2: 1.0,    # road, sidewalk, building
-            3: 1.0, 4: 2.0, 5: 2.0,    # wall, fence, pole
-            6: 2.0, 7: 2.0, 8: 1.0,    # traffic_light, traffic_sign, vegetation
-            9: 1.0, 10: 1.0, 11: 2.0,  # terrain, sky, person
-            12: 2.0, 13: 3.0, 14: 2.0, # rider, car (increased), truck
-            15: 2.0, 16: 2.0, 17: 2.0, # bus, train, motorcycle
-            18: 2.0, 19: 1.0, 20: 1.0, # bicycle, void, unlabeled
-            21: 1.0, 22: 1.0, 23: 1.0, # ego_vehicle, rectification_border, out_of_roi
-            24: 1.0, 25: 1.0, 26: 1.0, # static, dynamic, ground
-            27: 1.0, 28: 1.0, 29: 1.0, # parking, rail_track, guard_rail
-            30: 1.0, 31: 1.0, 32: 1.0, # traffic_cone, construction, vegetation_2
-            33: 1.0,                     # sky_2
-        }
-        # # No class weights - all classes have equal weight of 1.0
-        # class_weights = {i: 1.0 for i in range(NUM_CLASSES)}
-
-    # Convert to tensor
-    weights = tf.constant([class_weights.get(i, 1.0) for i in range(NUM_CLASSES)], dtype=tf.float32)
-
-    # Calculate weighted loss
-    ce_loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
-    weighted_loss = ce_loss * tf.reduce_sum(y_true * weights, axis=-1)
-    return tf.reduce_mean(weighted_loss)
-
 def weighted_combined_loss(y_true, y_pred):
     """
-    Combined weighted crossentropy, dice loss, and focal loss
+    Combined categorical crossentropy, dice loss, and focal loss
     Best of all three worlds for class imbalance and segmentation
     """
-    weighted_ce = weighted_categorical_crossentropy(y_true, y_pred)
+    ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
     dice = dice_loss(y_true, y_pred)
     focal = focal_loss(y_true, y_pred)
-    return 0.45 * weighted_ce + 0.5 * dice + 0.05 * focal
+    return 0.4 * ce + 0.5 * dice + 0.1 * focal
 
 # Add custom metrics for better monitoring
 def mean_iou(y_true, y_pred):
