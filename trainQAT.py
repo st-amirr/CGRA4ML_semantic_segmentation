@@ -885,7 +885,7 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
         precision: Quantization precision for fusion layers
     """
     # Process bridge output with lightweight conv (reduces channels)
-    bridge_processed = conv_block(bridge_output, stage4_filters,  # 256 
+    bridge_processed = conv_block(bridge_output, MODEL_CONFIG['stage4_filters'],  # 256 
                                 use_quantization=use_quantization, precision=precision, 
                                 name='pyramid_bridge')
     
