@@ -495,79 +495,17 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
         self.save_frequency = save_frequency
         os.makedirs(save_dir, exist_ok=True)
         
-    def calculate_iou(self, y_true, y_pred):
-        """Calculate IoU for each class"""
-        ious = []
-        for class_id in range(self.num_classes):
-            true_class = (y_true == class_id)
-            pred_class = (y_pred == class_id)
-            
-            intersection = np.logical_and(true_class, pred_class).sum()
-            union = np.logical_or(true_class, pred_class).sum()
-            
-            if union == 0:
-                iou = 1.0 if intersection == 0 else 0.0
-            else:
-                iou = intersection / union
-            ious.append(iou)
-        
-        return np.array(ious)
+
     
     def on_epoch_end(self, epoch, logs=None):
         try:
-            print(f"\n📊  Calculating IoU metrics for epoch {epoch+1}...")
-            
-            all_ious = []
-            total_samples = min(5, len(self.val_generator))  # Sample 5 batches for faster calculation
-            
-            for batch_idx in range(total_samples):
-                batch_images, batch_masks = self.val_generator[batch_idx]
-                predictions = self.model.predict(batch_images, verbose=0)
+            # Learning rate tracking (this is still useful since it's not automatically logged)
+            if logs is not None and hasattr(self.model.optimizer, 'learning_rate'):
+                current_lr = float(self.model.optimizer.learning_rate)
+                logs['learning_rate'] = current_lr
                 
-                for i in range(len(batch_images)):
-                    gt_mask = np.argmax(batch_masks[i], axis=-1)
-                    pred_mask = np.argmax(predictions[i], axis=-1)
-                    
-                    iou_per_class = self.calculate_iou(gt_mask.flatten(), pred_mask.flatten())
-                    all_ious.append(iou_per_class)
-            
-            # Calculate mean IoU
-            mean_ious = np.mean(all_ious, axis=0)
-            overall_miou = np.mean(mean_ious)
-            
-            print(f"📈  Overall mIoU: {overall_miou:.4f}")
-            print(f"📈  Per-class IoU (top 5): {mean_ious[:5]}")
-            
-            # Log to TensorBoard every epoch with organized metrics
-            if logs is not None:
-                # Main metrics (these appear as separate scalars)
-                logs['epoch_miou'] = overall_miou  # Overall mean IoU across all classes
-                
-                # Learning rate tracking
-                if hasattr(self.model.optimizer, 'learning_rate'):
-                    current_lr = float(self.model.optimizer.learning_rate)
-                    logs['learning_rate'] = current_lr
-
-                # Group per-class IoU metrics under "IoU_Classes" category
-                # TensorBoard will automatically group these by the prefix before the slash
-                # Cityscapes class names (34 classes)
-                class_names = [
-                    'road', 'sidewalk', 'building', 'wall', 'fence', 'pole', 'traffic_light', 'traffic_sign',
-                    'vegetation', 'terrain', 'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train',
-                    'motorcycle', 'bicycle', 'void', 'unlabeled', 'ego_vehicle', 'rectification_border',
-                    'out_of_roi', 'static', 'dynamic', 'ground', 'parking', 'rail_track', 'guard_rail',
-                    'traffic_cone', 'construction', 'vegetation_2', 'sky_2'
-                ]
-                
-                # Log all 34 classes
-                for i in range(min(len(mean_ious), len(class_names))):
-                    logs[f'IoU_Classes/{class_names[i]}'] = mean_ious[i]
-                            
         except Exception as e:
-            print(f"⚠️  Could not calculate IoU metrics: {e}")
-            # Set default values if calculation fails
-            if logs is not None:
-                logs['epoch_miou'] = 0.0
+            print(f"⚠️  Error in DetailedMetricsCallback: {e}")
 
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
