@@ -873,24 +873,24 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
     # Start with bridge features
     fused_features = [bridge_processed]
     
-    # Process each skip connection - simplified for HLS4ML compatibility
+    # Process each skip connection - ensure all features match bridge spatial dimensions
     for i, skip in enumerate(skip_connections):
-        # Adjust channels to match bridge output
-        target_channels = bridge_output.shape[-1] // (2**i) if i > 0 else bridge_output.shape[-1]
+        # Standardize all features to have the same number of channels as bridge
+        target_channels = bridge_output.shape[-1]
         
         if skip.shape[-1] != target_channels:
             skip = conv_block(skip, target_channels, kernel_size=1, 
                             use_quantization=use_quantization, precision=precision, 
                             name=f'pyramid_conv_{i}')
         
-        # Upsample to bridge resolution using fixed factors
-        # Bridge is at 32x64, skip connections are at different resolutions
-        if i == 0:  # First skip (from enc1) - should be 64x128, need 2x upsampling
-            skip = tf.keras.layers.UpSampling2D(size=(2, 2), interpolation='bilinear')(skip)
-        elif i == 1:  # Second skip (from enc2) - should be 32x64, already correct
-            pass  # Already at bridge resolution
-        elif i == 2:  # Third skip (from enc3) - should be 16x32, need 2x upsampling
-            skip = tf.keras.layers.UpSampling2D(size=(2, 2), interpolation='bilinear')(skip)
+        # Resize all features to match bridge spatial dimensions
+        if skip.shape[1] != bridge_output.shape[1] or skip.shape[2] != bridge_output.shape[2]:
+            # Use resize to match exact bridge dimensions
+            skip = tf.keras.layers.Resizing(
+                height=bridge_output.shape[1],
+                width=bridge_output.shape[2],
+                interpolation='bilinear'
+            )(skip)
         
         fused_features.append(skip)
     
