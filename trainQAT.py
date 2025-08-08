@@ -837,20 +837,22 @@ def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', 
     # Use Conv2D with 1x1 kernels to compute spatial attention
     # This replaces the Lambda layers with supported operations
     
-    # Create spatial attention using Conv2D operations
+    # Create spatial attention using Conv2D operations - FPGA optimized with smaller kernels
     # First, create a 1x1 conv to reduce channels to 2 for avg/max
     if use_quantization:
         spatial_reduce = QConv2D(2, kernel_size=1, padding='same',
                                kernel_quantizer=quantized_bits(**qbits_config),
                                name=f'{name}_spatial_reduce')(x_channel)
-        spatial_attention = QConv2D(1, kernel_size=7, padding='same',
+        # Use 3x3 kernel instead of 7x7 for FPGA compatibility
+        spatial_attention = QConv2D(1, kernel_size=3, padding='same',
                                   kernel_quantizer=quantized_bits(**qbits_config),
                                   name=f'{name}_spatial_conv')(spatial_reduce)
         spatial_attention = QActivation('sigmoid')(spatial_attention)
     else:
         spatial_reduce = Conv2D(2, kernel_size=1, padding='same', 
                               name=f'{name}_spatial_reduce')(x_channel)
-        spatial_attention = Conv2D(1, kernel_size=7, padding='same', 
+        # Use 3x3 kernel instead of 7x7 for FPGA compatibility
+        spatial_attention = Conv2D(1, kernel_size=3, padding='same', 
                                  activation='sigmoid', name=f'{name}_spatial_conv')(spatial_reduce)
     
     return Multiply()([x_channel, spatial_attention])
