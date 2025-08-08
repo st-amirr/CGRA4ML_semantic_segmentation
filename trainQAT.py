@@ -258,7 +258,8 @@ def weighted_combined_loss(y_true, y_pred):
     ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
     dice = dice_loss(y_true, y_pred)
     focal = focal_loss(y_true, y_pred)
-    return 0.4 * ce + 0.5 * dice + 0.1 * focal
+    # Emphasize dice loss for better mIoU
+    return 0.3 * ce + 0.6 * dice + 0.1 * focal
 
 # Add custom metrics for better monitoring
 def mean_iou(y_true, y_pred):
@@ -725,16 +726,11 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
         name: Block name
     """
     channels = x.shape[-1]
-    
-    # Global average pooling
+    # Squeeze-and-Excitation style attention (optimized for mIoU)
     y = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_gap')(x)
     y = tf.keras.layers.Reshape((1, 1, channels), name=f'{name}_reshape')(y)
-    
-    # Attention mechanism
     if use_quantization:
-        # Select quantization config based on precision and layer characteristics
         if precision == '8bit':
-            # Attention blocks in 8-bit layers use small config
             qbits_config = quantized_bits_8_config
             qrelu_config = quantized_relu_config
         elif precision == '16bit':
@@ -746,8 +742,8 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
         else:
             qbits_config = quantized_bits_16_config
             qrelu_config = quantized_relu_config
-        
-        y = QConv2D(channels // 4, kernel_size=1, padding='same',
+        # Reduce channels then restore (SE block)
+        y = QConv2D(max(1, channels // 8), kernel_size=1, padding='same',
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
                    name=f'{name}_qconv1')(y)
@@ -758,13 +754,10 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
                    name=f'{name}_qconv2')(y)
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     else:
-        y = Conv2D(channels // 4, kernel_size=1, padding='same',
-                  name=f'{name}_conv1')(y)
+        y = Conv2D(max(1, channels // 8), kernel_size=1, padding='same', name=f'{name}_conv1')(y)
         y = Activation('relu', name=f'{name}_act1')(y)
-        y = Conv2D(channels, kernel_size=1, padding='same',
-                  name=f'{name}_conv2')(y)
+        y = Conv2D(channels, kernel_size=1, padding='same', name=f'{name}_conv2')(y)
         y = Activation('sigmoid', name=f'{name}_sigmoid')(y)
-    
     return Multiply(name=f'{name}_scale')([x, y])
 
 def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
@@ -943,24 +936,21 @@ def create_segmentation_model(use_quantization=False):
     
     # Encoder block 2 (ENCODER2 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
-    # Removed enc2_conv since CBAM now has integrated conv layers
-    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_cbam')
+    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_encoder2')(x)
     
     # Encoder block 3 (ENCODER3 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
-    # Removed enc3_conv since CBAM now has integrated conv layers
-    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_cbam')
+    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_encoder3')(x)
     
     # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
-    # Removed bridge_conv1 and bridge_conv2 since CBAM now has 2 integrated conv layers
-    x = cbam_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_cbam')
+    x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
     
@@ -972,12 +962,10 @@ def create_segmentation_model(use_quantization=False):
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
-    
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
-    # Single conv block (symmetrical to encoder: 1 conv + 1 conv in CBAM)
+    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv')
-    # CBAM for deep features (channel attention) - has 1 integrated conv
-    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_cbam')
+    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_decoder3')(x)
     
@@ -985,12 +973,10 @@ def create_segmentation_model(use_quantization=False):
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
-    
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
-    # Single conv block (symmetrical to encoder: 1 conv + 1 conv in CBAM)
+    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
-    # CBAM for spatial attention (high-res detail recovery) - has 1 integrated conv
-    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_cbam')
+    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_decoder2')(x)
     
