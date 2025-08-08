@@ -769,7 +769,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
 
 def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
     """
-    Enhanced attention with both channel and spatial attention (CBAM) - HLS4ML optimized
+    Enhanced attention with integrated conv layers - HLS4ML optimized
     
     Args:
         x: Input tensor
@@ -780,11 +780,7 @@ def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', 
     """
     channels = x.shape[-1]
     
-    # Channel attention - using only supported layers
-    channel_avg = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_channel_avg')(x)
-    channel_max = tf.keras.layers.GlobalMaxPooling2D(name=f'{name}_channel_max')(x)
-    
-    # Shared MLP for channel attention
+    # Initial feature processing with conv layers (integrated into CBAM)
     if use_quantization:
         # Select quantization config based on precision
         if precision == '8bit':
@@ -800,6 +796,31 @@ def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', 
             qbits_config = quantized_bits_16_config
             qrelu_config = quantized_relu_config
         
+        # Integrated conv processing before attention
+        x = QConv2D(channels, kernel_size=3, padding='same',
+                   kernel_quantizer=quantized_bits(**qbits_config),
+                   bias_quantizer=quantized_bits(**qbits_config),
+                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                   name=f'{name}_conv1')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**qbits_config),
+            beta_quantizer=quantized_bits(**qbits_config),
+            name=f'{name}_bn1')(x)
+        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_act1')(x)
+    else:
+        # Standard float32 conv processing
+        x = Conv2D(channels, kernel_size=3, padding='same',
+                  kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                  name=f'{name}_conv1')(x)
+        x = BatchNormalization(name=f'{name}_bn1')(x)
+        x = Activation('relu', name=f'{name}_act1')(x)
+    
+    # Channel attention - using only supported layers
+    channel_avg = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_channel_avg')(x)
+    channel_max = tf.keras.layers.GlobalMaxPooling2D(name=f'{name}_channel_max')(x)
+    
+    # Shared MLP for channel attention
+    if use_quantization:
         # Channel attention MLP for average pooling
         channel_avg = QDense(channels // reduction_ratio, 
                            kernel_quantizer=quantized_bits(**qbits_config),
@@ -834,11 +855,7 @@ def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', 
     x_channel = Multiply()([x, channel_attention])
     
     # Spatial attention - HLS4ML optimized (no Lambda layers)
-    # Use Conv2D with 1x1 kernels to compute spatial attention
-    # This replaces the Lambda layers with supported operations
-    
     # Create spatial attention using Conv2D operations - FPGA optimized with smaller kernels
-    # First, create a 1x1 conv to reduce channels to 2 for avg/max
     if use_quantization:
         spatial_reduce = QConv2D(2, kernel_size=1, padding='same',
                                kernel_quantizer=quantized_bits(**qbits_config),
@@ -859,7 +876,7 @@ def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', 
 
 def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=False, precision='32bit'):
     """
-    Combine features from multiple scales using pyramid fusion - HLS4ML optimized
+    Lightweight feature fusion - HLS4ML optimized for parameter efficiency
     
     Args:
         skip_connections: List of skip connection features from encoder
@@ -867,27 +884,26 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
         use_quantization: Whether to use QKeras quantized layers
         precision: Quantization precision for fusion layers
     """
-    # Process bridge output first
-    bridge_processed = conv_block(bridge_output, bridge_output.shape[-1], 
+    # Process bridge output with lightweight conv (reduces channels)
+    bridge_processed = conv_block(bridge_output, stage4_filters,  # 256 
                                 use_quantization=use_quantization, precision=precision, 
                                 name='pyramid_bridge')
     
     # Start with bridge features
     fused_features = [bridge_processed]
     
-    # Process each skip connection - ensure all features match bridge spatial dimensions
+    # Process each skip connection with lightweight processing
     for i, skip in enumerate(skip_connections):
-        # Standardize all features to have the same number of channels as bridge
-        target_channels = bridge_output.shape[-1]
+        # Lightweight channel reduction (much smaller than 256)
+        target_channels = 64  # Much smaller than 256
         
-        if skip.shape[-1] != target_channels:
-            skip = conv_block(skip, target_channels, kernel_size=1, 
-                            use_quantization=use_quantization, precision=precision, 
-                            name=f'pyramid_conv_{i}')
+        # Use 1x1 conv for efficient channel reduction
+        skip = conv_block(skip, target_channels, kernel_size=1, 
+                        use_quantization=use_quantization, precision=precision, 
+                        name=f'pyramid_conv_{i}')
         
         # Resize all features to match bridge spatial dimensions
         if skip.shape[1] != bridge_output.shape[1] or skip.shape[2] != bridge_output.shape[2]:
-            # Use resize to match exact bridge dimensions
             skip = tf.keras.layers.Resizing(
                 height=bridge_output.shape[1],
                 width=bridge_output.shape[2],
@@ -896,6 +912,7 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
         
         fused_features.append(skip)
     
+    # Concatenate: 128 + 64 + 64 + 64 = 320 channels (much smaller than 1024)
     return tf.keras.layers.Concatenate()(fused_features)
 
 def create_segmentation_model(use_quantization=False):
@@ -919,14 +936,14 @@ def create_segmentation_model(use_quantization=False):
     
     # Encoder block 1 (ENCODER1 block - 8-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], strides=2, use_quantization=use_quantization, precision='8bit', name='enc1_down')
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='enc1_conv')
+    # Removed enc1_conv to balance with other encoder blocks
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_encoder1')(x)
     
     # Encoder block 2 (ENCODER2 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='enc2_conv')
+    # Removed enc2_conv since CBAM now has integrated conv layers
     x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_cbam')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
@@ -934,7 +951,7 @@ def create_segmentation_model(use_quantization=False):
     
     # Encoder block 3 (ENCODER3 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='enc3_conv')
+    # Removed enc3_conv since CBAM now has integrated conv layers
     x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_cbam')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
@@ -942,8 +959,7 @@ def create_segmentation_model(use_quantization=False):
     
     # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv2')
+    # Removed bridge_conv1 and bridge_conv2 since CBAM now has 2 integrated conv layers
     x = cbam_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_cbam')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
@@ -951,35 +967,38 @@ def create_segmentation_model(use_quantization=False):
     # Feature Pyramid Fusion - combine multi-scale features
     x = feature_pyramid_fusion(skip_connections, x, use_quantization=use_quantization, precision='32bit')
     
-    # Decoder path
-    # Decoder block 3 (DECODER3 block - 32-bit precision for critical features)
+    # Decoder path - ENHANCED MIRRORED ENCODER ARCHITECTURE for FPGA efficiency
+    # Decoder block 3 (mirrors enc3: 128 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip_connections[2]])
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='32bit', name='dec3_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='32bit', name='dec3_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv')
+    # Extra refinement conv for better performance
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv_extra')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_decoder3')(x)
     
-    # Decoder block 2 (DECODER2 block - 16-bit precision)
+    # Decoder block 2 (mirrors enc2: 64 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip_connections[1]])
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
+    # Extra refinement conv for better performance
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv_extra')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_decoder2')(x)
     
-    # Decoder block 1 (DECODER1 block - 16-bit precision)
+    # Decoder block 1 (mirrors enc1: 32 filters, 8-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec1_up')(x)
     x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip_connections[0]])
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='16bit', name='dec1_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='16bit', name='dec1_conv2')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
+    # Extra refinement conv for better performance
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv_extra')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_decoder1')(x)
     
     # Final upsampling to original resolution
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='final_up')(x)
     
-    # Final convolution before output (DECODER0 block - 8-bit precision)
+    # Final convolution before output (mirrors init: 16 filters, 8-bit precision)
     x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='final_conv')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.05, name='dropout_final')(x)
