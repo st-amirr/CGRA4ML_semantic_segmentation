@@ -52,8 +52,8 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from tensorflow.keras.preprocessing.image import load_img
-from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Multiply, Dropout
-from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu
+from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Multiply, Dropout, Dense
+from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense
 from qkeras.utils import model_save_quantized_weights
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard
 import albumentations as A
@@ -149,20 +149,7 @@ MODEL_CONFIG = {
     'stage4_filters': INPUT_HEIGHT // 2,  # 256
 }
 
-# Disable layout optimizer to prevent conflicts with QKeras
-tf.config.optimizer.set_experimental_options({
-    'layout_optimizer': False,
-    'constant_folding': True,
-    'shape_optimization': True,
-    'remapping': True,
-})
-
-# QKeras quantization parameters (used only when TRAIN_QAT=True)
-# Multi-precision quantization based on analyze_weights.txt recommendations
-
-# Optimized quantization based on actual trained model weight analysis (epoch 70)
-# Optimized quantization based on actual trained model weight analysis (epoch 70)
-# For Kernels and Biases with small range (<1): boundary_enhance2_conv (0.251861), final_reduce_conv (0.634985)
+# Quantization configurations
 quantized_bits_8_config = {
     'bits': 8,
     'integer': 1,  # for values within ±2 range
@@ -198,6 +185,14 @@ quantized_relu_config = {
     'integer': 6,  # increase from 4 to 6 (max activation ~±64)
     'use_stochastic_rounding': True
 }
+
+# Disable layout optimizer to prevent conflicts with QKeras
+tf.config.optimizer.set_experimental_options({
+    'layout_optimizer': False,
+    'constant_folding': True,
+    'shape_optimization': True,
+    'remapping': True,
+})
 
 # Add these loss functions after the imports
 def dice_loss(y_true, y_pred, smooth=1e-7):
@@ -743,15 +738,12 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
             qbits_config = quantized_bits_8_config
             qrelu_config = quantized_relu_config
         elif precision == '16bit':
-            # Attention blocks in 16-bit layers use medium config
             qbits_config = quantized_bits_16_config
             qrelu_config = quantized_relu_config
         elif precision == '32bit':
-            # Attention blocks in 32-bit layers use large config
             qbits_config = quantized_bits_32_config
             qrelu_config = quantized_relu_config
         else:
-            # Default to medium config for attention blocks
             qbits_config = quantized_bits_16_config
             qrelu_config = quantized_relu_config
         
@@ -774,6 +766,135 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
         y = Activation('sigmoid', name=f'{name}_sigmoid')(y)
     
     return Multiply(name=f'{name}_scale')([x, y])
+
+def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
+    """
+    Enhanced attention with both channel and spatial attention (CBAM) - HLS4ML optimized
+    
+    Args:
+        x: Input tensor
+        reduction_ratio: Reduction ratio for channel attention MLP
+        use_quantization: Whether to use QKeras quantized layers
+        precision: Quantization precision ('8bit', '16bit', '32bit')
+        name: Block name
+    """
+    channels = x.shape[-1]
+    
+    # Channel attention - using only supported layers
+    channel_avg = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_channel_avg')(x)
+    channel_max = tf.keras.layers.GlobalMaxPooling2D(name=f'{name}_channel_max')(x)
+    
+    # Shared MLP for channel attention
+    if use_quantization:
+        # Select quantization config based on precision
+        if precision == '8bit':
+            qbits_config = quantized_bits_8_config
+            qrelu_config = quantized_relu_config
+        elif precision == '16bit':
+            qbits_config = quantized_bits_16_config
+            qrelu_config = quantized_relu_config
+        elif precision == '32bit':
+            qbits_config = quantized_bits_32_config
+            qrelu_config = quantized_relu_config
+        else:
+            qbits_config = quantized_bits_16_config
+            qrelu_config = quantized_relu_config
+        
+        # Channel attention MLP for average pooling
+        channel_avg = QDense(channels // reduction_ratio, 
+                           kernel_quantizer=quantized_bits(**qbits_config),
+                           name=f'{name}_channel_mlp_avg')(channel_avg)
+        channel_avg = QActivation(quantized_relu(**qrelu_config))(channel_avg)
+        channel_avg = QDense(channels, 
+                           kernel_quantizer=quantized_bits(**qbits_config),
+                           name=f'{name}_channel_mlp_avg2')(channel_avg)
+        
+        # Channel attention MLP for max pooling
+        channel_max = QDense(channels // reduction_ratio, 
+                           kernel_quantizer=quantized_bits(**qbits_config),
+                           name=f'{name}_channel_mlp_max')(channel_max)
+        channel_max = QActivation(quantized_relu(**qrelu_config))(channel_max)
+        channel_max = QDense(channels, 
+                           kernel_quantizer=quantized_bits(**qbits_config),
+                           name=f'{name}_channel_mlp_max2')(channel_max)
+    else:
+        # Standard float32 layers for channel attention
+        channel_avg = Dense(channels // reduction_ratio, activation='relu', 
+                          name=f'{name}_channel_mlp_avg')(channel_avg)
+        channel_avg = Dense(channels, name=f'{name}_channel_mlp_avg2')(channel_avg)
+        
+        channel_max = Dense(channels // reduction_ratio, activation='relu', 
+                          name=f'{name}_channel_mlp_max')(channel_max)
+        channel_max = Dense(channels, name=f'{name}_channel_mlp_max2')(channel_max)
+    
+    # Combine channel attention
+    channel_add = tf.keras.layers.Add()([channel_avg, channel_max])
+    channel_attention = Activation('sigmoid')(channel_add)
+    channel_attention = tf.keras.layers.Reshape((1, 1, channels))(channel_attention)
+    x_channel = Multiply()([x, channel_attention])
+    
+    # Spatial attention - HLS4ML optimized (no Lambda layers)
+    # Use Conv2D with 1x1 kernels to compute spatial attention
+    # This replaces the Lambda layers with supported operations
+    
+    # Create spatial attention using Conv2D operations
+    # First, create a 1x1 conv to reduce channels to 2 for avg/max
+    if use_quantization:
+        spatial_reduce = QConv2D(2, kernel_size=1, padding='same',
+                               kernel_quantizer=quantized_bits(**qbits_config),
+                               name=f'{name}_spatial_reduce')(x_channel)
+        spatial_attention = QConv2D(1, kernel_size=7, padding='same',
+                                  kernel_quantizer=quantized_bits(**qbits_config),
+                                  name=f'{name}_spatial_conv')(spatial_reduce)
+        spatial_attention = QActivation('sigmoid')(spatial_attention)
+    else:
+        spatial_reduce = Conv2D(2, kernel_size=1, padding='same', 
+                              name=f'{name}_spatial_reduce')(x_channel)
+        spatial_attention = Conv2D(1, kernel_size=7, padding='same', 
+                                 activation='sigmoid', name=f'{name}_spatial_conv')(spatial_reduce)
+    
+    return Multiply()([x_channel, spatial_attention])
+
+def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=False, precision='32bit'):
+    """
+    Combine features from multiple scales using pyramid fusion - HLS4ML optimized
+    
+    Args:
+        skip_connections: List of skip connection features from encoder
+        bridge_output: Output from bridge block
+        use_quantization: Whether to use QKeras quantized layers
+        precision: Quantization precision for fusion layers
+    """
+    # Process bridge output first
+    bridge_processed = conv_block(bridge_output, bridge_output.shape[-1], 
+                                use_quantization=use_quantization, precision=precision, 
+                                name='pyramid_bridge')
+    
+    # Start with bridge features
+    fused_features = [bridge_processed]
+    
+    # Process each skip connection - simplified for HLS4ML compatibility
+    for i, skip in enumerate(skip_connections):
+        # Adjust channels to match bridge output
+        target_channels = bridge_output.shape[-1] // (2**i) if i > 0 else bridge_output.shape[-1]
+        
+        if skip.shape[-1] != target_channels:
+            skip = conv_block(skip, target_channels, kernel_size=1, 
+                            use_quantization=use_quantization, precision=precision, 
+                            name=f'pyramid_conv_{i}')
+        
+        # Upsample to bridge resolution using fixed factors
+        # Bridge is at 32x64, skip connections are at different resolutions
+        if i == 0:  # First skip (from enc1) - should be 64x128, need 2x upsampling
+            skip = tf.keras.layers.UpSampling2D(size=(2, 2), interpolation='bilinear')(skip)
+        elif i == 1:  # Second skip (from enc2) - should be 32x64, already correct
+            pass  # Already at bridge resolution
+        elif i == 2:  # Third skip (from enc3) - should be 16x32, need 2x upsampling
+            skip = tf.keras.layers.UpSampling2D(size=(2, 2), interpolation='bilinear')(skip)
+        
+        fused_features.append(skip)
+    
+    return tf.keras.layers.Concatenate()(fused_features)
 
 def create_segmentation_model(use_quantization=False):
     """
@@ -804,7 +925,7 @@ def create_segmentation_model(use_quantization=False):
     # Encoder block 2 (ENCODER2 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='enc2_conv')
-    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_att')
+    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_cbam')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_encoder2')(x)
@@ -812,7 +933,7 @@ def create_segmentation_model(use_quantization=False):
     # Encoder block 3 (ENCODER3 block - 16-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='enc3_conv')
-    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_att')
+    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_cbam')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_encoder3')(x)
@@ -821,9 +942,12 @@ def create_segmentation_model(use_quantization=False):
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv1')
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv2')
-    x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_att')
+    x = cbam_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_cbam')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
+    
+    # Feature Pyramid Fusion - combine multi-scale features
+    x = feature_pyramid_fusion(skip_connections, x, use_quantization=use_quantization, precision='32bit')
     
     # Decoder path
     # Decoder block 3 (DECODER3 block - 32-bit precision for critical features)
