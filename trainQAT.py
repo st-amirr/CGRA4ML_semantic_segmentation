@@ -140,13 +140,13 @@ tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utili
 print(f"Eager execution enabled: {tf.executing_eagerly()}")
 tf.debugging.set_log_device_placement(DEBUG_MODE)
 
-# Model architecture configuration
+# Model architecture configuration - GRADUAL CHANNEL SCALING FOR BETTER DETAIL RECOVERY
 MODEL_CONFIG = {
-    'init_filters': INPUT_HEIGHT // 32,  # 16
-    'stage1_filters': INPUT_HEIGHT // 16, # 32
-    'stage2_filters': INPUT_HEIGHT // 8,  # 64
-    'stage3_filters': INPUT_HEIGHT // 4,  # 128
-    'stage4_filters': INPUT_HEIGHT // 2,  # 256
+    'init_filters': INPUT_HEIGHT // 21,  # 24 (512//21 = 24)
+    'stage1_filters': INPUT_HEIGHT // 11,  # 48 (512//11 = 48)
+    'stage2_filters': INPUT_HEIGHT // 5,  # 102 (512//5 = 102)
+    'stage3_filters': INPUT_HEIGHT // 3,  # 170 (512//3 = 170)
+    'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256)
 }
 
 # Quantization configurations
@@ -936,7 +936,7 @@ def create_segmentation_model(use_quantization=False):
     
     # Encoder block 1 (ENCODER1 block - 8-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], strides=2, use_quantization=use_quantization, precision='8bit', name='enc1_down')
-    # Removed enc1_conv to balance with other encoder blocks
+    # No CBAM for shallow features (spatial attention not needed here)
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_encoder1')(x)
@@ -967,31 +967,42 @@ def create_segmentation_model(use_quantization=False):
     # Feature Pyramid Fusion - combine multi-scale features
     x = feature_pyramid_fusion(skip_connections, x, use_quantization=use_quantization, precision='32bit')
     
-    # Decoder path - ENHANCED MIRRORED ENCODER ARCHITECTURE for FPGA efficiency
+    # Decoder path - TRUE SYMMETRY WITH ENCODER + SKIP CONNECTION CLEANUP
     # Decoder block 3 (mirrors enc3: 128 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
-    x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip_connections[2]])
+    # Clean up skip connection with 1x1 conv + BN before concatenation
+    skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
+    
+    x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
+    # Single conv block (symmetrical to encoder: 1 conv + 1 conv in CBAM)
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv')
-    # Extra refinement conv for better performance
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv_extra')
+    # CBAM for deep features (channel attention) - has 1 integrated conv
+    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_cbam')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_decoder3')(x)
     
     # Decoder block 2 (mirrors enc2: 64 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
-    x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip_connections[1]])
+    # Clean up skip connection with 1x1 conv + BN before concatenation
+    skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
+    
+    x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
+    # Single conv block (symmetrical to encoder: 1 conv + 1 conv in CBAM)
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
-    # Extra refinement conv for better performance
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv_extra')
+    # CBAM for spatial attention (high-res detail recovery) - has 1 integrated conv
+    x = cbam_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_cbam')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_decoder2')(x)
     
     # Decoder block 1 (mirrors enc1: 32 filters, 8-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec1_up')(x)
-    x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip_connections[0]])
+    # Clean up skip connection with 1x1 conv + BN before concatenation
+    skip1_clean = conv_block(skip_connections[0], MODEL_CONFIG['stage1_filters'], kernel_size=1, use_quantization=use_quantization, precision='8bit', name='skip1_clean')
+    
+    x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip1_clean])
+    # Single conv block (symmetrical to encoder: 1 conv, no CBAM)
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
-    # Extra refinement conv for better performance
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv_extra')
+    # No CBAM for dec1 (like enc1 - shallow features)
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_decoder1')(x)
     

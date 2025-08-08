@@ -164,3 +164,4 @@ hardware constraints.
 
 The model is ready for HLS4ML conversion and FPGA deployment with appropriate
 quantization and resource optimization.
+
