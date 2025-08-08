@@ -224,10 +224,13 @@ quantized_relu_config = {
     'use_stochastic_rounding': True
 }
 
-# # Disable layout optimizer to prevent conflicts with QKeras
-# tf.config.optimizer.set_experimental_options({
-#     'layout_optimizer': False
-# })
+# Disable layout optimizer to prevent conflicts with QKeras
+tf.config.optimizer.set_experimental_options({
+    'layout_optimizer': False,
+    'constant_folding': True,
+    'shape_optimization': True,
+    'remapping': True,
+})
 
 # Add these loss functions after the imports
 def dice_loss(y_true, y_pred, smooth=1e-7):
@@ -372,8 +375,9 @@ def mean_iou(y_true, y_pred):
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
 
-        # If a class is absent in both GT and prediction (union == 0), return 0.0 (ignore for averaging)
-        iou = tf.where(union > 0, intersection / union, 0.0)
+        # Match the correct calculate_iou logic
+        iou = tf.where(union > 0, intersection / union,
+                       tf.where(intersection == 0, 1.0, 0.0))  # 1.0 if both intersection and union are 0
         ious.append(iou)
 
     result = tf.reduce_mean(ious)
@@ -384,23 +388,23 @@ def mean_iou(y_true, y_pred):
 
 # Class-specific IoU metrics for Cityscapes classes
 def cars(y_true, y_pred):
-    """IoU metric for car class (Cityscapes trainIds index 13)"""
+    """IoU metric for car class (class index 13)"""
     return class_iou(y_true, y_pred, class_id=13)
 
 def road(y_true, y_pred):
-    """IoU metric for road class (Cityscapes trainIds index 0)"""
+    """IoU metric for road class (class index 0)"""
     return class_iou(y_true, y_pred, class_id=0)
 
 def sidewalk(y_true, y_pred):
-    """IoU metric for sidewalk class (Cityscapes trainIds index 1)"""
+    """IoU metric for sidewalk class (class index 1)"""
     return class_iou(y_true, y_pred, class_id=1)
 
 def traffic_light(y_true, y_pred):
-    """IoU metric for traffic_light class (Cityscapes trainIds index 6)"""
+    """IoU metric for traffic_light class (class index 6)"""
     return class_iou(y_true, y_pred, class_id=6)
 
 def traffic_sign(y_true, y_pred):
-    """IoU metric for traffic_sign class (Cityscapes trainIds index 7)"""
+    """IoU metric for traffic_sign class (class index 7)"""
     return class_iou(y_true, y_pred, class_id=7)
 
 def class_iou(y_true, y_pred, class_id):
@@ -413,8 +417,9 @@ def class_iou(y_true, y_pred, class_id):
     intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
     union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
     
-    # Handle edge cases: if class absent in both GT and prediction (union == 0), return 0.0
-    iou = tf.where(union > 0, intersection / union, 0.0)
+    # Handle edge cases
+    iou = tf.where(union > 0, intersection / union,
+                   tf.where(intersection == 0, 1.0, 0.0))  # 1.0 if both intersection and union are 0
     
     return iou
 
@@ -1565,7 +1570,7 @@ def train_model():
             road,
             sidewalk,
             traffic_light,
-            traffic_sign,
+            traffic_sign
             # precision_metric,
             # recall_metric,
             # f1_score_metric
