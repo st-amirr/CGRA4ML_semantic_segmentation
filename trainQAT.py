@@ -259,7 +259,7 @@ def weighted_combined_loss(y_true, y_pred):
     dice = dice_loss(y_true, y_pred)
     focal = focal_loss(y_true, y_pred)
     # Emphasize dice loss for better mIoU
-    return 0.3 * ce + 0.6 * dice + 0.1 * focal
+    return 0.4 * ce + 0.5 * dice + 0.1 * focal
 
 # Add custom metrics for better monitoring
 def mean_iou(y_true, y_pred):
@@ -1283,6 +1283,7 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
