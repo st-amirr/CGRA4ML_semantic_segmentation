@@ -28,7 +28,7 @@ Key improvements:
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=4 --use_dropout=True --subset_ratio=0.9 
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=True --subset_ratio=0.9 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=False --subset_ratio=0.9 --LR=1e-5
 
@@ -754,10 +754,16 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
                    name=f'{name}_qconv2')(y)
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     else:
-        y = Conv2D(max(1, channels // 8), kernel_size=1, padding='same', name=f'{name}_conv1')(y)
-        y = Activation('relu', name=f'{name}_act1')(y)
-        y = Conv2D(channels, kernel_size=1, padding='same', name=f'{name}_conv2')(y)
-        y = Activation('sigmoid', name=f'{name}_sigmoid')(y)
+        y = QConv2D(max(1, channels // 8), kernel_size=1, padding='same',
+                   kernel_quantizer=quantized_bits(**quantized_bits_16_config),
+                   bias_quantizer=quantized_bits(**quantized_bits_16_config),
+                   name=f'{name}_qconv1')(y)
+        y = QActivation(quantized_relu(**quantized_relu_config), name=f'{name}_qact1')(y)
+        y = QConv2D(channels, kernel_size=1, padding='same',
+                   kernel_quantizer=quantized_bits(**quantized_bits_16_config),
+                   bias_quantizer=quantized_bits(**quantized_bits_16_config),
+                   name=f'{name}_qconv2')(y)
+        y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     return Multiply(name=f'{name}_scale')([x, y])
 
 def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
