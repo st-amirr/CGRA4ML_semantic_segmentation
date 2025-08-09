@@ -26,7 +26,9 @@ Key improvements:
 - More conservative learning rate scheduling with exponential decay
 - Lower initial learning rate for stability
 - FPGA-optimized depthwise separable convolutions
-- Enhanced QAT configuration with stochastic rounding
+- Enhanced QAT configuration with stochastic rounding and layer-wise quantization
+- Layer-wise quantization: BatchNorm layers use lower precision (8-bit) for stability
+- Activation quantization with stochastic rounding for better training
 - Improved learning rate scheduling with cooldown
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
@@ -154,7 +156,7 @@ MODEL_CONFIG = {
     'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256)
 }
 
-# Enhanced quantization configurations for better QAT performance
+# Enhanced quantization configurations for better QAT performance with layer-wise precision
 quantized_bits_8_config = {
     'bits': 8,
     'integer': 1,  # for values within ±2 range
@@ -181,6 +183,27 @@ quantized_bits_32_config = {
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,
+    'scale_axis': None
+}
+
+# Layer-wise quantization configurations for different layer types
+# BatchNorm layers: lower precision (8-bits) to avoid quantization errors
+quantized_bits_batchnorm_config = {
+    'bits': 8,
+    'integer': 1,  # Lower integer bits for BatchNorm
+    'symmetric': True,
+    'alpha': 'auto_po2',
+    'use_stochastic_rounding': True,  # Critical for BatchNorm stability
+    'scale_axis': None
+}
+
+# Activation quantization: 8-bits with stochastic rounding for better training
+quantized_bits_activation_config = {
+    'bits': 8,
+    'integer': 6,  # increase from 4 to 6 (max activation ~±64)
+    'symmetric': True,
+    'alpha': 'auto_po2',
+    'use_stochastic_rounding': True,  # Critical for activation quantization
     'scale_axis': None
 }
 
@@ -709,9 +732,10 @@ def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, use_qua
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
                    name=f'{name}_depthwise')(x)
+        # Layer-wise quantization: BatchNorm uses lower precision for stability
         x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**qbits_config),
-            beta_quantizer=quantized_bits(**qbits_config),
+            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
             name=f'{name}_depthwise_bn')(x)
         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_depthwise_act')(x)
         
@@ -721,9 +745,10 @@ def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, use_qua
                    bias_quantizer=quantized_bits(**qbits_config),
                    kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                    name=f'{name}_pointwise')(x)
+        # Layer-wise quantization: BatchNorm uses lower precision for stability
         x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**qbits_config),
-            beta_quantizer=quantized_bits(**qbits_config),
+            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
             name=f'{name}_pointwise_bn')(x)
         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_pointwise_act')(x)
     else:
@@ -770,16 +795,18 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, pre
             qbits_config = quantized_bits_8_config
             qrelu_config = quantized_relu_config
         
-        # Use QKeras quantized layers with enhanced configuration
+        # Use QKeras quantized layers with enhanced configuration and layer-wise quantization
         x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
                    kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                    name=f'{name}_qconv')(x)
+        # Layer-wise quantization: BatchNorm uses lower precision for stability
         x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**qbits_config),
-            beta_quantizer=quantized_bits(**qbits_config),
+            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
             name=f'{name}_qbn')(x)
+        # Activation quantization with stochastic rounding for better training
         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_qact')(x)
     else:
         # Use standard float32 layers
@@ -842,112 +869,113 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     return Multiply(name=f'{name}_scale')([x, y])
 
-def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
-    """
-    Enhanced attention with integrated conv layers - HLS4ML optimized
+# def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
+#     """
+#     Enhanced attention with integrated conv layers - HLS4ML optimized
     
-    Args:
-        x: Input tensor
-        reduction_ratio: Reduction ratio for channel attention MLP
-        use_quantization: Whether to use QKeras quantized layers
-        precision: Quantization precision ('8bit', '16bit', '32bit')
-        name: Block name
-    """
-    channels = x.shape[-1]
+#     Args:
+#         x: Input tensor
+#         reduction_ratio: Reduction ratio for channel attention MLP
+#         use_quantization: Whether to use QKeras quantized layers
+#         precision: Quantization precision ('8bit', '16bit', '32bit')
+#         name: Block name
+#     """
+#     channels = x.shape[-1]
     
-    # Initial feature processing with conv layers (integrated into CBAM)
-    if use_quantization:
-        # Select quantization config based on precision
-        if precision == '8bit':
-            qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_config
-        elif precision == '16bit':
-            qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_config
-        elif precision == '32bit':
-            qbits_config = quantized_bits_32_config
-            qrelu_config = quantized_relu_config
-        else:
-            qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_config
+#     # Initial feature processing with conv layers (integrated into CBAM)
+#     if use_quantization:
+#         # Select quantization config based on precision
+#         if precision == '8bit':
+#             qbits_config = quantized_bits_8_config
+#             qrelu_config = quantized_relu_config
+#         elif precision == '16bit':
+#             qbits_config = quantized_bits_16_config
+#             qrelu_config = quantized_relu_config
+#         elif precision == '32bit':
+#             qbits_config = quantized_bits_32_config
+#             qrelu_config = quantized_relu_config
+#         else:
+#             qbits_config = quantized_bits_16_config
+#             qrelu_config = quantized_relu_config
         
-        # Integrated conv processing before attention
-        x = QConv2D(channels, kernel_size=3, padding='same',
-                   kernel_quantizer=quantized_bits(**qbits_config),
-                   bias_quantizer=quantized_bits(**qbits_config),
-                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                   name=f'{name}_conv1')(x)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**qbits_config),
-            beta_quantizer=quantized_bits(**qbits_config),
-            name=f'{name}_bn1')(x)
-        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_act1')(x)
-    else:
-        # Standard float32 conv processing
-        x = Conv2D(channels, kernel_size=3, padding='same',
-                  kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                  name=f'{name}_conv1')(x)
-        x = BatchNormalization(name=f'{name}_bn1')(x)
-        x = Activation('relu', name=f'{name}_act1')(x)
+#         # Integrated conv processing before attention
+#         x = QConv2D(channels, kernel_size=3, padding='same',
+#                    kernel_quantizer=quantized_bits(**qbits_config),
+#                    bias_quantizer=quantized_bits(**qbits_config),
+#                    kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+#                    name=f'{name}_conv1')(x)
+#         # Layer-wise quantization: BatchNorm uses lower precision for stability
+#         x = QBatchNormalization(
+#             gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+#             beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+#             name=f'{name}_bn1')(x)
+#         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_act1')(x)
+#     else:
+#         # Standard float32 conv processing
+#         x = Conv2D(channels, kernel_size=3, padding='same',
+#                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+#                   name=f'{name}_conv1')(x)
+#         x = BatchNormalization(name=f'{name}_bn1')(x)
+#         x = Activation('relu', name=f'{name}_act1')(x)
     
-    # Channel attention - using only supported layers
-    channel_avg = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_channel_avg')(x)
-    channel_max = tf.keras.layers.GlobalMaxPooling2D(name=f'{name}_channel_max')(x)
+#     # Channel attention - using only supported layers
+#     channel_avg = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_channel_avg')(x)
+#     channel_max = tf.keras.layers.GlobalMaxPooling2D(name=f'{name}_channel_max')(x)
     
-    # Shared MLP for channel attention
-    if use_quantization:
-        # Channel attention MLP for average pooling
-        channel_avg = QDense(channels // reduction_ratio, 
-                           kernel_quantizer=quantized_bits(**qbits_config),
-                           name=f'{name}_channel_mlp_avg')(channel_avg)
-        channel_avg = QActivation(quantized_relu(**qrelu_config))(channel_avg)
-        channel_avg = QDense(channels, 
-                           kernel_quantizer=quantized_bits(**qbits_config),
-                           name=f'{name}_channel_mlp_avg2')(channel_avg)
+#     # Shared MLP for channel attention
+#     if use_quantization:
+#         # Channel attention MLP for average pooling
+#         channel_avg = QDense(channels // reduction_ratio, 
+#                            kernel_quantizer=quantized_bits(**qbits_config),
+#                            name=f'{name}_channel_mlp_avg')(channel_avg)
+#         channel_avg = QActivation(quantized_relu(**qrelu_config))(channel_avg)
+#         channel_avg = QDense(channels, 
+#                            kernel_quantizer=quantized_bits(**qbits_config),
+#                            name=f'{name}_channel_mlp_avg2')(channel_avg)
         
-        # Channel attention MLP for max pooling
-        channel_max = QDense(channels // reduction_ratio, 
-                           kernel_quantizer=quantized_bits(**qbits_config),
-                           name=f'{name}_channel_mlp_max')(channel_max)
-        channel_max = QActivation(quantized_relu(**qrelu_config))(channel_max)
-        channel_max = QDense(channels, 
-                           kernel_quantizer=quantized_bits(**qbits_config),
-                           name=f'{name}_channel_mlp_max2')(channel_max)
-    else:
-        # Standard float32 layers for channel attention
-        channel_avg = Dense(channels // reduction_ratio, activation='relu', 
-                          name=f'{name}_channel_mlp_avg')(channel_avg)
-        channel_avg = Dense(channels, name=f'{name}_channel_mlp_avg2')(channel_avg)
+#         # Channel attention MLP for max pooling
+#         channel_max = QDense(channels // reduction_ratio, 
+#                            kernel_quantizer=quantized_bits(**qbits_config),
+#                            name=f'{name}_channel_mlp_max')(channel_max)
+#         channel_max = QActivation(quantized_relu(**qrelu_config))(channel_max)
+#         channel_max = QDense(channels, 
+#                            kernel_quantizer=quantized_bits(**qbits_config),
+#                            name=f'{name}_channel_mlp_max2')(channel_max)
+#     else:
+#         # Standard float32 layers for channel attention
+#         channel_avg = Dense(channels // reduction_ratio, activation='relu', 
+#                           name=f'{name}_channel_mlp_avg')(channel_avg)
+#         channel_avg = Dense(channels, name=f'{name}_channel_mlp_avg2')(channel_avg)
         
-        channel_max = Dense(channels // reduction_ratio, activation='relu', 
-                          name=f'{name}_channel_mlp_max')(channel_max)
-        channel_max = Dense(channels, name=f'{name}_channel_mlp_max2')(channel_max)
+#         channel_max = Dense(channels // reduction_ratio, activation='relu', 
+#                           name=f'{name}_channel_mlp_max')(channel_max)
+#         channel_max = Dense(channels, name=f'{name}_channel_mlp_max2')(channel_max)
     
-    # Combine channel attention
-    channel_add = tf.keras.layers.Add()([channel_avg, channel_max])
-    channel_attention = Activation('sigmoid')(channel_add)
-    channel_attention = tf.keras.layers.Reshape((1, 1, channels))(channel_attention)
-    x_channel = Multiply()([x, channel_attention])
+#     # Combine channel attention
+#     channel_add = tf.keras.layers.Add()([channel_avg, channel_max])
+#     channel_attention = Activation('sigmoid')(channel_add)
+#     channel_attention = tf.keras.layers.Reshape((1, 1, channels))(channel_attention)
+#     x_channel = Multiply()([x, channel_attention])
     
-    # Spatial attention - HLS4ML optimized (no Lambda layers)
-    # Create spatial attention using Conv2D operations - FPGA optimized with smaller kernels
-    if use_quantization:
-        spatial_reduce = QConv2D(2, kernel_size=1, padding='same',
-                               kernel_quantizer=quantized_bits(**qbits_config),
-                               name=f'{name}_spatial_reduce')(x_channel)
-        # Use 3x3 kernel instead of 7x7 for FPGA compatibility
-        spatial_attention = QConv2D(1, kernel_size=3, padding='same',
-                                  kernel_quantizer=quantized_bits(**qbits_config),
-                                  name=f'{name}_spatial_conv')(spatial_reduce)
-        spatial_attention = QActivation('sigmoid')(spatial_attention)
-    else:
-        spatial_reduce = Conv2D(2, kernel_size=1, padding='same', 
-                              name=f'{name}_spatial_reduce')(x_channel)
-        # Use 3x3 kernel instead of 7x7 for FPGA compatibility
-        spatial_attention = Conv2D(1, kernel_size=3, padding='same', 
-                                 activation='sigmoid', name=f'{name}_spatial_conv')(spatial_reduce)
+#     # Spatial attention - HLS4ML optimized (no Lambda layers)
+#     # Create spatial attention using Conv2D operations - FPGA optimized with smaller kernels
+#     if use_quantization:
+#         spatial_reduce = QConv2D(2, kernel_size=1, padding='same',
+#                                kernel_quantizer=quantized_bits(**qbits_config),
+#                                name=f'{name}_spatial_reduce')(x_channel)
+#         # Use 3x3 kernel instead of 7x7 for FPGA compatibility
+#         spatial_attention = QConv2D(1, kernel_size=3, padding='same',
+#                                   kernel_quantizer=quantized_bits(**qbits_config),
+#                                   name=f'{name}_spatial_conv')(spatial_reduce)
+#         spatial_attention = QActivation('sigmoid')(spatial_attention)
+#     else:
+#         spatial_reduce = Conv2D(2, kernel_size=1, padding='same', 
+#                               name=f'{name}_spatial_reduce')(x_channel)
+#         # Use 3x3 kernel instead of 7x7 for FPGA compatibility
+#         spatial_attention = Conv2D(1, kernel_size=3, padding='same', 
+#                                  activation='sigmoid', name=f'{name}_spatial_conv')(spatial_reduce)
     
-    return Multiply()([x_channel, spatial_attention])
+#     return Multiply()([x_channel, spatial_attention])
 
 def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=False, precision='32bit'):
     """
@@ -1351,7 +1379,7 @@ def train_model():
         initial_learning_rate = 1e-7
         print(f"Using recommended QAT learning rate: {initial_learning_rate}")
     else:
-        initial_learning_rate = 1e-5  # Lower initial learning rate for stability
+        initial_learning_rate = 1e-4  # Lower initial learning rate for stability
         print(f"Using recommended float32 learning rate: {initial_learning_rate}")
 
     # Enhanced learning rate scheduler for better convergence
@@ -1392,7 +1420,7 @@ def train_model():
             # f1_score_metric
         ],
     )
-    print(f"Model compiled with learning rate: {learning_rate}")
+    print(f"Model compiled with learning rate: {lr_schedule}")
 
     model.summary()
 
