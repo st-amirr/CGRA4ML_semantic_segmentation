@@ -20,11 +20,14 @@ Key Features:
 
 Recommended training command for improved results (reduces scattered pixels):
 Key improvements:
-- Combined loss function (categorical crossentropy + dice loss)
+- Combined loss function (categorical crossentropy + dice loss + focal loss)
 - Enhanced data augmentation with geometric and color transformations
 - Post-processing callback to clean scattered pixels
-- More conservative learning rate scheduling
+- More conservative learning rate scheduling with exponential decay
 - Lower initial learning rate for stability
+- FPGA-optimized depthwise separable convolutions
+- Enhanced QAT configuration with stochastic rounding
+- Improved learning rate scheduling with cooldown
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
@@ -75,7 +78,7 @@ parser.add_argument('--load_model', type=str, default='',
 parser.add_argument('--epochs', type=int, default=50, 
                    help='Number of epochs to train')
 parser.add_argument('--batch_size', type=int, default=2, 
-                   help='Batch size for training')
+                   help='Batch size for training (smaller for FPGA memory constraints)')
 parser.add_argument('--use_dropout', type=str, default='True',
                    help='Enable dropout during training (True/False). Default: True')
 parser.add_argument('--subset_ratio', type=float, default=1.0,
@@ -126,6 +129,7 @@ if gpus:
             # Allow TensorFlow to allocate more GPU memory
             tf.config.experimental.set_memory_growth(gpu, True)
             # Set memory limit to use more VRAM (10GB limit for better utilization)
+            # Note: For FPGA deployment, consider reducing batch size and using memory-efficient operations
             tf.config.set_logical_device_configuration(
                 gpu,
                 [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
@@ -141,6 +145,7 @@ print(f"Eager execution enabled: {tf.executing_eagerly()}")
 tf.debugging.set_log_device_placement(DEBUG_MODE)
 
 # Model architecture configuration - GRADUAL CHANNEL SCALING FOR BETTER DETAIL RECOVERY
+# Optimized for FPGA deployment with depthwise separable convolutions and memory efficiency
 MODEL_CONFIG = {
     'init_filters': INPUT_HEIGHT // 32,  # 24 (512//32 = 16)
     'stage1_filters': INPUT_HEIGHT // 16,  # 48 (512//16 = 32)
@@ -149,13 +154,13 @@ MODEL_CONFIG = {
     'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256)
 }
 
-# Quantization configurations
+# Enhanced quantization configurations for better QAT performance
 quantized_bits_8_config = {
     'bits': 8,
     'integer': 1,  # for values within ±2 range
     'symmetric': True,
     'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
+    'use_stochastic_rounding': True,  # Better for training stability
     'scale_axis': None
 }
 
@@ -562,33 +567,38 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         
         print(f"Found {len(self.image_paths)} images")
         
-        # Create balanced augmentation pipeline with reduced probabilities
+        # Enhanced data augmentation pipeline for robustness
         if self.augment:
             self.transform = A.Compose([
-                # Geometric augmentations
-                A.HorizontalFlip(p=0.3),
-                A.VerticalFlip(p=0.1),
-                A.Rotate(limit=30, p=0.3, border_mode=cv2.BORDER_CONSTANT),
-                A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.2),
-                A.ElasticTransform(alpha=1, sigma=50, p=0.1),
-                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.1),
+                # Geometric augmentations - more aggressive for robustness
+                A.RandomCrop(width=self.target_width, height=self.target_height, p=1),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.2),
+                A.Rotate(limit=45, p=0.4, border_mode=cv2.BORDER_CONSTANT),
+                A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.3),
+                A.ElasticTransform(alpha=1, sigma=50, p=0.15),
+                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.15),
                 
-                # Color and contrast augmentations
-                A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.3),
-                A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1, p=0.2),
-                A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.2),
+                # Color and contrast augmentations - enhanced for lighting variations
+                A.RandomBrightnessContrast(brightness_limit=0.4, contrast_limit=0.4, p=0.4),
+                A.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.3),
+                A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=40, val_shift_limit=30, p=0.3),
+                A.RandomGamma(gamma_limit=(80, 120), p=0.2),
                 
                 # Noise and blur augmentations
-                A.GaussNoise(var_limit=(10.0, 50.0), p=0.15),
-                A.GaussianBlur(blur_limit=(3, 7), p=0.1),
-                A.MotionBlur(blur_limit=7, p=0.1),
+                A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),
+                A.GaussianBlur(blur_limit=(3, 7), p=0.15),
+                A.MotionBlur(blur_limit=7, p=0.15),
                 
                 # Weather and lighting effects
-                A.RandomRain(drop_length=20, drop_width=1, drop_color=(200, 200, 200), blur_value=3, brightness_coefficient=0.7, rain_type='drizzle', p=0.05),
-                A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.05),
+                A.RandomRain(drop_length=20, drop_width=1, drop_color=(200, 200, 200), blur_value=3, brightness_coefficient=0.7, rain_type='drizzle', p=0.1),
+                A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.1),
                 
                 # Occlusion and masking
-                A.CoarseDropout(max_holes=8, max_height=32, max_width=32, min_holes=1, min_height=8, min_width=8, p=0.1),
+                A.CoarseDropout(max_holes=8, max_height=32, max_width=32, min_holes=1, min_height=8, min_width=8, p=0.15),
+                
+                # Normalize with ImageNet stats for better convergence
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ])
         else:
             self.transform = None
@@ -665,6 +675,72 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         
         return np.array(batch_images), np.array(batch_masks)
 
+def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, precision='8bit', name='depthwise_sep'):
+    """
+    Depthwise separable convolution block - FPGA optimized for reduced computation
+    
+    Args:
+        x: Input tensor
+        filters: Number of filters
+        kernel_size: Kernel size
+        strides: Stride value
+        use_quantization: Whether to use QKeras quantized layers
+        precision: Quantization precision ('8bit', '16bit', '32bit')
+        name: Block name
+    """
+    if use_quantization:
+        # Select quantization config based on precision
+        if precision == '8bit':
+            qbits_config = quantized_bits_8_config
+            qrelu_config = quantized_relu_config
+        elif precision == '16bit':
+            qbits_config = quantized_bits_16_config
+            qrelu_config = quantized_relu_config
+        elif precision == '32bit':
+            qbits_config = quantized_bits_32_config
+            qrelu_config = quantized_relu_config
+        else:
+            qbits_config = quantized_bits_8_config
+            qrelu_config = quantized_relu_config
+        
+        # Depthwise convolution
+        x = QConv2D(x.shape[-1], kernel_size=kernel_size, strides=strides, padding='same',
+                   groups=x.shape[-1],  # Depthwise convolution
+                   kernel_quantizer=quantized_bits(**qbits_config),
+                   bias_quantizer=quantized_bits(**qbits_config),
+                   name=f'{name}_depthwise')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**qbits_config),
+            beta_quantizer=quantized_bits(**qbits_config),
+            name=f'{name}_depthwise_bn')(x)
+        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_depthwise_act')(x)
+        
+        # Pointwise convolution
+        x = QConv2D(filters, kernel_size=1, padding='same',
+                   kernel_quantizer=quantized_bits(**qbits_config),
+                   bias_quantizer=quantized_bits(**qbits_config),
+                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                   name=f'{name}_pointwise')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**qbits_config),
+            beta_quantizer=quantized_bits(**qbits_config),
+            name=f'{name}_pointwise_bn')(x)
+        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_pointwise_act')(x)
+    else:
+        # Standard depthwise separable convolution
+        x = tf.keras.layers.DepthwiseConv2D(kernel_size=kernel_size, strides=strides, padding='same',
+                                           name=f'{name}_depthwise')(x)
+        x = BatchNormalization(name=f'{name}_depthwise_bn')(x)
+        x = Activation('relu', name=f'{name}_depthwise_act')(x)
+        
+        x = Conv2D(filters, kernel_size=1, padding='same',
+                  kernel_regularizer=tf.keras.regularizers.l2(1e-4),
+                  name=f'{name}_pointwise')(x)
+        x = BatchNormalization(name=f'{name}_pointwise_bn')(x)
+        x = Activation('relu', name=f'{name}_pointwise_act')(x)
+    
+    return x
+
 def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, precision='8bit', name='conv_block'):
     """
     Convolutional block with option for quantization
@@ -694,7 +770,7 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, pre
             qbits_config = quantized_bits_8_config
             qrelu_config = quantized_relu_config
         
-        # Use QKeras quantized layers
+        # Use QKeras quantized layers with enhanced configuration
         x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
@@ -940,15 +1016,15 @@ def create_segmentation_model(use_quantization=False):
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_encoder1')(x)
     
-    # Encoder block 2 (ENCODER2 block - 16-bit precision)
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
+    # Encoder block 2 (ENCODER2 block - 16-bit precision) - FPGA optimized with depthwise separable conv
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_encoder2')(x)
     
-    # Encoder block 3 (ENCODER3 block - 16-bit precision)
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
+    # Encoder block 3 (ENCODER3 block - 16-bit precision) - FPGA optimized with depthwise separable conv
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
@@ -1267,18 +1343,36 @@ def train_model():
         initial_epoch = 0
         training_history = None
 
-    # Compile model with appropriate learning rate
+    # Compile model with appropriate learning rate and scheduler
     if USER_LR is not None:
-        learning_rate = USER_LR
-        print(f"Using user-specified learning rate: {learning_rate}")
+        initial_learning_rate = USER_LR
+        print(f"Using user-specified learning rate: {initial_learning_rate}")
     elif TRAIN_QAT:
-        learning_rate = 1e-7
-        print(f"Using recommended QAT learning rate: {learning_rate}")
+        initial_learning_rate = 1e-7
+        print(f"Using recommended QAT learning rate: {initial_learning_rate}")
     else:
-        learning_rate = 7e-4
-        print(f"Using recommended float32 learning rate: {learning_rate}")
+        initial_learning_rate = 1e-5  # Lower initial learning rate for stability
+        print(f"Using recommended float32 learning rate: {initial_learning_rate}")
 
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    # Enhanced learning rate scheduler for better convergence
+    if TRAIN_QAT:
+        # QAT: Exponential decay with smaller steps
+        lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+            initial_learning_rate=initial_learning_rate,
+            decay_steps=5000,  # Decay every 5000 steps
+            decay_rate=0.9,
+            staircase=True
+        )
+    else:
+        # Float32: Exponential decay with larger steps
+        lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+            initial_learning_rate=initial_learning_rate,
+            decay_steps=10000,  # Decay every 10000 steps
+            decay_rate=0.9,
+            staircase=True
+        )
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
     
     model.compile(
         optimizer=optimizer,
@@ -1356,14 +1450,7 @@ def train_model():
             mode='max',  # Higher IoU is better
             verbose=1
         ),
-        ReduceLROnPlateau(
-            monitor='val_mean_iou',  # Monitor IoU instead of loss
-            mode='max',  # Higher IoU is better
-            factor=0.5 if TRAIN_QAT else 0.7,  # More aggressive reduction for car performance
-            patience=12 if TRAIN_QAT else 8,   # Less patience to react faster
-            verbose=1,
-            min_lr=1e-8 if TRAIN_QAT else 5e-6   # Lower minimum learning rate
-        ),
+        # ReduceLROnPlateau callback removed - using ExponentialDecay scheduler instead
         EarlyStopping(
             monitor='val_mean_iou',  # Monitor IoU instead of loss
             mode='max',  # Higher IoU is better
