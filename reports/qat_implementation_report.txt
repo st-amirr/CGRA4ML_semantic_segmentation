@@ -49,6 +49,13 @@ Latest Enhancements (August 8, 2025)
    - 1x1 convolutions for efficient channel adjustments
    - Benefits: Reduced computational complexity and memory usage
 
+7. **Dilated Convolutions:**
+   - Added dilated convolutions (dilation_rate=2) in strategic locations
+   - Bridge block for better context understanding and larger receptive fields
+   - Encoder block 3 for enhanced feature extraction
+   - Feature pyramid fusion for improved multi-scale feature understanding
+   - Benefits: Better context understanding and boundary detection
+
 Data-Driven Quantization Optimization
 ------------------------------------
 

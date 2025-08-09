@@ -50,6 +50,7 @@ Project Overview and Objectives - UPDATED August 8, 2025
    - **NEW: Layer-wise Quantization:** Different precision for different layer types with stochastic rounding
    - **NEW: Enhanced Augmentation:** Comprehensive data transformation pipeline for improved robustness
    - **NEW: FPGA Architecture:** Hardware-specific optimizations for efficient deployment
+   - **NEW: Dilated Convolutions:** Strategic placement for better context understanding and larger receptive fields
 
 4. **Performance Achievements:**
    - **Phase 1 (Float32):** Successfully achieved IoU improvement with comprehensive monitoring
@@ -73,6 +74,7 @@ Project Overview and Objectives - UPDATED August 8, 2025
    - **NEW: Enhanced data augmentation** with RandomCrop, RandomGamma, and ImageNet normalization
    - **NEW: Layer-wise quantization** with stochastic rounding for enhanced QAT performance
    - **NEW: FPGA-optimized architecture** with depthwise separable convolutions and bilinear upsampling
+   - **NEW: Dilated convolutions** strategically placed for better context understanding and boundary detection
 
 6. **Dataset & Environment:**
    - Cityscapes dataset with standard directory structure (34 classes)

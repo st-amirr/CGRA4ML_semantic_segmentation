@@ -30,6 +30,7 @@ Key improvements:
 - Layer-wise quantization: BatchNorm layers use lower precision (8-bit) for stability
 - Activation quantization with stochastic rounding for better training
 - Improved learning rate scheduling with cooldown
+- Dilated convolutions for better context understanding and larger receptive fields
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
@@ -698,15 +699,16 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         
         return np.array(batch_images), np.array(batch_masks)
 
-def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, precision='8bit', name='depthwise_sep'):
+def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, use_quantization=False, precision='8bit', name='depthwise_sep'):
     """
-    Depthwise separable convolution block - FPGA optimized for reduced computation
+    Depthwise separable convolution block - FPGA optimized for reduced computation with dilated convolutions
     
     Args:
         x: Input tensor
         filters: Number of filters
         kernel_size: Kernel size
         strides: Stride value
+        dilation_rate: Dilation rate for dilated convolutions (default=1 for standard conv)
         use_quantization: Whether to use QKeras quantized layers
         precision: Quantization precision ('8bit', '16bit', '32bit')
         name: Block name
@@ -727,7 +729,7 @@ def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, use_qua
             qrelu_config = quantized_relu_config
         
         # Depthwise convolution
-        x = QConv2D(x.shape[-1], kernel_size=kernel_size, strides=strides, padding='same',
+        x = QConv2D(x.shape[-1], kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
                    groups=x.shape[-1],  # Depthwise convolution
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
@@ -753,7 +755,7 @@ def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, use_qua
         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_pointwise_act')(x)
     else:
         # Standard depthwise separable convolution
-        x = tf.keras.layers.DepthwiseConv2D(kernel_size=kernel_size, strides=strides, padding='same',
+        x = tf.keras.layers.DepthwiseConv2D(kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
                                            name=f'{name}_depthwise')(x)
         x = BatchNormalization(name=f'{name}_depthwise_bn')(x)
         x = Activation('relu', name=f'{name}_depthwise_act')(x)
@@ -766,15 +768,16 @@ def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, use_qua
     
     return x
 
-def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, precision='8bit', name='conv_block'):
+def conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, use_quantization=False, precision='8bit', name='conv_block'):
     """
-    Convolutional block with option for quantization
+    Convolutional block with option for quantization and dilated convolutions
     
     Args:
         x: Input tensor
         filters: Number of filters
         kernel_size: Kernel size
         strides: Stride value
+        dilation_rate: Dilation rate for dilated convolutions (default=1 for standard conv)
         use_quantization: Whether to use QKeras quantized layers
         precision: Quantization precision ('8bit', '16bit', '32bit')
         name: Block name
@@ -796,7 +799,7 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, pre
             qrelu_config = quantized_relu_config
         
         # Use QKeras quantized layers with enhanced configuration and layer-wise quantization
-        x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
+        x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
                    kernel_regularizer=tf.keras.regularizers.l2(1e-4),
@@ -810,7 +813,7 @@ def conv_block(x, filters, kernel_size=3, strides=1, use_quantization=False, pre
         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_qact')(x)
     else:
         # Use standard float32 layers
-        x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same',
+        x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                   name=f'{name}_conv')(x)
         x = QBatchNormalization(name=f'{name}_bn')(x)
@@ -987,10 +990,10 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
         use_quantization: Whether to use QKeras quantized layers
         precision: Quantization precision for fusion layers
     """
-    # Process bridge output with lightweight conv (reduces channels)
-    bridge_processed = conv_block(bridge_output, MODEL_CONFIG['stage4_filters'],  # 256 
+    # Process bridge output with dilated convolution for better context understanding
+    bridge_processed = conv_block(bridge_output, MODEL_CONFIG['stage4_filters'], dilation_rate=2,
                                 use_quantization=use_quantization, precision=precision, 
-                                name='pyramid_bridge')
+                                name='pyramid_bridge_dilated')
     
     # Start with bridge features
     fused_features = [bridge_processed]
@@ -1052,14 +1055,14 @@ def create_segmentation_model(use_quantization=False):
         x = Dropout(0.15, name='dropout_encoder2')(x)
     
     # Encoder block 3 (ENCODER3 block - 16-bit precision) - FPGA optimized with depthwise separable conv
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], dilation_rate=2, use_quantization=use_quantization, precision='16bit', name='enc3_dilated')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_encoder3')(x)
     
     # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], dilation_rate=2, use_quantization=use_quantization, precision='32bit', name='bridge_dilated')
     x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
@@ -1067,7 +1070,6 @@ def create_segmentation_model(use_quantization=False):
     # Feature Pyramid Fusion - combine multi-scale features
     x = feature_pyramid_fusion(skip_connections, x, use_quantization=use_quantization, precision='32bit')
     
-    # Decoder path - TRUE SYMMETRY WITH ENCODER + SKIP CONNECTION CLEANUP
     # Decoder block 3 (mirrors enc3: 128 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
     # Clean up skip connection with 1x1 conv + BN before concatenation

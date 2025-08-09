@@ -22,7 +22,12 @@ The training pipeline has been significantly enhanced with the following improve
    - Bilinear upsampling instead of transposed convolutions
    - 1x1 convolutions for efficient channel adjustments
 
-These enhancements provide superior training stability, improved QAT performance, and better FPGA deployment efficiency.
+5. **Dilated Convolutions**: Added dilated convolutions (dilation_rate=2) in strategic locations:
+   - Bridge block for better context understanding
+   - Encoder block 3 for enhanced feature extraction
+   - Feature pyramid fusion for improved multi-scale feature understanding
+
+These enhancements provide superior training stability, improved QAT performance, better FPGA deployment efficiency, and enhanced context understanding through larger receptive fields.
 
 Project Evolution Overview
 -------------------------
