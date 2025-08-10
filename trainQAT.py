@@ -1166,10 +1166,15 @@ def create_segmentation_model(use_quantization=False):
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_encoder3')(x)
     
-    # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
+    # Bridge block: use depthwise separable convs with dilation for context
+    # First: dilated conv for context at higher resolution
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], kernel_size=3, dilation_rate=2,
+                   use_quantization=use_quantization, precision='32bit', name='bridge_normal_conv')
+    # Then: downsample
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv1')
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv2')
+    # Finally: efficient depthwise separable conv
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage4_filters'], dilation_rate=2,
+                                       use_quantization=use_quantization, precision='32bit', name='bridge_sep1')
     x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
@@ -1183,8 +1188,8 @@ def create_segmentation_model(use_quantization=False):
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
-    # One conv + attention (mirror of enc3 post-down)
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv')
+    # One sep conv + attention (mirror of enc3 post-down)
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_sep')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_decoder3')(x)
@@ -1194,8 +1199,8 @@ def create_segmentation_model(use_quantization=False):
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
-    # One conv + attention (mirror of enc2 post-down)
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
+    # One sep conv + attention (mirror of enc2 post-down)
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_sep')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_decoder2')(x)
@@ -1206,8 +1211,8 @@ def create_segmentation_model(use_quantization=False):
     skip1_clean = conv_block(skip_connections[0], MODEL_CONFIG['stage1_filters'], kernel_size=1, use_quantization=use_quantization, precision='8bit', name='skip1_clean')
     
     x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip1_clean])
-    # One conv, no attention (mirror of enc1 post-down)
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
+    # One sep conv, no attention (mirror of enc1 post-down)
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_sep')
     # No CBAM for dec1 (like enc1 - shallow features)
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_decoder1')(x)
@@ -1215,8 +1220,8 @@ def create_segmentation_model(use_quantization=False):
     # Final upsampling to original resolution
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='final_up')(x)
     
-    # Final convolution before output (mirrors init: 16 filters, 8-bit precision)
-    x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='final_conv')
+    # Final convolution before output (efficient sep conv)
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='final_sep')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.05, name='dropout_final')(x)
     
