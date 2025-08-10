@@ -533,6 +533,10 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                 
                 # Process samples
                 for i in range(min(self.num_samples, len(batch_images))):
+                    # Create sample directory
+                    sample_dir = os.path.join(self.save_dir, f'sample_{i+1}')
+                    os.makedirs(sample_dir, exist_ok=True)
+                    
                     # Original image
                     original_img = (batch_images[i] * 255).astype(np.uint8)
                     
@@ -547,8 +551,8 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                     # Create combined visualization
                     combined = np.hstack([original_img, gt_colored, pred_colored])
                     
-                    # Save as image
-                    save_path = os.path.join(self.save_dir, f'epoch_{epoch+1:03d}_sample_{i+1}.png')
+                    # Save as image in sample directory
+                    save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
                     cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
                 
                 print(f"\n📸 Saved prediction visualizations for epoch {epoch+1} in {self.save_dir}")
