@@ -157,6 +157,14 @@ MODEL_CONFIG = {
     'stage4_filters': (INPUT_HEIGHT * 3) // 4,  # 384 (512*3//4 = 384) - Factor of INPUT_HEIGHT
 }
 
+# MODEL_CONFIG = {
+#     'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
+#     'stage1_filters': INPUT_HEIGHT // 16,  # 32 (512//16 = 32) - Factor of INPUT_HEIGHT
+#     'stage2_filters': INPUT_HEIGHT // 8,  # 64 (512//8 = 64) - Factor of INPUT_HEIGHT
+#     'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128) - Factor of INPUT_HEIGHT 
+#     'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256) - Factor of INPUT_HEIGHT
+# }
+
 # Enhanced quantization configurations for better QAT performance with layer-wise precision
 quantized_bits_8_config = {
     'bits': 8,
@@ -757,14 +765,14 @@ def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, dilatio
         # Standard depthwise separable convolution
         x = tf.keras.layers.DepthwiseConv2D(kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
                                            name=f'{name}_depthwise')(x)
-        x = BatchNormalization(name=f'{name}_depthwise_bn')(x)
-        x = Activation('relu', name=f'{name}_depthwise_act')(x)
+        x = QBatchNormalization(name=f'{name}_depthwise_bn')(x)
+        x = QActivation('relu', name=f'{name}_depthwise_act')(x)
         
-        x = Conv2D(filters, kernel_size=1, padding='same',
+        x = QConv2D(filters, kernel_size=1, padding='same',
                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
                   name=f'{name}_pointwise')(x)
-        x = BatchNormalization(name=f'{name}_pointwise_bn')(x)
-        x = Activation('relu', name=f'{name}_pointwise_act')(x)
+        x = QBatchNormalization(name=f'{name}_pointwise_bn')(x)
+        x = QActivation('relu', name=f'{name}_pointwise_act')(x)
     
     return x
 
