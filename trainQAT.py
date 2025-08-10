@@ -149,21 +149,21 @@ tf.debugging.set_log_device_placement(DEBUG_MODE)
 
 # Model architecture configuration - BALANCED CAPACITY WITH FACTORS OF INPUT_HEIGHT
 # Optimized for FPGA deployment with depthwise separable convolutions and memory efficiency
-MODEL_CONFIG = {
-    'init_filters': INPUT_HEIGHT // 21,  # 24 (512//21 = 24) - Factor of INPUT_HEIGHT
-    'stage1_filters': INPUT_HEIGHT // 11,  # 48 (512//11 = 48) - Factor of INPUT_HEIGHT
-    'stage2_filters': INPUT_HEIGHT // 5,  # 96 (512//5 = 96) - Factor of INPUT_HEIGHT
-    'stage3_filters': INPUT_HEIGHT // 3,  # 192 (512//3 = 192) - Factor of INPUT_HEIGHT
-    'stage4_filters': (INPUT_HEIGHT * 3) // 4,  # 384 (512*3//4 = 384) - Factor of INPUT_HEIGHT
-}
-
 # MODEL_CONFIG = {
-#     'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
-#     'stage1_filters': INPUT_HEIGHT // 16,  # 32 (512//16 = 32) - Factor of INPUT_HEIGHT
-#     'stage2_filters': INPUT_HEIGHT // 8,  # 64 (512//8 = 64) - Factor of INPUT_HEIGHT
-#     'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128) - Factor of INPUT_HEIGHT
-#     'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256) - Factor of INPUT_HEIGHT
+#     'init_filters': INPUT_HEIGHT // 21,  # 24 (512//21 = 24) - Factor of INPUT_HEIGHT
+#     'stage1_filters': INPUT_HEIGHT // 11,  # 48 (512//11 = 48) - Factor of INPUT_HEIGHT
+#     'stage2_filters': INPUT_HEIGHT // 5,  # 96 (512//5 = 96) - Factor of INPUT_HEIGHT
+#     'stage3_filters': INPUT_HEIGHT // 3,  # 192 (512//3 = 192) - Factor of INPUT_HEIGHT
+#     'stage4_filters': (INPUT_HEIGHT * 3) // 4,  # 384 (512*3//4 = 384) - Factor of INPUT_HEIGHT
 # }
+
+MODEL_CONFIG = {
+    'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
+    'stage1_filters': INPUT_HEIGHT // 16,  # 32 (512//16 = 32) - Factor of INPUT_HEIGHT
+    'stage2_filters': INPUT_HEIGHT // 8,  # 64 (512//8 = 64) - Factor of INPUT_HEIGHT
+    'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128) - Factor of INPUT_HEIGHT
+    'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256) - Factor of INPUT_HEIGHT
+}
 
 # Enhanced quantization configurations for better QAT performance with layer-wise precision
 quantized_bits_8_config = {
@@ -885,7 +885,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
             qbits_config = quantized_bits_16_config
             qrelu_config = quantized_relu_config
         # Reduce channels then restore (SE block)
-        y = QConv2D(max(1, channels // 4), kernel_size=1, padding='same',
+        y = QConv2D(channels // 4, kernel_size=1, padding='same',
                    kernel_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
                    name=f'{name}_qconv1')(y)
@@ -896,15 +896,11 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
                    name=f'{name}_qconv2')(y)
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     else:
-        y = QConv2D(max(1, channels // 4), kernel_size=1, padding='same',
-                   kernel_quantizer=quantized_bits(**quantized_bits_16_config),
-                   bias_quantizer=quantized_bits(**quantized_bits_16_config),
-                   name=f'{name}_qconv1')(y)
-        y = QActivation(quantized_relu(**quantized_relu_config), name=f'{name}_qact1')(y)
+        y = QConv2D(channels // 4, kernel_size=1, padding='same',
+                   name=f'{name}_conv1')(y)
+        y = QActivation('relu', name=f'{name}_act1')(y)
         y = QConv2D(channels, kernel_size=1, padding='same',
-                   kernel_quantizer=quantized_bits(**quantized_bits_16_config),
-                   bias_quantizer=quantized_bits(**quantized_bits_16_config),
-                   name=f'{name}_qconv2')(y)
+                   name=f'{name}_conv2')(y)
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     return Multiply(name=f'{name}_scale')([x, y])
 
@@ -1426,7 +1422,7 @@ def train_model():
         # QAT: Exponential decay with smaller steps
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
-            decay_steps=30000 // BATCH_SIZE,  # Decay every 5000 steps
+            decay_steps=15000 // BATCH_SIZE,  # Decay every 5 epoch
             decay_rate=0.9,
             staircase=True,
         )
