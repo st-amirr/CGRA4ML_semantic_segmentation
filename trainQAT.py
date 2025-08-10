@@ -107,6 +107,7 @@ print(f"  Epochs: {EPOCHS}")
 print(f"  Batch Size: {BATCH_SIZE}")
 print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
 print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
+print(f"  Dynamic Loss Weights: CE+Dice+Focal → CE+Focal (dice=0 by epoch {int(EPOCHS*0.7)})")
 
 # Define constants
 INPUT_HEIGHT = 512
@@ -286,17 +287,78 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     focal_loss = -alpha * K.pow(1 - pt, gamma) * K.log(pt)
     return K.mean(focal_loss)
 
+# Global variables for dynamic loss weights
+ce_weight = 0.4
+dice_weight = 0.5
+focal_weight = 0.1
 
 def weighted_combined_loss(y_true, y_pred):
     """
     Combined categorical crossentropy, dice loss, and focal loss
     Best of all three worlds for class imbalance and segmentation
+    Weights are updated dynamically by DynamicLossWeightCallback
     """
+    global ce_weight, dice_weight, focal_weight
     ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
     dice = dice_loss(y_true, y_pred)
     focal = focal_loss(y_true, y_pred)
-    # Emphasize dice loss for better mIoU
-    return 0.4 * ce + 0.5 * dice + 0.1 * focal
+    # Dynamic weights updated by callback
+    return ce_weight * ce + dice_weight * dice + focal_weight * focal
+
+class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
+    """
+    Callback to dynamically adjust loss weights based on epoch progress.
+    
+    Weight Progression:
+    - Epoch 0-70%: CE weight increases from 0.4 to 0.9, Dice weight decreases from 0.5 to 0.0
+    - Epoch 70%+: CE weight = 0.9, Dice weight = 0.0, Focal weight = 0.1 (constant)
+    
+    This strategy helps with:
+    1. Early training: Dice loss helps with segmentation boundaries
+    2. Late training: CE loss dominates for better classification accuracy
+    3. Focal loss: Always present to handle class imbalance
+    """
+    def __init__(self, total_epochs, transition_point=0.7):
+        super().__init__()
+        self.total_epochs = total_epochs
+        self.transition_point = transition_point  # 70% of epochs
+        self.initial_ce_weight = 0.4
+        self.initial_dice_weight = 0.5
+        self.initial_focal_weight = 0.1
+        
+    def on_epoch_begin(self, epoch, logs=None):
+        global ce_weight, dice_weight, focal_weight
+        
+        # Calculate progress (0.0 to 1.0)
+        progress = epoch / self.total_epochs
+        
+        if progress <= self.transition_point:
+            # Before transition point: gradually reduce dice weight and increase CE weight
+            # Linear interpolation from initial weights to final weights
+            transition_progress = progress / self.transition_point
+            
+            # CE weight increases from 0.4 to 0.9 (0.4 + 0.5)
+            ce_weight = self.initial_ce_weight + (0.9 - self.initial_ce_weight) * transition_progress
+            
+            # Dice weight decreases from 0.5 to 0.0
+            dice_weight = self.initial_dice_weight * (1 - transition_progress)
+            
+            # Focal weight stays constant at 0.1
+            focal_weight = self.initial_focal_weight
+            
+        else:
+            # After transition point: fixed weights
+            ce_weight = 0.9
+            dice_weight = 0.0
+            focal_weight = 0.1
+        
+        # Ensure weights sum to 1.0
+        total_weight = ce_weight + dice_weight + focal_weight
+        ce_weight /= total_weight
+        dice_weight /= total_weight
+        focal_weight /= total_weight
+        
+        print(f"Epoch {epoch+1}/{self.total_epochs} - Loss weights: CE={ce_weight:.3f}, Dice={dice_weight:.3f}, Focal={focal_weight:.3f}")
 
 # Add custom metrics for better monitoring
 def mean_iou(y_true, y_pred):
@@ -1439,8 +1501,8 @@ def train_model():
 
     model.compile(
         optimizer=optimizer,
-        loss=dice_loss,  # Use dice loss only
-        #loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        # loss=dice_loss,  # Use dice loss only
+        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
         # loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
@@ -1498,6 +1560,8 @@ def train_model():
 
     # Enhanced callbacks with proper state management
     callbacks = [
+        # Dynamic loss weight adjustment callback
+        DynamicLossWeightCallback(total_epochs=EPOCHS, transition_point=0.7),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
             save_weights_only=True,  # Save weights only for compatibility
