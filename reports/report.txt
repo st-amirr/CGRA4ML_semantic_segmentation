@@ -18,9 +18,11 @@ The training pipeline has been significantly enhanced with the following improve
    - Convolutional layers: Enhanced 8-bit configuration with stochastic rounding
 
 4. **FPGA-Optimized Architecture**: 
-   - Depthwise separable convolutions in encoder blocks 2 & 3
-   - Bilinear upsampling instead of transposed convolutions
-   - 1x1 convolutions for efficient channel adjustments
+   - Depthwise separable convolutions in encoder blocks 2 & 3 and mirrored in decoder
+   - Symmetric decoder mirrors encoder: conv + SE attention at dec3/dec2; no attention at dec1
+   - Bridge refined with two convs + SE attention; training-only dropout removed on export
+   - Feature Pyramid Fusion for multi-scale aggregation using 1x1 convs and fixed resizing
+   - Bilinear upsampling instead of transposed convolutions; 1x1 convolutions for efficient channel adjustments
 
 5. **Dilated Convolutions**: Added dilated convolutions (dilation_rate=2) in strategic locations:
    - Bridge block for better context understanding

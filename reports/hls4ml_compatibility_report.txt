@@ -115,7 +115,7 @@ Current Model Architecture Compatibility:
 - QKeras quantized variants
 
 ✅ NEW: ENHANCED FPGA OPTIMIZATIONS:
-- **DepthwiseConv2D/QDepthwiseConv2D**: Depthwise separable convolutions in encoder blocks
+- **DepthwiseConv2D/QDepthwiseConv2D**: Depthwise separable convolutions in encoder blocks and mirrored in decoder
 - **1x1 Convolutions**: Efficient channel adjustments for feature fusion
 - **Bilinear Upsampling**: Hardware-friendly upsampling method
 - **Layer-wise Quantization**: Different precision for different layer types
@@ -145,8 +145,8 @@ OPTIMIZATION STRATEGIES IMPLEMENTED
    - Used static interpolation methods
 
 3. **Model Configuration Flexibility:**
-   - Added use_simple_attention flag for lighter attention mechanism
-   - Added use_feature_pyramid flag to enable/disable FPF
+   - Symmetric encoder/decoder (conv + SE attention in mid/deep stages; no attention at shallow)
+   - Feature Pyramid Fusion for multi-scale aggregation
    - Updated quantization configurations for better compatibility
 
 4. **NEW: FPGA-Specific Optimizations:**

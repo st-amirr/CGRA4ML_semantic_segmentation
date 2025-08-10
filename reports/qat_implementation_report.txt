@@ -44,9 +44,11 @@ Latest Enhancements (August 8, 2025)
    - Benefits: Improved training stability and reduced quantization errors
 
 6. **FPGA-Optimized Architecture:**
-   - Depthwise separable convolutions in encoder blocks 2 & 3
-   - Bilinear upsampling instead of transposed convolutions
-   - 1x1 convolutions for efficient channel adjustments
+   - Depthwise separable convolutions in encoder blocks 2 & 3 and mirrored in decoder
+   - Symmetric decoder mirrors encoder: conv + SE attention at dec3 and dec2; no attention at dec1
+   - Bridge refined with two convs + SE attention; optional training-only dropout removed for export
+   - Feature Pyramid Fusion combines multi-scale features using 1x1 convs and fixed resizing
+   - Bilinear upsampling instead of transposed convolutions; 1x1 convolutions for efficient channel adjustments
    - Benefits: Reduced computational complexity and memory usage
 
 7. **Dilated Convolutions:**
@@ -149,14 +151,14 @@ Technical Implementation Achievements
 
 ### NEW: FPGA-Optimized Architecture
 1. **Depthwise Separable Convolutions:**
-   - Replaced standard convolutions in encoder blocks 2 & 3
+   - Replaced standard convolutions in encoder blocks 2 & 3 and mirrored in decoder stages
    - Reduced computational complexity and memory usage
    - More hardware-friendly operations for FPGA deployment
 
 2. **Hardware-friendly Operations:**
    - Bilinear upsampling instead of transposed convolutions
-   - 1x1 convolutions for efficient channel adjustments
-   - Simplified feature fusion for FPGA synthesis
+   - 1x1 convolutions for efficient channel adjustments and feature pyramid fusion
+   - Simplified, fixed-ratio resizing for FPGA synthesis
 
 Performance Analysis and Results
 ------------------------------

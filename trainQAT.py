@@ -1216,6 +1216,9 @@ def create_segmentation_model(use_quantization=False):
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
+    # Lightweight fusion after concatenation
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], kernel_size=1,
+                   use_quantization=use_quantization, precision='16bit', name='dec3_fuse')
     # One sep conv + attention (mirror of enc3 post-down)
     x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_sep')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_attention')
@@ -1227,6 +1230,9 @@ def create_segmentation_model(use_quantization=False):
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
+    # Lightweight fusion after concatenation
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], kernel_size=1,
+                   use_quantization=use_quantization, precision='16bit', name='dec2_fuse')
     # One sep conv + attention (mirror of enc2 post-down)
     x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_sep')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_attention')
@@ -1239,6 +1245,9 @@ def create_segmentation_model(use_quantization=False):
     skip1_clean = conv_block(skip_connections[0], MODEL_CONFIG['stage1_filters'], kernel_size=1, use_quantization=use_quantization, precision='8bit', name='skip1_clean')
     
     x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip1_clean])
+    # Lightweight fusion after concatenation
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], kernel_size=1,
+                   use_quantization=use_quantization, precision='8bit', name='dec1_fuse')
     # One sep conv, no attention (mirror of enc1 post-down)
     x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_sep')
     # No CBAM for dec1 (like enc1 - shallow features)

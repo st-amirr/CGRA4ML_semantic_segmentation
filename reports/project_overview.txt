@@ -15,13 +15,15 @@ Project Overview and Objectives - UPDATED August 8, 2025
      * 16-bit: Encoder/decoder layers - 4 integer bits, 12 fractional bits (range: [-16, 15.999756])
      * 32-bit: Bridge/critical layers - 3 integer bits, 29 fractional bits (range: [-8, 7.999999999])
      * NEW: Layer-wise quantization with stochastic rounding for enhanced QAT performance
-   - **Model Architecture:**
-     - U-Net encoder-decoder with skip connections, attention blocks, and optimized multi-precision quantization
+    - **Model Architecture:**
+      - U-Net encoder-decoder with skip connections, attention blocks, and optimized multi-precision quantization
+      - NEW: Symmetric decoder mirrors encoder: conv + SE attention in mid/deep stages (dec3/dec2), no attention at shallow stage (dec1)
      - FPGA-compatible design (no MaxPooling2D, optimized for hls4ml synthesis)
      - Input size: 512x1024x3, output: 512x1024x34 (Cityscapes dataset, 34 classes)
      - Configurable dropout layers (automatically removed for HLS4ML export)
-     - NEW: Depthwise separable convolutions in encoder blocks for FPGA efficiency
-     - NEW: Bilinear upsampling instead of transposed convolutions for hardware compatibility
+      - NEW: Depthwise separable convolutions in encoder/decoder blocks for FPGA efficiency
+      - NEW: Feature Pyramid Fusion to combine multi-scale features from skips and bridge
+      - NEW: Bilinear upsampling instead of transposed convolutions for hardware compatibility
    - **Data Pipeline:**
      - Efficient `CityscapesDataGenerator` with enhanced Albumentations augmentation
      - Configurable dataset subset ratios for testing (0.1-1.0)
