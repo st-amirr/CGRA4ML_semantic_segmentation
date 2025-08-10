@@ -59,7 +59,7 @@ import threading
 import time
 from tensorflow.keras.preprocessing.image import load_img
 from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Multiply, Dropout, Dense
-from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense
+from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 from qkeras.utils import model_save_quantized_weights
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard
 import albumentations as A
@@ -288,8 +288,8 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     return K.mean(focal_loss)
 
 # Global variables for dynamic loss weights
-ce_weight = 0.4
-dice_weight = 0.5
+ce_weight = 0.0
+dice_weight = 0.9
 focal_weight = 0.1
 
 def weighted_combined_loss(y_true, y_pred):
@@ -310,7 +310,7 @@ class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
     Callback to dynamically adjust loss weights based on epoch progress.
     
     Weight Progression:
-    - Epoch 0-70%: CE weight increases from 0.4 to 0.9, Dice weight decreases from 0.5 to 0.0
+    - Epoch 0-70%: CE weight increases from 0.0 to 0.9, Dice weight decreases from 0.9 to 0.0
     - Epoch 70%+: CE weight = 0.9, Dice weight = 0.0, Focal weight = 0.1 (constant)
     
     This strategy helps with:
@@ -322,8 +322,8 @@ class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
         super().__init__()
         self.total_epochs = total_epochs
         self.transition_point = transition_point  # 70% of epochs
-        self.initial_ce_weight = 0.4
-        self.initial_dice_weight = 0.5
+        self.initial_ce_weight = 0.0
+        self.initial_dice_weight = 0.9
         self.initial_focal_weight = 0.1
         
     def on_epoch_begin(self, epoch, logs=None):
@@ -719,8 +719,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 # Occlusion and masking
                 A.CoarseDropout(max_holes=8, max_height=32, max_width=32, min_holes=1, min_height=8, min_width=8, p=0.15),
                 
-                # Normalize with ImageNet stats for better convergence
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                # Note: Removed A.Normalize to avoid double normalization; images are scaled by /255 below
             ])
         else:
             self.transform = None
@@ -769,7 +768,12 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             
             # Normalize image
             image = image.astype(np.float32) / 255.0
-            
+
+            # Cityscapes: remap ignore label 255 to background (0) to avoid out-of-range one-hot
+            if mask.dtype != np.int32 and mask.dtype != np.int64:
+                mask = mask.astype(np.int32)
+            mask[mask == 255] = 0
+
             # Convert mask to one-hot encoding for categorical crossentropy
             mask = tf.keras.utils.to_categorical(mask, num_classes=NUM_CLASSES)
             
@@ -826,10 +830,13 @@ def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, dilatio
             qbits_config = quantized_bits_8_config
             qrelu_config = quantized_relu_config
         
-        # Depthwise convolution
-        x = QConv2D(x.shape[-1], kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
-                   groups=x.shape[-1],  # Depthwise convolution
-                   kernel_quantizer=quantized_bits(**qbits_config),
+        # Depthwise convolution using dedicated QDepthwiseConv2D (QKeras does not support groups)
+        x = QDepthwiseConv2D(
+                   kernel_size=kernel_size,
+                   strides=strides,
+                   padding='same',
+                   dilation_rate=dilation_rate,
+                   depthwise_quantizer=quantized_bits(**qbits_config),
                    bias_quantizer=quantized_bits(**qbits_config),
                    name=f'{name}_depthwise')(x)
         # Layer-wise quantization: BatchNorm uses lower precision for stability
@@ -1297,7 +1304,7 @@ def create_data_generators():
         target_height=INPUT_HEIGHT,
         target_width=INPUT_WIDTH,
         shuffle=True,
-        augment=True
+        augment=False
     )
     
     val_generator = CityscapesDataGenerator(
