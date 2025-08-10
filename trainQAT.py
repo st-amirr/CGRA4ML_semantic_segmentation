@@ -487,31 +487,56 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         self.save_frequency = save_frequency  # Save every N epochs
         os.makedirs(save_dir, exist_ok=True)
         
-        # Cityscapes color palette (simplified version)
+        # Cityscapes color palette - All 34 classes with related colors
+        # Colors are grouped by semantic similarity for better visual coherence
         self.colors = [
-            [128, 64, 128],   # road
-            [244, 35, 232],   # sidewalk  
-            [70, 70, 70],     # building
-            [102, 102, 156],  # wall
-            [190, 153, 153],  # fence
-            [153, 153, 153],  # pole
-            [250, 170, 30],   # traffic light
-            [220, 220, 0],    # traffic sign
-            [107, 142, 35],   # vegetation
-            [152, 251, 152],  # terrain
-            [70, 130, 180],   # sky
-            [220, 20, 60],    # person
-            [255, 0, 0],      # rider
-            [0, 0, 142],      # car
-            [0, 0, 70],       # truck
-            [0, 60, 100],     # bus
-            [0, 80, 100],     # train
-            [0, 0, 230],      # motorcycle
-            [119, 11, 32],    # bicycle
+            # Ground/Infrastructure (Blues/Grays)
+            [128, 64, 128],   # 0: road - main road surface
+            [232, 35, 244],   # 1: sidewalk - pedestrian walkway
+            [70, 70, 70],     # 2: building - structures
+            [156, 102, 102],  # 3: wall - vertical barriers
+            [153, 153, 190],  # 4: fence - boundaries
+            [153, 153, 153],  # 5: pole - utility poles
+            [100, 100, 100],  # 6: traffic light pole
+            [80, 80, 80],     # 7: traffic sign pole
+            [120, 120, 120],  # 8: pole group
+            [90, 90, 90],     # 9: pole group
+            
+            # Traffic Control (Red/Orange/Yellow)
+            [30, 170, 250],   # 10: traffic light - red light
+            [0, 220, 220],    # 11: traffic sign - warning signs
+            [0, 200, 200],    # 12: traffic sign - regulatory
+            [0, 180, 180],    # 13: traffic sign - information
+            [0, 160, 160],    # 14: traffic sign - guide
+            [0, 140, 140],    # 15: traffic sign - construction
+            [0, 120, 120],    # 16: traffic sign - service
+            [0, 100, 100],    # 17: traffic sign - recreation
+            
+            # Nature/Environment (Greens)
+            [35, 142, 107],   # 18: vegetation - trees
+            [152, 251, 152],  # 19: terrain - grass
+            [45, 162, 117],   # 20: vegetation - bushes
+            [55, 182, 127],   # 21: vegetation - flowers
+            [65, 202, 137],   # 22: vegetation - other
+            
+            # Sky/Atmosphere (Light Blues)
+            [180, 130, 70],   # 23: sky - clear sky
+            [160, 110, 50],   # 24: sky - cloudy
+            [140, 90, 30],    # 25: sky - overcast
+            
+            # People (Pink/Magenta)
+            [60, 20, 220],    # 26: person - pedestrians
+            [80, 40, 240],    # 27: person - cyclists
+            [100, 60, 255],   # 28: person - other
+            
+            # Vehicles (Red/Brown variations)
+            [142, 0, 0],      # 29: car - passenger vehicles
+            [70, 0, 0],       # 30: truck - commercial vehicles
+            [100, 60, 0],     # 31: bus - public transport
+            [100, 80, 0],     # 32: train - rail transport
+            [230, 0, 0],      # 33: motorcycle - two-wheelers
+            [32, 11, 119],    # 34: bicycle - human-powered
         ]
-        # Extend colors for all 34 classes
-        while len(self.colors) < NUM_CLASSES:
-            self.colors.append([np.random.randint(0, 255) for _ in range(3)])
     
     def colorize_mask(self, mask):
         """Convert class indices to RGB colors"""
@@ -1418,7 +1443,8 @@ def train_model():
 
     model.compile(
         optimizer=optimizer,
-        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        loss=dice_loss,  # Use dice loss only
+        #loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
         # loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
@@ -1428,7 +1454,7 @@ def train_model():
             road,
             sidewalk,
             traffic_light,
-            traffic_sign
+            traffic_sign,
             # precision_metric,
             # recall_metric,
             # f1_score_metric
@@ -1503,8 +1529,8 @@ def train_model():
         PredictionVisualizationCallback(
             val_generator=val_generator,
             save_dir=viz_dir,
-            num_samples=4,
-            save_frequency=5
+            num_samples=5,
+            save_frequency=1
         ),
         DetailedMetricsCallback(
             val_generator=val_generator,
