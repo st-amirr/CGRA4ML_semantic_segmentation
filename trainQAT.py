@@ -147,14 +147,14 @@ tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utili
 print(f"Eager execution enabled: {tf.executing_eagerly()}")
 tf.debugging.set_log_device_placement(DEBUG_MODE)
 
-# Model architecture configuration - GRADUAL CHANNEL SCALING FOR BETTER DETAIL RECOVERY
+# Model architecture configuration - BALANCED CAPACITY WITH FACTORS OF INPUT_HEIGHT
 # Optimized for FPGA deployment with depthwise separable convolutions and memory efficiency
 MODEL_CONFIG = {
-    'init_filters': INPUT_HEIGHT // 32,  # 24 (512//32 = 16)
-    'stage1_filters': INPUT_HEIGHT // 16,  # 48 (512//16 = 32)
-    'stage2_filters': INPUT_HEIGHT // 8,  # 85 (512//8 = 64)
-    'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128)
-    'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256)
+    'init_filters': INPUT_HEIGHT // 21,  # 24 (512//21 = 24) - Factor of INPUT_HEIGHT
+    'stage1_filters': INPUT_HEIGHT // 11,  # 48 (512//11 = 48) - Factor of INPUT_HEIGHT
+    'stage2_filters': INPUT_HEIGHT // 5,  # 96 (512//5 = 96) - Factor of INPUT_HEIGHT
+    'stage3_filters': INPUT_HEIGHT // 3,  # 192 (512//3 = 192) - Factor of INPUT_HEIGHT
+    'stage4_filters': (INPUT_HEIGHT * 3) // 4,  # 384 (512*3//4 = 384) - Factor of INPUT_HEIGHT
 }
 
 # Enhanced quantization configurations for better QAT performance with layer-wise precision
@@ -990,10 +990,10 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
         use_quantization: Whether to use QKeras quantized layers
         precision: Quantization precision for fusion layers
     """
-    # Process bridge output with dilated convolution for better context understanding
-    bridge_processed = conv_block(bridge_output, MODEL_CONFIG['stage4_filters'], dilation_rate=2,
-                                use_quantization=use_quantization, precision=precision, 
-                                name='pyramid_bridge_dilated')
+        # Process bridge output with standard convolution (removed dilation for balance)
+    bridge_processed = conv_block(bridge_output, MODEL_CONFIG['stage4_filters'],
+                                 use_quantization=use_quantization, precision=precision, 
+                                 name='pyramid_bridge')
     
     # Start with bridge features
     fused_features = [bridge_processed]
@@ -1061,8 +1061,8 @@ def create_segmentation_model(use_quantization=False):
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_encoder3')(x)
     
-    # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], dilation_rate=2, use_quantization=use_quantization, precision='32bit', name='bridge_dilated')
+    # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy with moderate dilation)
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], dilation_rate=1, use_quantization=use_quantization, precision='32bit', name='bridge')
     x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
@@ -1072,11 +1072,23 @@ def create_segmentation_model(use_quantization=False):
     
     # Decoder block 3 (mirrors enc3: 128 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
+    
+    # Adjust FPF output channels to match decoder expectations
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='dec3_channel_adjust')
+    
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
+    
+    # Resize skip connection to match spatial dimensions
+    skip3_clean = tf.keras.layers.Resizing(
+        height=x.shape[1],
+        width=x.shape[2],
+        interpolation='bilinear'
+    )(skip3_clean)
+    
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
-    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv')
+    # Use depthwise separable conv block with moderate dilation (symmetric to encoder)
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], dilation_rate=1, use_quantization=use_quantization, precision='16bit', name='dec3_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_decoder3')(x)
@@ -1085,9 +1097,17 @@ def create_segmentation_model(use_quantization=False):
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
+    
+    # Resize skip connection to match spatial dimensions
+    skip2_clean = tf.keras.layers.Resizing(
+        height=x.shape[1],
+        width=x.shape[2],
+        interpolation='bilinear'
+    )(skip2_clean)
+    
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
-    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
+    # Use depthwise separable conv block (2 convs in decoder)
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_decoder2')(x)
@@ -1097,9 +1117,16 @@ def create_segmentation_model(use_quantization=False):
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip1_clean = conv_block(skip_connections[0], MODEL_CONFIG['stage1_filters'], kernel_size=1, use_quantization=use_quantization, precision='8bit', name='skip1_clean')
     
+    # Resize skip connection to match spatial dimensions
+    skip1_clean = tf.keras.layers.Resizing(
+        height=x.shape[1],
+        width=x.shape[2],
+        interpolation='bilinear'
+    )(skip1_clean)
+    
     x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip1_clean])
-    # Single conv block (symmetrical to encoder: 1 conv, no CBAM)
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
+    # Use depthwise separable conv block (2 convs in decoder)
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
     # No CBAM for dec1 (like enc1 - shallow features)
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_decoder1')(x)
