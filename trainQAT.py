@@ -112,7 +112,7 @@ print(f"  Dynamic Loss Weights: CE+Dice+Focal → CE+Focal (dice=0 by epoch {int
 # Define constants
 INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
-NUM_CLASSES = 34
+NUM_CLASSES = 19
 DATASET_DIR = '/data'
 NUM_WORKERS = 4
 PREFETCH_MAX = 8
@@ -387,24 +387,24 @@ def mean_iou(y_true, y_pred):
 
 # Class-specific IoU metrics for Cityscapes classes
 def cars(y_true, y_pred):
-    """IoU metric for car class (Cityscapes labelIds index 26)"""
-    return class_iou(y_true, y_pred, class_id=26)
+    """IoU metric for car class (Cityscapes trainIds index 13)"""
+    return class_iou(y_true, y_pred, class_id=13)
 
 def road(y_true, y_pred):
-    """IoU metric for road class (Cityscapes labelIds index 7)"""
-    return class_iou(y_true, y_pred, class_id=7)
+    """IoU metric for road class (Cityscapes trainIds index 0)"""
+    return class_iou(y_true, y_pred, class_id=0)
 
 def sidewalk(y_true, y_pred):
-    """IoU metric for sidewalk class (Cityscapes labelIds index 8)"""
-    return class_iou(y_true, y_pred, class_id=8)
+    """IoU metric for sidewalk class (Cityscapes trainIds index 1)"""
+    return class_iou(y_true, y_pred, class_id=1)
 
 def traffic_light(y_true, y_pred):
-    """IoU metric for traffic_light class (Cityscapes labelIds index 19)"""
-    return class_iou(y_true, y_pred, class_id=19)
+    """IoU metric for traffic_light class (Cityscapes trainIds index 6)"""
+    return class_iou(y_true, y_pred, class_id=6)
 
 def traffic_sign(y_true, y_pred):
-    """IoU metric for traffic_sign class (Cityscapes labelIds index 20)"""
-    return class_iou(y_true, y_pred, class_id=20)
+    """IoU metric for traffic_sign class (Cityscapes trainIds index 7)"""
+    return class_iou(y_true, y_pred, class_id=7)
 
 def class_iou(y_true, y_pred, class_id):
     """Generic IoU metric for a specific class"""
@@ -547,8 +547,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         self.save_frequency = save_frequency  # Save every N epochs
         os.makedirs(save_dir, exist_ok=True)
         
-        # Cityscapes color palette for trainIds (0..18). We map labelIds -> trainIds for visualization.
-        # Standard colors adapted from Cityscapes official palette.
+        # Cityscapes color palette for trainIds (0..18). Standard colors.
         self.trainids_colors = [
             [128, 64, 128],   # 0: road
             [244, 35, 232],   # 1: sidewalk
@@ -571,40 +570,12 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
             [119, 11, 32],    # 18: bicycle
         ]
         self.ignore_color = [0, 0, 0]
-
-        # Build labelIds -> trainIds mapping (default 255 ignore)
-        self.labelids_to_trainids = np.full(256, 255, dtype=np.uint8)
-        mapping = {
-            7: 0,   # road
-            8: 1,   # sidewalk
-            11: 2,  # building
-            12: 3,  # wall
-            13: 4,  # fence
-            17: 5,  # pole
-            19: 6,  # traffic light
-            20: 7,  # traffic sign
-            21: 8,  # vegetation
-            22: 9,  # terrain
-            23: 10, # sky
-            24: 11, # person
-            25: 12, # rider
-            26: 13, # car
-            27: 14, # truck
-            28: 15, # bus
-            31: 16, # train
-            32: 17, # motorcycle
-            33: 18, # bicycle
-        }
-        for lid, tid in mapping.items():
-            self.labelids_to_trainids[lid] = tid
     
     def colorize_mask(self, mask):
-        """Convert labelIds mask to RGB colors via trainIds mapping"""
+        """Convert trainIds mask (0..18, 255 ignore) to RGB colors"""
         h, w = mask.shape
         colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
-        # Map labelIds -> trainIds
-        mask_flat = mask.astype(np.uint8)
-        train_ids = self.labelids_to_trainids[mask_flat]
+        train_ids = mask.astype(np.uint8)
         unique_ids = np.unique(train_ids)
         for tid in unique_ids:
             if tid == 255:
@@ -620,7 +591,12 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                 batch_idx = 0
                 while saved < self.num_samples and batch_idx < len(self.val_generator):
                     # Fetch a small validation batch
-                    batch_images, batch_masks = self.val_generator[batch_idx]
+                    batch = self.val_generator[batch_idx]
+                    if len(batch) == 3:
+                        batch_images, batch_masks, batch_weights = batch
+                    else:
+                        batch_images, batch_masks = batch
+                        batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
                     predictions = self.model.predict(batch_images, verbose=0)
 
                     take = min(self.num_samples - saved, batch_images.shape[0])
@@ -631,7 +607,14 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                         original_img = (batch_images[i] * 255).astype(np.uint8)
 
                         gt_mask = np.argmax(batch_masks[i], axis=-1)
-                        gt_colored = self.colorize_mask(gt_mask)
+                        # Reapply ignore (255) where sample weights are 0
+                        if batch_weights is not None:
+                            ignore_mask = batch_weights[i] < 0.5
+                            gt_mask_vis = gt_mask.copy()
+                            gt_mask_vis[ignore_mask] = 255
+                        else:
+                            gt_mask_vis = gt_mask
+                        gt_colored = self.colorize_mask(gt_mask_vis)
 
                         pred_mask = np.argmax(predictions[i], axis=-1)
                         pred_colored = self.colorize_mask(pred_mask)
@@ -750,14 +733,15 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
-            # Load corresponding mask
-            mask_name = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelIds.png')
+            # Load corresponding mask (prefer trainIds, fallback to labelIds)
+            mask_name = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelTrainIds.png')
             mask_path = self.mask_dir / image_path.parent.name / mask_name
-            
+            loaded_is_labelids = False
             if not mask_path.exists():
-                # Try alternative mask naming
-                mask_name = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelTrainIds.png')
+                # Fallback to labelIds
+                mask_name = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelIds.png')
                 mask_path = self.mask_dir / image_path.parent.name / mask_name
+                loaded_is_labelids = True
             
             mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
             if mask is None:
@@ -776,23 +760,36 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             # Normalize image
             image = image.astype(np.float32) / 255.0
 
-            # # Cityscapes: remap ignore label 255 to background (0) to avoid out-of-range one-hot
-            # if mask.dtype != np.int32 and mask.dtype != np.int64:
-            #     mask = mask.astype(np.int32)
-            # mask[mask == 255] = 0
+            # If loaded labelIds, map to trainIds
+            if loaded_is_labelids:
+                lid_to_tid = {
+                    7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5, 19: 6, 20: 7,
+                    21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+                    28: 15, 31: 16, 32: 17, 33: 18
+                }
+                mask_mapped = np.full_like(mask, 255)
+                for lid, tid in lid_to_tid.items():
+                    mask_mapped[mask == lid] = tid
+                mask = mask_mapped
 
-            # Convert mask to one-hot encoding for categorical crossentropy
-            mask = tf.keras.utils.to_categorical(mask, num_classes=NUM_CLASSES)
+            # Convert mask to one-hot encoding for trainIds (ignore 255 kept for sample weighting)
+            if mask.dtype != np.int32 and mask.dtype != np.int64:
+                mask = mask.astype(np.int32)
+            valid = mask != 255
+            safe_mask = np.where(valid, mask, 0)  # temporary placeholder for one-hot
+            one_hot = tf.keras.utils.to_categorical(safe_mask, num_classes=NUM_CLASSES)
+            # Build per-pixel sample weights: 0 where ignore, 1 elsewhere
+            sample_weights = valid.astype(np.float32)
+            return image, one_hot, sample_weights
             
-            return image, mask
             
         except Exception as e:
             print(f"Error loading {image_path}: {e}")
-            # Return dummy data
+            # Return dummy data (ignored by zero weights)
             dummy_image = np.zeros((self.target_height, self.target_width, 3), dtype=np.float32)
             dummy_mask = np.zeros((self.target_height, self.target_width, NUM_CLASSES), dtype=np.float32)
-            dummy_mask[:, :, 0] = 1  # Set background class
-            return dummy_image, dummy_mask
+            dummy_weights = np.zeros((self.target_height, self.target_width), dtype=np.float32)
+            return dummy_image, dummy_mask, dummy_weights
     
     def __getitem__(self, index):
         """Generate one batch of data"""
@@ -800,13 +797,15 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         
         batch_images = []
         batch_masks = []
+        batch_weights = []
         
         for path in batch_paths:
-            image, mask = self.load_and_preprocess_image(path)
+            image, mask, weights = self.load_and_preprocess_image(path)
             batch_images.append(image)
             batch_masks.append(mask)
+            batch_weights.append(weights)
         
-        return np.array(batch_images), np.array(batch_masks)
+        return np.array(batch_images), np.array(batch_masks), np.array(batch_weights)
 
 def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, use_quantization=False, precision='8bit', name='depthwise_sep'):
     """
@@ -1561,8 +1560,8 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         # loss=dice_loss,  # Use dice loss only
-        # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
-        loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
@@ -1684,13 +1683,20 @@ def train_model():
             # Note: Keras will automatically continue from the last epoch
             # The history will be merged with new training results
 
+        # Use sample weights from generator (third return value) to ignore 255 pixels in loss/metrics
+        def data_with_weights(gen):
+            for imgs, masks, weights in gen:
+                yield imgs, masks, weights
+
         history = model.fit(
-            train_generator,
+            data_with_weights(train_generator),
             epochs=EPOCHS,
             initial_epoch=initial_epoch,
-            validation_data=val_generator,
+            validation_data=data_with_weights(val_generator),
             callbacks=callbacks,
             verbose=1,
+            steps_per_epoch=len(train_generator),
+            validation_steps=len(val_generator),
             workers=NUM_WORKERS,
             use_multiprocessing=True if NUM_WORKERS > 1 else False,
             max_queue_size=PREFETCH_MAX
