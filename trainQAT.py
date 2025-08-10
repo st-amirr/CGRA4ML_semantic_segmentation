@@ -982,7 +982,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
 
 def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=False, precision='32bit'):
     """
-    Lightweight feature fusion - HLS4ML optimized for parameter efficiency
+    Lightweight feature fusion with dilation - HLS4ML optimized for parameter efficiency
     
     Args:
         skip_connections: List of skip connection features from encoder
@@ -990,20 +990,21 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
         use_quantization: Whether to use QKeras quantized layers
         precision: Quantization precision for fusion layers
     """
-        # Process bridge output with standard convolution (removed dilation for balance)
+    # Process bridge output with dilated convolution for better context understanding
+    # Use dilation rate 2 to increase receptive field without affecting skip connections
     bridge_processed = conv_block(bridge_output, MODEL_CONFIG['stage4_filters'],
-                                 use_quantization=use_quantization, precision=precision, 
-                                 name='pyramid_bridge')
+                                 dilation_rate=2, use_quantization=use_quantization, precision=precision, 
+                                 name='pyramid_bridge_dilated')
     
     # Start with bridge features
     fused_features = [bridge_processed]
     
-    # Process each skip connection with lightweight processing
+    # Process each skip connection with lightweight processing (no dilation to preserve skip connection integrity)
     for i, skip in enumerate(skip_connections):
         # Lightweight channel reduction (much smaller than 256)
         target_channels = 64  # Much smaller than 256
         
-        # Use 1x1 conv for efficient channel reduction
+        # Use 1x1 conv for efficient channel reduction (no dilation to preserve skip connections)
         skip = conv_block(skip, target_channels, kernel_size=1, 
                         use_quantization=use_quantization, precision=precision, 
                         name=f'pyramid_conv_{i}')
@@ -1055,14 +1056,14 @@ def create_segmentation_model(use_quantization=False):
         x = Dropout(0.15, name='dropout_encoder2')(x)
     
     # Encoder block 3 (ENCODER3 block - 16-bit precision) - FPGA optimized with depthwise separable conv
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], dilation_rate=2, use_quantization=use_quantization, precision='16bit', name='enc3_dilated')
+    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_encoder3')(x)
     
-    # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy with moderate dilation)
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], dilation_rate=1, use_quantization=use_quantization, precision='32bit', name='bridge')
+    # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
     x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
@@ -1070,25 +1071,14 @@ def create_segmentation_model(use_quantization=False):
     # Feature Pyramid Fusion - combine multi-scale features
     x = feature_pyramid_fusion(skip_connections, x, use_quantization=use_quantization, precision='32bit')
     
+    # Decoder path - TRUE SYMMETRY WITH ENCODER + SKIP CONNECTION CLEANUP
     # Decoder block 3 (mirrors enc3: 128 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
-    
-    # Adjust FPF output channels to match decoder expectations
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='dec3_channel_adjust')
-    
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
-    
-    # Resize skip connection to match spatial dimensions
-    skip3_clean = tf.keras.layers.Resizing(
-        height=x.shape[1],
-        width=x.shape[2],
-        interpolation='bilinear'
-    )(skip3_clean)
-    
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
-    # Use depthwise separable conv block with moderate dilation (symmetric to encoder)
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], dilation_rate=1, use_quantization=use_quantization, precision='16bit', name='dec3_conv')
+    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.2, name='dropout_decoder3')(x)
@@ -1097,17 +1087,9 @@ def create_segmentation_model(use_quantization=False):
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
-    
-    # Resize skip connection to match spatial dimensions
-    skip2_clean = tf.keras.layers.Resizing(
-        height=x.shape[1],
-        width=x.shape[2],
-        interpolation='bilinear'
-    )(skip2_clean)
-    
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
-    # Use depthwise separable conv block (2 convs in decoder)
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
+    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.15, name='dropout_decoder2')(x)
@@ -1117,16 +1099,9 @@ def create_segmentation_model(use_quantization=False):
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip1_clean = conv_block(skip_connections[0], MODEL_CONFIG['stage1_filters'], kernel_size=1, use_quantization=use_quantization, precision='8bit', name='skip1_clean')
     
-    # Resize skip connection to match spatial dimensions
-    skip1_clean = tf.keras.layers.Resizing(
-        height=x.shape[1],
-        width=x.shape[2],
-        interpolation='bilinear'
-    )(skip1_clean)
-    
     x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip1_clean])
-    # Use depthwise separable conv block (2 convs in decoder)
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
+    # Single conv block (symmetrical to encoder: 1 conv, no CBAM)
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
     # No CBAM for dec1 (like enc1 - shallow features)
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.1, name='dropout_decoder1')(x)
@@ -1151,7 +1126,6 @@ def create_segmentation_model(use_quantization=False):
     
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name='segmentation_model')
     return model
-
 def create_hls4ml_export_model(trained_model=None, use_quantization=False):
     """Create a clean model for HLS4ML export without dropout layers"""
     # Temporarily disable dropout
