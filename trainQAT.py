@@ -375,9 +375,8 @@ def mean_iou(y_true, y_pred):
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
 
-        # Match the correct calculate_iou logic
-        iou = tf.where(union > 0, intersection / union,
-                       tf.where(intersection == 0, 1.0, 0.0))  # 1.0 if both intersection and union are 0
+        # If a class is absent in both GT and prediction (union == 0), return 0.0 (ignore for averaging)
+        iou = tf.where(union > 0, intersection / union, 0.0)
         ious.append(iou)
 
     result = tf.reduce_mean(ious)
@@ -388,24 +387,24 @@ def mean_iou(y_true, y_pred):
 
 # Class-specific IoU metrics for Cityscapes classes
 def cars(y_true, y_pred):
-    """IoU metric for car class (class index 13)"""
-    return class_iou(y_true, y_pred, class_id=13)
+    """IoU metric for car class (Cityscapes labelIds index 26)"""
+    return class_iou(y_true, y_pred, class_id=26)
 
 def road(y_true, y_pred):
-    """IoU metric for road class (class index 0)"""
-    return class_iou(y_true, y_pred, class_id=0)
+    """IoU metric for road class (Cityscapes labelIds index 7)"""
+    return class_iou(y_true, y_pred, class_id=7)
 
 def sidewalk(y_true, y_pred):
-    """IoU metric for sidewalk class (class index 1)"""
-    return class_iou(y_true, y_pred, class_id=1)
+    """IoU metric for sidewalk class (Cityscapes labelIds index 8)"""
+    return class_iou(y_true, y_pred, class_id=8)
 
 def traffic_light(y_true, y_pred):
-    """IoU metric for traffic_light class (class index 6)"""
-    return class_iou(y_true, y_pred, class_id=6)
+    """IoU metric for traffic_light class (Cityscapes labelIds index 19)"""
+    return class_iou(y_true, y_pred, class_id=19)
 
 def traffic_sign(y_true, y_pred):
-    """IoU metric for traffic_sign class (class index 7)"""
-    return class_iou(y_true, y_pred, class_id=7)
+    """IoU metric for traffic_sign class (Cityscapes labelIds index 20)"""
+    return class_iou(y_true, y_pred, class_id=20)
 
 def class_iou(y_true, y_pred, class_id):
     """Generic IoU metric for a specific class"""
@@ -417,9 +416,8 @@ def class_iou(y_true, y_pred, class_id):
     intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
     union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
     
-    # Handle edge cases
-    iou = tf.where(union > 0, intersection / union,
-                   tf.where(intersection == 0, 1.0, 0.0))  # 1.0 if both intersection and union are 0
+    # Handle edge cases: if class absent in both GT and prediction (union == 0), return 0.0
+    iou = tf.where(union > 0, intersection / union, 0.0)
     
     return iou
 
@@ -549,63 +547,70 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         self.save_frequency = save_frequency  # Save every N epochs
         os.makedirs(save_dir, exist_ok=True)
         
-        # Cityscapes color palette - All 34 classes with related colors
-        # Colors are grouped by semantic similarity for better visual coherence
-        self.colors = [
-            # Ground/Infrastructure (Blues/Grays)
-            [128, 64, 128],   # 0: road - main road surface
-            [232, 35, 244],   # 1: sidewalk - pedestrian walkway
-            [70, 70, 70],     # 2: building - structures
-            [156, 102, 102],  # 3: wall - vertical barriers
-            [153, 153, 190],  # 4: fence - boundaries
-            [153, 153, 153],  # 5: pole - utility poles
-            [100, 100, 100],  # 6: traffic light pole
-            [80, 80, 80],     # 7: traffic sign pole
-            [120, 120, 120],  # 8: pole group
-            [90, 90, 90],     # 9: pole group
-            
-            # Traffic Control (Red/Orange/Yellow)
-            [30, 170, 250],   # 10: traffic light - red light
-            [0, 220, 220],    # 11: traffic sign - warning signs
-            [0, 200, 200],    # 12: traffic sign - regulatory
-            [0, 180, 180],    # 13: traffic sign - information
-            [0, 160, 160],    # 14: traffic sign - guide
-            [0, 140, 140],    # 15: traffic sign - construction
-            [0, 120, 120],    # 16: traffic sign - service
-            [0, 100, 100],    # 17: traffic sign - recreation
-            
-            # Nature/Environment (Greens)
-            [35, 142, 107],   # 18: vegetation - trees
-            [152, 251, 152],  # 19: terrain - grass
-            [45, 162, 117],   # 20: vegetation - bushes
-            [55, 182, 127],   # 21: vegetation - flowers
-            [65, 202, 137],   # 22: vegetation - other
-            
-            # Sky/Atmosphere (Light Blues)
-            [180, 130, 70],   # 23: sky - clear sky
-            [160, 110, 50],   # 24: sky - cloudy
-            [140, 90, 30],    # 25: sky - overcast
-            
-            # People (Pink/Magenta)
-            [60, 20, 220],    # 26: person - pedestrians
-            [80, 40, 240],    # 27: person - cyclists
-            [100, 60, 255],   # 28: person - other
-            
-            # Vehicles (Red/Brown variations)
-            [142, 0, 0],      # 29: car - passenger vehicles
-            [70, 0, 0],       # 30: truck - commercial vehicles
-            [100, 60, 0],     # 31: bus - public transport
-            [100, 80, 0],     # 32: train - rail transport
-            [230, 0, 0],      # 33: motorcycle - two-wheelers
-            [32, 11, 119],    # 34: bicycle - human-powered
+        # Cityscapes color palette for trainIds (0..18). We map labelIds -> trainIds for visualization.
+        # Standard colors adapted from Cityscapes official palette.
+        self.trainids_colors = [
+            [128, 64, 128],   # 0: road
+            [244, 35, 232],   # 1: sidewalk
+            [70, 70, 70],     # 2: building
+            [102, 102, 156],  # 3: wall
+            [190, 153, 153],  # 4: fence
+            [153, 153, 153],  # 5: pole
+            [250, 170, 30],   # 6: traffic light
+            [220, 220, 0],    # 7: traffic sign
+            [107, 142, 35],   # 8: vegetation
+            [152, 251, 152],  # 9: terrain
+            [70, 130, 180],   # 10: sky
+            [220, 20, 60],    # 11: person
+            [255, 0, 0],      # 12: rider
+            [0, 0, 142],      # 13: car
+            [0, 0, 70],       # 14: truck
+            [0, 60, 100],     # 15: bus
+            [0, 80, 100],     # 16: train
+            [0, 0, 230],      # 17: motorcycle
+            [119, 11, 32],    # 18: bicycle
         ]
+        self.ignore_color = [0, 0, 0]
+
+        # Build labelIds -> trainIds mapping (default 255 ignore)
+        self.labelids_to_trainids = np.full(256, 255, dtype=np.uint8)
+        mapping = {
+            7: 0,   # road
+            8: 1,   # sidewalk
+            11: 2,  # building
+            12: 3,  # wall
+            13: 4,  # fence
+            17: 5,  # pole
+            19: 6,  # traffic light
+            20: 7,  # traffic sign
+            21: 8,  # vegetation
+            22: 9,  # terrain
+            23: 10, # sky
+            24: 11, # person
+            25: 12, # rider
+            26: 13, # car
+            27: 14, # truck
+            28: 15, # bus
+            31: 16, # train
+            32: 17, # motorcycle
+            33: 18, # bicycle
+        }
+        for lid, tid in mapping.items():
+            self.labelids_to_trainids[lid] = tid
     
     def colorize_mask(self, mask):
-        """Convert class indices to RGB colors"""
+        """Convert labelIds mask to RGB colors via trainIds mapping"""
         h, w = mask.shape
         colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
-        for class_id in range(min(len(self.colors), NUM_CLASSES)):
-            colored_mask[mask == class_id] = self.colors[class_id]
+        # Map labelIds -> trainIds
+        mask_flat = mask.astype(np.uint8)
+        train_ids = self.labelids_to_trainids[mask_flat]
+        unique_ids = np.unique(train_ids)
+        for tid in unique_ids:
+            if tid == 255:
+                colored_mask[train_ids == 255] = self.ignore_color
+            elif 0 <= tid < len(self.trainids_colors):
+                colored_mask[train_ids == tid] = self.trainids_colors[tid]
         return colored_mask
     
     def on_epoch_end(self, epoch, logs=None):
@@ -771,10 +776,10 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             # Normalize image
             image = image.astype(np.float32) / 255.0
 
-            # Cityscapes: remap ignore label 255 to background (0) to avoid out-of-range one-hot
-            if mask.dtype != np.int32 and mask.dtype != np.int64:
-                mask = mask.astype(np.int32)
-            mask[mask == 255] = 0
+            # # Cityscapes: remap ignore label 255 to background (0) to avoid out-of-range one-hot
+            # if mask.dtype != np.int32 and mask.dtype != np.int64:
+            #     mask = mask.astype(np.int32)
+            # mask[mask == 255] = 0
 
             # Convert mask to one-hot encoding for categorical crossentropy
             mask = tf.keras.utils.to_categorical(mask, num_classes=NUM_CLASSES)
@@ -1346,7 +1351,7 @@ def create_data_generators():
         target_height=INPUT_HEIGHT,
         target_width=INPUT_WIDTH,
         shuffle=True,
-        augment=False
+        augment=True
     )
     
     val_generator = CityscapesDataGenerator(
@@ -1556,8 +1561,8 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         # loss=dice_loss,  # Use dice loss only
-        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
-        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
