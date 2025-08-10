@@ -310,7 +310,7 @@ class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
     Callback to dynamically adjust loss weights based on epoch progress.
     
     Weight Progression:
-    - Epoch 0-70%: CE weight increases from 0.0 to 0.9, Dice weight decreases from 0.9 to 0.0
+    - Epoch 0-70%: CE weight increases from 0.2 to 0.9, Dice weight decreases from 0.7 to 0.0
     - Epoch 70%+: CE weight = 0.9, Dice weight = 0.0, Focal weight = 0.1 (constant)
     
     This strategy helps with:
@@ -322,8 +322,8 @@ class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
         super().__init__()
         self.total_epochs = total_epochs
         self.transition_point = transition_point  # 70% of epochs
-        self.initial_ce_weight = 0.0
-        self.initial_dice_weight = 0.9
+        self.initial_ce_weight = 0.2
+        self.initial_dice_weight = 0.7
         self.initial_focal_weight = 0.1
         
     def on_epoch_begin(self, epoch, logs=None):
@@ -337,10 +337,10 @@ class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
             # Linear interpolation from initial weights to final weights
             transition_progress = progress / self.transition_point
             
-            # CE weight increases from 0.4 to 0.9 (0.4 + 0.5)
+            # CE weight increases from 0.2 to 0.9
             ce_weight = self.initial_ce_weight + (0.9 - self.initial_ce_weight) * transition_progress
             
-            # Dice weight decreases from 0.5 to 0.0
+            # Dice weight decreases from 0.7 to 0.0
             dice_weight = self.initial_dice_weight * (1 - transition_progress)
             
             # Focal weight stays constant at 0.1
@@ -1550,11 +1550,10 @@ def train_model():
         # Float32: Exponential decay with larger steps
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
-            decay_steps=10000,  # Decay every 10000 steps
-            decay_rate=0.9,
-            staircase=True
+            decay_steps=15000 // BATCH_SIZE,  # Decay every 5 epoch
+            decay_rate=0.8,
+            staircase=True,
         )
-
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
     model.compile(
