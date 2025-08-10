@@ -611,38 +611,40 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         if (epoch + 1) % self.save_frequency == 0:
             try:
-                # Get a batch of validation data
-                batch_images, batch_masks = self.val_generator[0]
-                
-                # Make predictions
-                predictions = self.model.predict(batch_images, verbose=0)
-                
-                # Process samples
-                for i in range(self.num_samples):
-                    # Create sample directory
-                    sample_dir = os.path.join(self.save_dir, f'sample_{i+1}')
-                    os.makedirs(sample_dir, exist_ok=True)
-                    
-                    # Original image
-                    original_img = (batch_images[i] * 255).astype(np.uint8)
-                    
-                    # Ground truth mask
-                    gt_mask = np.argmax(batch_masks[i], axis=-1)
-                    gt_colored = self.colorize_mask(gt_mask)
-                    
-                    # Predicted mask
-                    pred_mask = np.argmax(predictions[i], axis=-1)
-                    pred_colored = self.colorize_mask(pred_mask)
-                    
-                    # Create combined visualization
-                    combined = np.hstack([original_img, gt_colored, pred_colored])
-                    
-                    # Save as image in sample directory
-                    save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
-                    cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
-                
-                print(f"\n📸 Saved prediction visualizations for epoch {epoch+1} in {self.save_dir}")
-                
+                saved = 0
+                batch_idx = 0
+                while saved < self.num_samples and batch_idx < len(self.val_generator):
+                    # Fetch a small validation batch
+                    batch_images, batch_masks = self.val_generator[batch_idx]
+                    predictions = self.model.predict(batch_images, verbose=0)
+
+                    take = min(self.num_samples - saved, batch_images.shape[0])
+                    for i in range(take):
+                        sample_dir = os.path.join(self.save_dir, f'sample_{saved + 1}')
+                        os.makedirs(sample_dir, exist_ok=True)
+
+                        original_img = (batch_images[i] * 255).astype(np.uint8)
+
+                        gt_mask = np.argmax(batch_masks[i], axis=-1)
+                        gt_colored = self.colorize_mask(gt_mask)
+
+                        pred_mask = np.argmax(predictions[i], axis=-1)
+                        pred_colored = self.colorize_mask(pred_mask)
+
+                        combined = np.hstack([original_img, gt_colored, pred_colored])
+
+                        save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
+                        cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+
+                        saved += 1
+
+                    batch_idx += 1
+
+                if saved > 0:
+                    print(f"\n📸 Saved {saved} validation visualizations for epoch {epoch+1} in {self.save_dir}")
+                else:
+                    print(f"\n⚠️  No validation samples available to visualize at epoch {epoch+1}")
+
             except Exception as e:
                 print(f"⚠️  Could not save prediction visualizations: {e}")
 
@@ -1110,13 +1112,39 @@ def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=Fal
                         use_quantization=use_quantization, precision=precision, 
                         name=f'pyramid_conv_{i}')
         
-        # Resize all features to match bridge spatial dimensions
+        # Resize all features to match bridge spatial dimensions using HLS4ML-supported ops
         if skip.shape[1] != bridge_output.shape[1] or skip.shape[2] != bridge_output.shape[2]:
-            skip = tf.keras.layers.Resizing(
-                height=bridge_output.shape[1],
-                width=bridge_output.shape[2],
-                interpolation='bilinear'
-            )(skip)
+            skip_h = int(skip.shape[1])
+            skip_w = int(skip.shape[2])
+            bridge_h = int(bridge_output.shape[1])
+            bridge_w = int(bridge_output.shape[2])
+
+            if skip_h > bridge_h and skip_w > bridge_w:
+                # Downsample with MaxPooling2D (supported by hls4ml)
+                pool_h = skip_h // bridge_h
+                pool_w = skip_w // bridge_w
+                skip = tf.keras.layers.MaxPooling2D(pool_size=(pool_h, pool_w), strides=(pool_h, pool_w), padding='same')(skip)
+            elif skip_h < bridge_h and skip_w < bridge_w:
+                # Upsample with UpSampling2D
+                up_h = bridge_h // skip_h
+                up_w = bridge_w // skip_w
+                skip = tf.keras.layers.UpSampling2D(size=(up_h, up_w), interpolation='bilinear')(skip)
+            else:
+                # Fallback: if only one dimension differs, adjust that dimension via pooling/upsampling
+                if skip_h != bridge_h:
+                    if skip_h > bridge_h:
+                        pool_h = skip_h // bridge_h
+                        skip = tf.keras.layers.MaxPooling2D(pool_size=(pool_h, 1), strides=(pool_h, 1), padding='same')(skip)
+                    else:
+                        up_h = bridge_h // skip_h
+                        skip = tf.keras.layers.UpSampling2D(size=(up_h, 1), interpolation='bilinear')(skip)
+                if skip_w != bridge_w:
+                    if skip_w > bridge_w:
+                        pool_w = skip_w // bridge_w
+                        skip = tf.keras.layers.MaxPooling2D(pool_size=(1, pool_w), strides=(1, pool_w), padding='same')(skip)
+                    else:
+                        up_w = bridge_w // skip_w
+                        skip = tf.keras.layers.UpSampling2D(size=(1, up_w), interpolation='bilinear')(skip)
         
         fused_features.append(skip)
     
@@ -1606,7 +1634,7 @@ def train_model():
         PredictionVisualizationCallback(
             val_generator=val_generator,
             save_dir=viz_dir,
-            num_samples=5,
+            num_samples=4,
             save_frequency=1
         ),
         DetailedMetricsCallback(
