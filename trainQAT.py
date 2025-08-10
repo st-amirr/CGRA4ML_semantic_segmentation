@@ -1623,19 +1623,19 @@ def train_model():
             mode='max',  # Higher IoU is better
             verbose=1
         ),
-        # ReduceLROnPlateau callback removed - using ExponentialDecay scheduler instead
-        EarlyStopping(
-            monitor='val_mean_iou',  # Monitor IoU instead of loss
-            mode='max',  # Higher IoU is better
-            patience=15,
-            verbose=1,
-            restore_best_weights=True
-        ),
+        # # ReduceLROnPlateau callback removed - using ExponentialDecay scheduler instead
+        # EarlyStopping(
+        #     monitor='val_mean_iou',  # Monitor IoU instead of loss
+        #     mode='max',  # Higher IoU is better
+        #     patience=,
+        #     verbose=1,
+        #     restore_best_weights=True
+        # ),
         PredictionVisualizationCallback(
             val_generator=val_generator,
             save_dir=viz_dir,
             num_samples=4,
-            save_frequency=1
+            save_frequency=5
         ),
         DetailedMetricsCallback(
             val_generator=val_generator,
