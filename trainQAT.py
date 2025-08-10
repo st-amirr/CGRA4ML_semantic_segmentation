@@ -958,12 +958,12 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
                    name=f'{name}_qconv2')(y)
         y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
     else:
-        y = QConv2D(channels // 4, kernel_size=1, padding='same',
+        y = Conv2D(channels // 4, kernel_size=1, padding='same',
                    name=f'{name}_conv1')(y)
-        y = QActivation('relu', name=f'{name}_act1')(y)
-        y = QConv2D(channels, kernel_size=1, padding='same',
+        y = Activation('relu', name=f'{name}_act1')(y)
+        y = Conv2D(channels, kernel_size=1, padding='same',
                    name=f'{name}_conv2')(y)
-        y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
+        y = Activation('sigmoid', name=f'{name}_sigmoid')(y)
     return Multiply(name=f'{name}_scale')([x, y])
 
 # def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
@@ -1137,6 +1137,7 @@ def create_segmentation_model(use_quantization=False):
     
     # Encoder block 1 (ENCODER1 block - 8-bit precision)
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], strides=2, use_quantization=use_quantization, precision='8bit', name='enc1_down')
+    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='enc1_conv')
     # No CBAM for shallow features (spatial attention not needed here)
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
@@ -1144,6 +1145,7 @@ def create_segmentation_model(use_quantization=False):
     
     # Encoder block 2 (ENCODER2 block - 16-bit precision) - FPGA optimized with depthwise separable conv
     x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
+    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='enc2_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
@@ -1151,6 +1153,7 @@ def create_segmentation_model(use_quantization=False):
     
     # Encoder block 3 (ENCODER3 block - 16-bit precision) - FPGA optimized with depthwise separable conv
     x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
+    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='enc3_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_attention')
     skip_connections.append(x)  # Store features BEFORE dropout
     if USE_DROPOUT_DURING_TRAINING:
@@ -1158,6 +1161,8 @@ def create_segmentation_model(use_quantization=False):
     
     # Bridge block (BRIDGE block - 32-bit precision for maximum accuracy)
     x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv1')
+    x = conv_block(x, MODEL_CONFIG['stage4_filters'], use_quantization=use_quantization, precision='32bit', name='bridge_conv2')
     x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_attention')
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(0.25, name='dropout_bridge')(x)
@@ -1165,13 +1170,13 @@ def create_segmentation_model(use_quantization=False):
     # Feature Pyramid Fusion - combine multi-scale features
     x = feature_pyramid_fusion(skip_connections, x, use_quantization=use_quantization, precision='32bit')
     
-    # Decoder path - TRUE SYMMETRY WITH ENCODER + SKIP CONNECTION CLEANUP
+    # Decoder path - symmetry with encoder + skip connection cleanup
     # Decoder block 3 (mirrors enc3: 128 filters, 16-bit precision)
     x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
     x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
-    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
+    # One conv + attention (mirror of enc3 post-down)
     x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_attention')
     if USE_DROPOUT_DURING_TRAINING:
@@ -1182,7 +1187,7 @@ def create_segmentation_model(use_quantization=False):
     # Clean up skip connection with 1x1 conv + BN before concatenation
     skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
     x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
-    # Single conv block (symmetrical to encoder: 1 conv + 1 attention)
+    # One conv + attention (mirror of enc2 post-down)
     x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_conv')
     x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_attention')
     if USE_DROPOUT_DURING_TRAINING:
@@ -1194,7 +1199,7 @@ def create_segmentation_model(use_quantization=False):
     skip1_clean = conv_block(skip_connections[0], MODEL_CONFIG['stage1_filters'], kernel_size=1, use_quantization=use_quantization, precision='8bit', name='skip1_clean')
     
     x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip1_clean])
-    # Single conv block (symmetrical to encoder: 1 conv, no CBAM)
+    # One conv, no attention (mirror of enc1 post-down)
     x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_conv')
     # No CBAM for dec1 (like enc1 - shallow features)
     if USE_DROPOUT_DURING_TRAINING:
