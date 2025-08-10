@@ -161,7 +161,7 @@ MODEL_CONFIG = {
 #     'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
 #     'stage1_filters': INPUT_HEIGHT // 16,  # 32 (512//16 = 32) - Factor of INPUT_HEIGHT
 #     'stage2_filters': INPUT_HEIGHT // 8,  # 64 (512//8 = 64) - Factor of INPUT_HEIGHT
-#     'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128) - Factor of INPUT_HEIGHT 
+#     'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128) - Factor of INPUT_HEIGHT
 #     'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256) - Factor of INPUT_HEIGHT
 # }
 
@@ -462,7 +462,6 @@ def f1_score_metric(y_true, y_pred):
     return f1
 
 
-
 def get_memory_usage():
     """Get current memory usage in MB"""
     process = psutil.Process(os.getpid())
@@ -532,7 +531,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                 predictions = self.model.predict(batch_images, verbose=0)
                 
                 # Process samples
-                for i in range(min(self.num_samples, len(batch_images))):
+                for i in range(self.num_samples):
                     # Create sample directory
                     sample_dir = os.path.join(self.save_dir, f'sample_{i+1}')
                     os.makedirs(sample_dir, exist_ok=True)
@@ -887,7 +886,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
 # def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
 #     """
 #     Enhanced attention with integrated conv layers - HLS4ML optimized
-    
+
 #     Args:
 #         x: Input tensor
 #         reduction_ratio: Reduction ratio for channel attention MLP
@@ -896,7 +895,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
 #         name: Block name
 #     """
 #     channels = x.shape[-1]
-    
+
 #     # Initial feature processing with conv layers (integrated into CBAM)
 #     if use_quantization:
 #         # Select quantization config based on precision
@@ -912,7 +911,7 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
 #         else:
 #             qbits_config = quantized_bits_16_config
 #             qrelu_config = quantized_relu_config
-        
+
 #         # Integrated conv processing before attention
 #         x = QConv2D(channels, kernel_size=3, padding='same',
 #                    kernel_quantizer=quantized_bits(**qbits_config),
@@ -932,46 +931,46 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
 #                   name=f'{name}_conv1')(x)
 #         x = BatchNormalization(name=f'{name}_bn1')(x)
 #         x = Activation('relu', name=f'{name}_act1')(x)
-    
+
 #     # Channel attention - using only supported layers
 #     channel_avg = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_channel_avg')(x)
 #     channel_max = tf.keras.layers.GlobalMaxPooling2D(name=f'{name}_channel_max')(x)
-    
+
 #     # Shared MLP for channel attention
 #     if use_quantization:
 #         # Channel attention MLP for average pooling
-#         channel_avg = QDense(channels // reduction_ratio, 
+#         channel_avg = QDense(channels // reduction_ratio,
 #                            kernel_quantizer=quantized_bits(**qbits_config),
 #                            name=f'{name}_channel_mlp_avg')(channel_avg)
 #         channel_avg = QActivation(quantized_relu(**qrelu_config))(channel_avg)
-#         channel_avg = QDense(channels, 
+#         channel_avg = QDense(channels,
 #                            kernel_quantizer=quantized_bits(**qbits_config),
 #                            name=f'{name}_channel_mlp_avg2')(channel_avg)
-        
+
 #         # Channel attention MLP for max pooling
-#         channel_max = QDense(channels // reduction_ratio, 
+#         channel_max = QDense(channels // reduction_ratio,
 #                            kernel_quantizer=quantized_bits(**qbits_config),
 #                            name=f'{name}_channel_mlp_max')(channel_max)
 #         channel_max = QActivation(quantized_relu(**qrelu_config))(channel_max)
-#         channel_max = QDense(channels, 
+#         channel_max = QDense(channels,
 #                            kernel_quantizer=quantized_bits(**qbits_config),
 #                            name=f'{name}_channel_mlp_max2')(channel_max)
 #     else:
 #         # Standard float32 layers for channel attention
-#         channel_avg = Dense(channels // reduction_ratio, activation='relu', 
+#         channel_avg = Dense(channels // reduction_ratio, activation='relu',
 #                           name=f'{name}_channel_mlp_avg')(channel_avg)
 #         channel_avg = Dense(channels, name=f'{name}_channel_mlp_avg2')(channel_avg)
-        
-#         channel_max = Dense(channels // reduction_ratio, activation='relu', 
+
+#         channel_max = Dense(channels // reduction_ratio, activation='relu',
 #                           name=f'{name}_channel_mlp_max')(channel_max)
 #         channel_max = Dense(channels, name=f'{name}_channel_mlp_max2')(channel_max)
-    
+
 #     # Combine channel attention
 #     channel_add = tf.keras.layers.Add()([channel_avg, channel_max])
 #     channel_attention = Activation('sigmoid')(channel_add)
 #     channel_attention = tf.keras.layers.Reshape((1, 1, channels))(channel_attention)
 #     x_channel = Multiply()([x, channel_attention])
-    
+
 #     # Spatial attention - HLS4ML optimized (no Lambda layers)
 #     # Create spatial attention using Conv2D operations - FPGA optimized with smaller kernels
 #     if use_quantization:
@@ -984,12 +983,12 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
 #                                   name=f'{name}_spatial_conv')(spatial_reduce)
 #         spatial_attention = QActivation('sigmoid')(spatial_attention)
 #     else:
-#         spatial_reduce = Conv2D(2, kernel_size=1, padding='same', 
+#         spatial_reduce = Conv2D(2, kernel_size=1, padding='same',
 #                               name=f'{name}_spatial_reduce')(x_channel)
 #         # Use 3x3 kernel instead of 7x7 for FPGA compatibility
-#         spatial_attention = Conv2D(1, kernel_size=3, padding='same', 
+#         spatial_attention = Conv2D(1, kernel_size=3, padding='same',
 #                                  activation='sigmoid', name=f'{name}_spatial_conv')(spatial_reduce)
-    
+
 #     return Multiply()([x_channel, spatial_attention])
 
 def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=False, precision='32bit'):
@@ -1286,20 +1285,20 @@ def train_model():
     initial_epoch = 0
     model = None
     model_prefix = "qat_model" if TRAIN_QAT else "float32_model"
-    
+
     # Check for existing checkpoints
     latest_checkpoint = None
-    
+
     # Look for the most recent checkpoint
     if not LOAD_MODEL_PATH:
         checkpoint_pattern = os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_*.keras')
         checkpoints = glob.glob(checkpoint_pattern)
-        
+
         if checkpoints:
             # Sort by modification time to get the latest
             latest_checkpoint = max(checkpoints, key=os.path.getmtime)
             print(f"\nFound latest checkpoint: {latest_checkpoint}")
-            
+
             # Extract epoch number from filename
             try:
                 epoch_part = latest_checkpoint.split('checkpoint_epoch_')[1].split('.')[0]
@@ -1313,11 +1312,11 @@ def train_model():
     # The history object is returned by model.fit() and contains all training metrics
     training_history = None
     print(f"Training history will be managed by TensorFlow's built-in history object")
-    
+
     print(f"Final initial_epoch determined: {initial_epoch}")
 
     # Model loading strategy following Keras best practices
-    
+
     if LOAD_MODEL_PATH:
         # Load specific model path
         print(f"Loading model from specified path: {LOAD_MODEL_PATH}")
@@ -1333,7 +1332,7 @@ def train_model():
                     float32_model = create_segmentation_model(use_quantization=False)
                     float32_model.load_weights(LOAD_MODEL_PATH)
                 model = convert_float32_to_qat(float32_model)
-                
+
                 # Reset epoch for QAT training
                 initial_epoch = 0
                 training_history = None
@@ -1354,7 +1353,7 @@ def train_model():
         except Exception as e:
             print(f"Failed to load model from {LOAD_MODEL_PATH}: {e}")
             model = None
-    
+
     elif latest_checkpoint:
         # Load from checkpoint
         try:
@@ -1374,7 +1373,7 @@ def train_model():
         except Exception as e:
             print(f"Failed to load checkpoint: {e}")
             model = None
-    
+
     # Create new model if loading failed
     if model is None:
         if TRAIN_QAT:
@@ -1394,7 +1393,7 @@ def train_model():
         initial_learning_rate = 1e-7
         print(f"Using recommended QAT learning rate: {initial_learning_rate}")
     else:
-        initial_learning_rate = 1e-4  # Lower initial learning rate for stability
+        initial_learning_rate = 5e-3  # Lower initial learning rate for stability
         print(f"Using recommended float32 learning rate: {initial_learning_rate}")
 
     # Enhanced learning rate scheduler for better convergence
@@ -1402,9 +1401,9 @@ def train_model():
         # QAT: Exponential decay with smaller steps
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
-            decay_steps=5000,  # Decay every 5000 steps
+            decay_steps=30000 // BATCH_SIZE,  # Decay every 5000 steps
             decay_rate=0.9,
-            staircase=True
+            staircase=True,
         )
     else:
         # Float32: Exponential decay with larger steps
@@ -1416,7 +1415,7 @@ def train_model():
         )
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
-    
+
     model.compile(
         optimizer=optimizer,
         loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
@@ -1449,7 +1448,7 @@ def train_model():
     else:
         tensorboard_log_dir = os.path.join(model_dir, 'tb_logs')
         print(f"Using float32 TensorBoard log directory: {tensorboard_log_dir}")
-    
+
     try:
         os.makedirs(tensorboard_log_dir, exist_ok=True)
     except FileExistsError:
@@ -1533,13 +1532,13 @@ def train_model():
     # Train model with proper state management
     try:
         print(f"Starting training from epoch {initial_epoch}...")
-        
+
         # If we have training history, we need to handle it properly
         if training_history:
             print("Resuming training with existing history")
             # Note: Keras will automatically continue from the last epoch
             # The history will be merged with new training results
-        
+
         history = model.fit(
             train_generator,
             epochs=EPOCHS,
@@ -1596,7 +1595,7 @@ def train_model():
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
         print("Saving current model state...")
-        
+
         # Save interrupted model (compatible format)
         interrupted_model_path = os.path.join(model_dir, f'{model_prefix}_interrupted.keras')
         try:
@@ -1606,7 +1605,7 @@ def train_model():
             print(f"Warning: Could not save full interrupted model, saving weights only: {e}")
             model.save_weights(interrupted_model_path)
             print(f"Interrupted weights saved to: {interrupted_model_path}")
-        
+
         return None
 
     except Exception as e:
