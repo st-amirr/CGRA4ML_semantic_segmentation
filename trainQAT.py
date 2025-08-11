@@ -224,13 +224,10 @@ quantized_relu_config = {
     'use_stochastic_rounding': True
 }
 
-# Disable layout optimizer to prevent conflicts with QKeras
-tf.config.optimizer.set_experimental_options({
-    'layout_optimizer': False,
-    'constant_folding': True,
-    'shape_optimization': True,
-    'remapping': True,
-})
+# # Disable layout optimizer to prevent conflicts with QKeras
+# tf.config.optimizer.set_experimental_options({
+#     'layout_optimizer': False
+# })
 
 # Add these loss functions after the imports
 def dice_loss(y_true, y_pred, smooth=1e-7):
@@ -684,9 +681,8 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             self.transform = A.Compose([
                 # Geometric augmentations - more aggressive for robustness
                 A.RandomCrop(width=self.target_width, height=self.target_height, p=1),
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.2),
-                A.Rotate(limit=45, p=0.4, border_mode=cv2.BORDER_CONSTANT),
+                A.HorizontalFlip(p=0.3),
+                A.Rotate(limit=15, p=0.3, border_mode=cv2.BORDER_CONSTANT),
                 A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.3),
                 A.ElasticTransform(alpha=1, sigma=50, p=0.15),
                 A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.15),
@@ -700,7 +696,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 # Noise and blur augmentations
                 A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),
                 A.GaussianBlur(blur_limit=(3, 7), p=0.15),
-                A.MotionBlur(blur_limit=7, p=0.15),
+                A.MotionBlur(blur_limit=4, p=0.15),
                 
                 # Weather and lighting effects
                 A.RandomRain(drop_length=20, drop_width=1, drop_color=(200, 200, 200), blur_value=3, brightness_coefficient=0.7, rain_type='drizzle', p=0.1),
@@ -1551,7 +1547,7 @@ def train_model():
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
             decay_steps=15000 // BATCH_SIZE,  # Decay every 5 epoch
-            decay_rate=0.8,
+            decay_rate=0.7,
             staircase=True,
         )
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
@@ -1559,8 +1555,8 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         # loss=dice_loss,  # Use dice loss only
-        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
-        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
@@ -1647,7 +1643,7 @@ def train_model():
             val_generator=val_generator,
             save_dir=viz_dir,
             num_samples=4,
-            save_frequency=5
+            save_frequency=2
         ),
         DetailedMetricsCallback(
             val_generator=val_generator,
@@ -1682,20 +1678,14 @@ def train_model():
             # Note: Keras will automatically continue from the last epoch
             # The history will be merged with new training results
 
-        # Use sample weights from generator (third return value) to ignore 255 pixels in loss/metrics
-        def data_with_weights(gen):
-            for imgs, masks, weights in gen:
-                yield imgs, masks, weights
-
+        # Sequence returns (x, y, sample_weight) triples; pass it directly so Keras handles epochs correctly
         history = model.fit(
-            data_with_weights(train_generator),
+            train_generator,
             epochs=EPOCHS,
             initial_epoch=initial_epoch,
-            validation_data=data_with_weights(val_generator),
+            validation_data=val_generator,
             callbacks=callbacks,
             verbose=1,
-            steps_per_epoch=len(train_generator),
-            validation_steps=len(val_generator),
             workers=NUM_WORKERS,
             use_multiprocessing=True if NUM_WORKERS > 1 else False,
             max_queue_size=PREFETCH_MAX
