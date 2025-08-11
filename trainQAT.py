@@ -373,41 +373,50 @@ def mean_iou(y_true, y_pred):
     return result
 
 # Class-specific IoU metrics for Cityscapes classes
+def group_class_iou(y_true, y_pred, target_class_ids):
+    """IoU for a group of classes treated as a single category."""
+    # Convert to class predictions
+    y_pred_ids = tf.argmax(y_pred, axis=-1)
+    y_true_ids = tf.argmax(y_true, axis=-1)
+
+    # Build boolean masks for group membership
+    def in_group(ids):
+        stacked = tf.stack([tf.equal(ids, tid) for tid in target_class_ids], axis=-1)
+        return tf.reduce_any(stacked, axis=-1)
+
+    pred_pos = in_group(y_pred_ids)
+    true_pos = in_group(y_true_ids)
+
+    intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_pos, pred_pos), tf.float32))
+    union = tf.reduce_sum(tf.cast(tf.logical_or(true_pos, pred_pos), tf.float32))
+    iou = tf.where(union > 0, intersection / union,
+                   tf.where(intersection == 0, 1.0, 0.0))
+    return iou
+
 def cars(y_true, y_pred):
-    """IoU metric for car class (class index 13)"""
-    return class_iou(y_true, y_pred, class_id=13)
+    """IoU metric for car group (treat bus as car in metric as requested)."""
+    # Train-time mapping: truck→car, train→bus. For metric, count bus as car too.
+    # Group: car(13) + bus(14)
+    return group_class_iou(y_true, y_pred, target_class_ids=[13, 14])
+
 
 def road(y_true, y_pred):
-    """IoU metric for road class (class index 0)"""
-    return class_iou(y_true, y_pred, class_id=0)
+    """IoU for road group (road stays as 0 in CLASS_MAP)."""
+    return group_class_iou(y_true, y_pred, target_class_ids=[0])
 
 def sidewalk(y_true, y_pred):
-    """IoU metric for sidewalk class (class index 1)"""
-    return class_iou(y_true, y_pred, class_id=1)
+    """IoU for sidewalk group (sidewalk stays as 1)."""
+    return group_class_iou(y_true, y_pred, target_class_ids=[1])
 
 def traffic_light(y_true, y_pred):
-    """IoU metric for traffic_light class (class index 6)"""
-    return class_iou(y_true, y_pred, class_id=6)
+    """IoU for traffic_light group (6)."""
+    return group_class_iou(y_true, y_pred, target_class_ids=[6])
 
 def traffic_sign(y_true, y_pred):
-    """IoU metric for traffic_sign class (class index 7)"""
-    return class_iou(y_true, y_pred, class_id=7)
+    """IoU for traffic_sign group (7)."""
+    return group_class_iou(y_true, y_pred, target_class_ids=[7])
 
-def class_iou(y_true, y_pred, class_id):
-    """Generic IoU metric for a specific class"""
-    # Convert to class predictions
-    y_pred = tf.argmax(y_pred, axis=-1)
-    y_true = tf.argmax(y_true, axis=-1)
-    
-    # Calculate IoU for the specific class
-    intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
-    union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
-    
-    # Handle edge cases
-    iou = tf.where(union > 0, intersection / union,
-                   tf.where(intersection == 0, 1.0, 0.0))  # 1.0 if both intersection and union are 0
-    
-    return iou
+
 
 def precision_metric(y_true, y_pred):
     """
