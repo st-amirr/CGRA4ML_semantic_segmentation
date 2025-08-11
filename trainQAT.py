@@ -148,16 +148,6 @@ tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utili
 print(f"Eager execution enabled: {tf.executing_eagerly()}")
 tf.debugging.set_log_device_placement(DEBUG_MODE)
 
-# Model architecture configuration - BALANCED CAPACITY WITH FACTORS OF INPUT_HEIGHT
-# Optimized for FPGA deployment with depthwise separable convolutions and memory efficiency
-# MODEL_CONFIG = {
-#     'init_filters': INPUT_HEIGHT // 21,  # 24 (512//21 = 24) - Factor of INPUT_HEIGHT
-#     'stage1_filters': INPUT_HEIGHT // 11,  # 48 (512//11 = 48) - Factor of INPUT_HEIGHT
-#     'stage2_filters': INPUT_HEIGHT // 5,  # 96 (512//5 = 96) - Factor of INPUT_HEIGHT
-#     'stage3_filters': INPUT_HEIGHT // 3,  # 192 (512//3 = 192) - Factor of INPUT_HEIGHT
-#     'stage4_filters': (INPUT_HEIGHT * 3) // 4,  # 384 (512*3//4 = 384) - Factor of INPUT_HEIGHT
-# }
-
 MODEL_CONFIG = {
     'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
     'stage1_filters': INPUT_HEIGHT // 16,  # 32 (512//16 = 32) - Factor of INPUT_HEIGHT
@@ -287,10 +277,6 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     focal_loss = -alpha * K.pow(1 - pt, gamma) * K.log(pt)
     return K.mean(focal_loss)
 
-# Global variables for dynamic loss weights
-ce_weight = 0.0
-dice_weight = 0.9
-focal_weight = 0.1
 
 def weighted_combined_loss(y_true, y_pred):
     """
@@ -322,8 +308,8 @@ class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
         super().__init__()
         self.total_epochs = total_epochs
         self.transition_point = transition_point  # 70% of epochs
-        self.initial_ce_weight = 0.2
-        self.initial_dice_weight = 0.7
+        self.initial_ce_weight = 0.1
+        self.initial_dice_weight = 0.8
         self.initial_focal_weight = 0.1
         
     def on_epoch_begin(self, epoch, logs=None):
@@ -681,7 +667,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         
         print(f"Found {len(self.image_paths)} images")
         
-        # Enhanced data augmentation pipeline for robustness
+        # Create balanced augmentation pipeline with reduced probabilities
         if self.augment:
             self.transform = A.Compose([
                 # Geometric augmentations - more aggressive for robustness
@@ -734,19 +720,38 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
-            # Load corresponding mask (prefer trainIds, fallback to labelIds)
-            mask_name = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelTrainIds.png')
-            mask_path = self.mask_dir / image_path.parent.name / mask_name
-            loaded_is_labelids = False
-            if not mask_path.exists():
-                # Fallback to labelIds
-                mask_name = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelIds.png')
-                mask_path = self.mask_dir / image_path.parent.name / mask_name
-                loaded_is_labelids = True
-            
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-            if mask is None:
-                raise ValueError(f"Could not load mask: {mask_path}")
+            # Load corresponding mask with robust Cityscapes handling
+            # Keep all logic local to this function as requested
+            # 1) Prefer *_labelTrainIds.png (already 0..18 with 255 ignore)
+            mask_name_tids = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelTrainIds.png')
+            mask_path_tids = self.mask_dir / image_path.parent.name / mask_name_tids
+
+            mask = None
+            if mask_path_tids.exists():
+                mask = cv2.imread(str(mask_path_tids), cv2.IMREAD_GRAYSCALE)
+                if mask is None:
+                    raise ValueError(f"Could not load mask: {mask_path_tids}")
+            else:
+                # 2) Fallback to *_labelIds.png (34-class)
+                mask_name_lids = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelIds.png')
+                mask_path_lids = self.mask_dir / image_path.parent.name / mask_name_lids
+                mask = cv2.imread(str(mask_path_lids), cv2.IMREAD_GRAYSCALE)
+                if mask is None:
+                    raise ValueError(f"Could not load mask: {mask_path_lids}")
+
+            # Apply user-provided 34->19 mapping (CLASS_MAP) locally here
+            # Default any unmapped label to 18 (other/ignore bucket per mapping intent)
+            CLASS_MAP = {
+                0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9,
+                10: 10, 11: 11, 12: 12, 13: 13, 14: 13, 15: 14, 16: 14, 17: 15,
+                18: 16, 19: 17, 20: 18, 21: 18, 22: 18, 23: 18, 24: 18, 25: 18,
+                26: 18, 27: 18, 28: 18, 29: 18, 30: 18, 31: 18, 32: 18, 33: 18
+            }
+            lut = np.full(256, 18, dtype=np.uint8)
+            for k, v in CLASS_MAP.items():
+                lut[int(k)] = int(v)
+            # In case mask already uses fewer ids, this is still safe
+            mask = lut[mask.astype(np.uint8)]
             
             # Resize image and mask
             image = cv2.resize(image, (self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
@@ -760,37 +765,20 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             
             # Normalize image
             image = image.astype(np.float32) / 255.0
-
-            # If loaded labelIds, map to trainIds
-            if loaded_is_labelids:
-                lid_to_tid = {
-                    7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5, 19: 6, 20: 7,
-                    21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
-                    28: 15, 31: 16, 32: 17, 33: 18
-                }
-                mask_mapped = np.full_like(mask, 255)
-                for lid, tid in lid_to_tid.items():
-                    mask_mapped[mask == lid] = tid
-                mask = mask_mapped
-
-            # Convert mask to one-hot encoding for trainIds (ignore 255 kept for sample weighting)
-            if mask.dtype != np.int32 and mask.dtype != np.int64:
-                mask = mask.astype(np.int32)
-            valid = mask != 255
-            safe_mask = np.where(valid, mask, 0)  # temporary placeholder for one-hot
-            one_hot = tf.keras.utils.to_categorical(safe_mask, num_classes=NUM_CLASSES)
-            # Build per-pixel sample weights: 0 where ignore, 1 elsewhere
-            sample_weights = valid.astype(np.float32)
-            return image, one_hot, sample_weights
             
+            # Mask is now 0..18 per CLASS_MAP
+            # Convert mask to one-hot encoding for categorical crossentropy
+            mask = tf.keras.utils.to_categorical(mask, num_classes=NUM_CLASSES)
+            
+            return image, mask
             
         except Exception as e:
             print(f"Error loading {image_path}: {e}")
-            # Return dummy data (ignored by zero weights)
+            # Return dummy data
             dummy_image = np.zeros((self.target_height, self.target_width, 3), dtype=np.float32)
             dummy_mask = np.zeros((self.target_height, self.target_width, NUM_CLASSES), dtype=np.float32)
-            dummy_weights = np.zeros((self.target_height, self.target_width), dtype=np.float32)
-            return dummy_image, dummy_mask, dummy_weights
+            dummy_mask[:, :, 0] = 1  # Set background class
+            return dummy_image, dummy_mask
     
     def __getitem__(self, index):
         """Generate one batch of data"""
@@ -798,15 +786,13 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         
         batch_images = []
         batch_masks = []
-        batch_weights = []
         
         for path in batch_paths:
-            image, mask, weights = self.load_and_preprocess_image(path)
+            image, mask = self.load_and_preprocess_image(path)
             batch_images.append(image)
             batch_masks.append(mask)
-            batch_weights.append(weights)
         
-        return np.array(batch_images), np.array(batch_masks), np.array(batch_weights)
+        return np.array(batch_images), np.array(batch_masks)
 
 def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, use_quantization=False, precision='8bit', name='depthwise_sep'):
     """
@@ -980,113 +966,6 @@ def attention_block(x, use_quantization=False, precision='16bit', name='attentio
         y = Activation('sigmoid', name=f'{name}_sigmoid')(y)
     return Multiply(name=f'{name}_scale')([x, y])
 
-# def cbam_block(x, reduction_ratio=8, use_quantization=False, precision='16bit', name='cbam'):
-#     """
-#     Enhanced attention with integrated conv layers - HLS4ML optimized
-
-#     Args:
-#         x: Input tensor
-#         reduction_ratio: Reduction ratio for channel attention MLP
-#         use_quantization: Whether to use QKeras quantized layers
-#         precision: Quantization precision ('8bit', '16bit', '32bit')
-#         name: Block name
-#     """
-#     channels = x.shape[-1]
-
-#     # Initial feature processing with conv layers (integrated into CBAM)
-#     if use_quantization:
-#         # Select quantization config based on precision
-#         if precision == '8bit':
-#             qbits_config = quantized_bits_8_config
-#             qrelu_config = quantized_relu_config
-#         elif precision == '16bit':
-#             qbits_config = quantized_bits_16_config
-#             qrelu_config = quantized_relu_config
-#         elif precision == '32bit':
-#             qbits_config = quantized_bits_32_config
-#             qrelu_config = quantized_relu_config
-#         else:
-#             qbits_config = quantized_bits_16_config
-#             qrelu_config = quantized_relu_config
-
-#         # Integrated conv processing before attention
-#         x = QConv2D(channels, kernel_size=3, padding='same',
-#                    kernel_quantizer=quantized_bits(**qbits_config),
-#                    bias_quantizer=quantized_bits(**qbits_config),
-#                    kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-#                    name=f'{name}_conv1')(x)
-#         # Layer-wise quantization: BatchNorm uses lower precision for stability
-#         x = QBatchNormalization(
-#             gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-#             beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-#             name=f'{name}_bn1')(x)
-#         x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_act1')(x)
-#     else:
-#         # Standard float32 conv processing
-#         x = Conv2D(channels, kernel_size=3, padding='same',
-#                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-#                   name=f'{name}_conv1')(x)
-#         x = BatchNormalization(name=f'{name}_bn1')(x)
-#         x = Activation('relu', name=f'{name}_act1')(x)
-
-#     # Channel attention - using only supported layers
-#     channel_avg = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_channel_avg')(x)
-#     channel_max = tf.keras.layers.GlobalMaxPooling2D(name=f'{name}_channel_max')(x)
-
-#     # Shared MLP for channel attention
-#     if use_quantization:
-#         # Channel attention MLP for average pooling
-#         channel_avg = QDense(channels // reduction_ratio,
-#                            kernel_quantizer=quantized_bits(**qbits_config),
-#                            name=f'{name}_channel_mlp_avg')(channel_avg)
-#         channel_avg = QActivation(quantized_relu(**qrelu_config))(channel_avg)
-#         channel_avg = QDense(channels,
-#                            kernel_quantizer=quantized_bits(**qbits_config),
-#                            name=f'{name}_channel_mlp_avg2')(channel_avg)
-
-#         # Channel attention MLP for max pooling
-#         channel_max = QDense(channels // reduction_ratio,
-#                            kernel_quantizer=quantized_bits(**qbits_config),
-#                            name=f'{name}_channel_mlp_max')(channel_max)
-#         channel_max = QActivation(quantized_relu(**qrelu_config))(channel_max)
-#         channel_max = QDense(channels,
-#                            kernel_quantizer=quantized_bits(**qbits_config),
-#                            name=f'{name}_channel_mlp_max2')(channel_max)
-#     else:
-#         # Standard float32 layers for channel attention
-#         channel_avg = Dense(channels // reduction_ratio, activation='relu',
-#                           name=f'{name}_channel_mlp_avg')(channel_avg)
-#         channel_avg = Dense(channels, name=f'{name}_channel_mlp_avg2')(channel_avg)
-
-#         channel_max = Dense(channels // reduction_ratio, activation='relu',
-#                           name=f'{name}_channel_mlp_max')(channel_max)
-#         channel_max = Dense(channels, name=f'{name}_channel_mlp_max2')(channel_max)
-
-#     # Combine channel attention
-#     channel_add = tf.keras.layers.Add()([channel_avg, channel_max])
-#     channel_attention = Activation('sigmoid')(channel_add)
-#     channel_attention = tf.keras.layers.Reshape((1, 1, channels))(channel_attention)
-#     x_channel = Multiply()([x, channel_attention])
-
-#     # Spatial attention - HLS4ML optimized (no Lambda layers)
-#     # Create spatial attention using Conv2D operations - FPGA optimized with smaller kernels
-#     if use_quantization:
-#         spatial_reduce = QConv2D(2, kernel_size=1, padding='same',
-#                                kernel_quantizer=quantized_bits(**qbits_config),
-#                                name=f'{name}_spatial_reduce')(x_channel)
-#         # Use 3x3 kernel instead of 7x7 for FPGA compatibility
-#         spatial_attention = QConv2D(1, kernel_size=3, padding='same',
-#                                   kernel_quantizer=quantized_bits(**qbits_config),
-#                                   name=f'{name}_spatial_conv')(spatial_reduce)
-#         spatial_attention = QActivation('sigmoid')(spatial_attention)
-#     else:
-#         spatial_reduce = Conv2D(2, kernel_size=1, padding='same',
-#                               name=f'{name}_spatial_reduce')(x_channel)
-#         # Use 3x3 kernel instead of 7x7 for FPGA compatibility
-#         spatial_attention = Conv2D(1, kernel_size=3, padding='same',
-#                                  activation='sigmoid', name=f'{name}_spatial_conv')(spatial_reduce)
-
-#     return Multiply()([x_channel, spatial_attention])
 
 def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=False, precision='32bit'):
     """
@@ -1535,7 +1414,7 @@ def train_model():
         initial_learning_rate = 1e-7
         print(f"Using recommended QAT learning rate: {initial_learning_rate}")
     else:
-        initial_learning_rate = 5e-3  # Lower initial learning rate for stability
+        initial_learning_rate = 7e-4  # Lower initial learning rate for stability
         print(f"Using recommended float32 learning rate: {initial_learning_rate}")
 
     # Enhanced learning rate scheduler for better convergence
@@ -1560,8 +1439,8 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         # loss=dice_loss,  # Use dice loss only
-        # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
-        loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
