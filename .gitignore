@@ -9,3 +9,7 @@ models/** /*
 old/** 
 old/** /*
 __pycache__/*
+models/*.h5
+models/*.keras
+*.h5
+*.keras
