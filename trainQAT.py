@@ -121,7 +121,6 @@ DEBUG_MODE = False
 
 
 MODEL_CONFIG = {
-    # Directly scaled MobileNetV2 channels
     'mv2_init': 32,        # 32
     'mv2_c1': 16,          # 16
     'mv2_c2': 24,          # 24
@@ -134,6 +133,8 @@ MODEL_CONFIG = {
     'aspp_filters': 128,   # 128
     'low_level_proj': 32,  # 32
     'decoder_filters': 128,# 128
+    # Use dilated convolutions in decoder refinement blocks
+    'use_dilated_conv': True,
 }
 
 # Enhanced quantization configurations for better QAT performance with layer-wise precision
@@ -148,7 +149,7 @@ quantized_bits_8_config = {
 
 # For Kernels and Biases with medium range (~1 to ~4): final_reduce_bn (1.903646), boundary_enhance2_bn (1.524222)
 quantized_bits_16_config = {
-    'bits': 8,
+    'bits': 16,
     'integer': 2,  # for values within ±4 range
     'symmetric': True,
     'alpha': 'auto_po2',
@@ -158,7 +159,7 @@ quantized_bits_16_config = {
 
 # For Output Layer and large range layers: already set correctly
 quantized_bits_32_config = {
-    'bits': 16,
+    'bits': 32,
     'integer': 8,  # already set correctly
     'symmetric': True,
     'alpha': 'auto_po2',
@@ -179,8 +180,8 @@ quantized_bits_batchnorm_config = {
 
 # Activation quantization: 8-bits with stochastic rounding for better training
 quantized_bits_activation_config = {
-    'bits': 8,
-    'integer': 6,  # increase from 4 to 6 (max activation ~±64)
+    'bits': 16,
+    'integer': 8,  # increase from 4 to 6 (max activation ~±64)
     'symmetric': True,
     'alpha': 'auto_po2',
     'use_stochastic_rounding': True,  # Critical for activation quantization
@@ -189,8 +190,8 @@ quantized_bits_activation_config = {
 
 # General activations: safely increase integer bits to avoid saturation or overflow
 quantized_relu_config = {
-    'bits': 8,
-    'integer': 6,  # increase from 4 to 6 (max activation ~±64)
+    'bits': 16,
+    'integer': 8,  # increase from 4 to 6 (max activation ~±64)
     'use_stochastic_rounding': True
 }
 
@@ -1031,12 +1032,19 @@ def create_segmentation_model(use_quantization=False):
     # Concatenate decoder features
     x = Concatenate(name='decoder_concat')([x, low_level_proj])
 
-    # Decoder refinement (depthwise separable)
+    # Decoder refinement: optionally use dilated convolutions
     dec_filters = MODEL_CONFIG['decoder_filters']
-    x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse1_dw', use_quantization=use_quantization, precision='8bit')
-    x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_pw', use_quantization=use_quantization, precision='8bit')
-    x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse2_dw', use_quantization=use_quantization, precision='8bit')
-    x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_pw', use_quantization=use_quantization, precision='8bit')
+    use_dilated = MODEL_CONFIG.get('use_dilated_conv', False)
+    if use_dilated:
+        # regular 3x3 with dilation for larger context
+        x = conv_bn_relu(x, dec_filters, 3, dilation_rate=2, name_prefix='dec_fuse1_dil', use_quantization=use_quantization, precision='8bit')
+        x = conv_bn_relu(x, dec_filters, 3, dilation_rate=2, name_prefix='dec_fuse2_dil', use_quantization=use_quantization, precision='8bit')
+    else:
+        # depthwise separable for efficiency
+        x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse1_dw', use_quantization=use_quantization, precision='8bit')
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_pw', use_quantization=use_quantization, precision='8bit')
+        x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse2_dw', use_quantization=use_quantization, precision='8bit')
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_pw', use_quantization=use_quantization, precision='8bit')
 
     # Final upsampling to original resolution (from 1/8 to 1/1)
     x = UpSampling2D(size=(8, 8), interpolation='bilinear', name='decoder_upsample_final')(x)
