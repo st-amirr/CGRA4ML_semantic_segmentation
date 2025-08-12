@@ -112,7 +112,7 @@ print(f"  Dynamic Loss Weights: CE+Dice+Focal → CE+Focal (dice=0 by epoch {int
 # Define constants
 INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
-NUM_CLASSES = 19
+NUM_CLASSES = 20
 DATASET_DIR = '/data'
 NUM_WORKERS = 4
 PREFETCH_MAX = 8
@@ -394,10 +394,8 @@ def group_class_iou(y_true, y_pred, target_class_ids):
     return iou
 
 def cars(y_true, y_pred):
-    """IoU metric for car group (treat bus as car in metric as requested)."""
-    # Train-time mapping: truck→car, train→bus. For metric, count bus as car too.
-    # Group: car(13) + bus(14)
-    return group_class_iou(y_true, y_pred, target_class_ids=[13, 14])
+    """IoU for car class only (trainId 13)."""
+    return group_class_iou(y_true, y_pred, target_class_ids=[13])
 
 
 def road(y_true, y_pred):
@@ -544,7 +542,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         self.save_frequency = save_frequency  # Save every N epochs
         os.makedirs(save_dir, exist_ok=True)
         
-        # Cityscapes color palette for trainIds (0..18). Standard colors.
+        # Palette for official 19 trainIds (0..18); add 20th color for 'void'=19
         self.trainids_colors = [
             [128, 64, 128],   # 0: road
             [244, 35, 232],   # 1: sidewalk
@@ -565,6 +563,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
             [0, 80, 100],     # 16: train
             [0, 0, 230],      # 17: motorcycle
             [119, 11, 32],    # 18: bicycle
+            [0, 0, 0],        # 19: void
         ]
         self.ignore_color = [0, 0, 0]
     
@@ -576,7 +575,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         unique_ids = np.unique(train_ids)
         for tid in unique_ids:
             if tid == 255:
-                colored_mask[train_ids == 255] = self.ignore_color
+                colored_mask[train_ids == tid] = self.ignore_color
             elif 0 <= tid < len(self.trainids_colors):
                 colored_mask[train_ids == tid] = self.trainids_colors[tid]
         return colored_mask
@@ -730,7 +729,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
             # Load corresponding mask with robust Cityscapes handling
-            # Keep all logic local to this function as requested
             # 1) Prefer *_labelTrainIds.png (already 0..18 with 255 ignore)
             mask_name_tids = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelTrainIds.png')
             mask_path_tids = self.mask_dir / image_path.parent.name / mask_name_tids
@@ -748,19 +746,24 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 if mask is None:
                     raise ValueError(f"Could not load mask: {mask_path_lids}")
 
-            # Apply user-provided 34->19 mapping (CLASS_MAP) locally here
-            # Default any unmapped label to 18 (other/ignore bucket per mapping intent)
-            CLASS_MAP = {
-                0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9,
-                10: 10, 11: 11, 12: 12, 13: 13, 14: 13, 15: 14, 16: 14, 17: 15,
-                18: 16, 19: 17, 20: 18, 21: 18, 22: 18, 23: 18, 24: 18, 25: 18,
-                26: 18, 27: 18, 28: 18, 29: 18, 30: 18, 31: 18, 32: 18, 33: 18
-            }
-            lut = np.full(256, 18, dtype=np.uint8)
-            for k, v in CLASS_MAP.items():
-                lut[int(k)] = int(v)
-            # In case mask already uses fewer ids, this is still safe
-            mask = lut[mask.astype(np.uint8)]
+            # Standard Cityscapes mapping to 20 classes: 19 trainIds (0..18) + 19th 'void' class index=19.
+            # If we already
+            # have labelTrainIds, use as-is. Otherwise map labelIds to trainIds;
+            # all non-eval ids go to 19 (void) instead of 255.
+            if not mask_path_tids.exists():
+                # Map labelIds (34) to our 20-class scheme: 19 trainIds + void=19.
+                # Custom merges requested:
+                # - polegroup (18) → pole (5)
+                # - caravan (29), trailer (30) → car (13)
+                lid_to_tid = {
+                    7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5, 18: 5, 19: 6, 20: 7,
+                    21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+                    28: 15, 31: 16, 32: 17, 33: 18, 29: 13, 30: 13,
+                }
+                mapped = np.full_like(mask, 19, dtype=np.uint8)
+                for lid, tid in lid_to_tid.items():
+                    mapped[mask == lid] = tid
+                mask = mapped
             
             # Resize image and mask
             image = cv2.resize(image, (self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
@@ -775,9 +778,12 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             # Normalize image
             image = image.astype(np.float32) / 255.0
             
-            # Mask is now 0..18 per CLASS_MAP
-            # Convert mask to one-hot encoding for categorical crossentropy
-            mask = tf.keras.utils.to_categorical(mask, num_classes=NUM_CLASSES)
+            # One-hot: map 255 (ignore) to void index 19 so it occupies a dedicated channel
+            if mask.dtype != np.uint8:
+                mask = mask.astype(np.uint8)
+            mask_safe = mask.copy()
+            mask_safe[mask_safe == 255] = 19
+            mask = tf.keras.utils.to_categorical(mask_safe, num_classes=NUM_CLASSES)
             
             return image, mask
             
@@ -1536,7 +1542,7 @@ def train_model():
             val_generator=val_generator,
             save_dir=viz_dir,
             num_samples=4,
-            save_frequency=2
+            save_frequency=1
         ),
         DetailedMetricsCallback(
             val_generator=val_generator,
