@@ -58,7 +58,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from tensorflow.keras.preprocessing.image import load_img
-from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Multiply, Dropout, Dense
+from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Multiply, Dropout, Dense, Add, DepthwiseConv2D, UpSampling2D, Concatenate
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 from qkeras.utils import model_save_quantized_weights
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard
@@ -119,73 +119,6 @@ PREFETCH_MAX = 8
 
 DEBUG_MODE = False
 
-# Class weights: emphasize rare classes and ignore 'void' (index 19)
-# Adjust these if you compute dataset-specific frequencies
-CLASS_WEIGHTS = tf.constant([
-    0.5,  # 0: road
-    2.0,  # 1: sidewalk
-    1.0,  # 2: building
-    1.2,  # 3: wall
-    1.2,  # 4: fence
-    1.5,  # 5: pole
-    5.0,  # 6: traffic light (rare)
-    5.0,  # 7: traffic sign (rare)
-    1.0,  # 8: vegetation
-    1.3,  # 9: terrain
-    0.8,  # 10: sky
-    1.5,  # 11: person
-    1.5,  # 12: rider
-    1.5,  # 13: car
-    2.0,  # 14: truck
-    2.0,  # 15: bus
-    2.5,  # 16: train
-    2.0,  # 17: motorcycle
-    2.0,  # 18: bicycle
-    0.0,  # 19: void (ignored in loss)
-], dtype=tf.float32)
-
-def safe_configure_tensorflow(debug_mode=False):
-    """Safely configure TF threading and GPU options if not already initialized."""
-    try:
-        n_cores = multiprocessing.cpu_count()
-        tf.config.threading.set_inter_op_parallelism_threads(n_cores)
-        tf.config.threading.set_intra_op_parallelism_threads(n_cores)
-        tf.config.set_soft_device_placement(True)
-    except RuntimeError as e:
-        print(f"Skipping thread config (already initialized): {e}")
-
-    try:
-        gpus = tf.config.experimental.list_physical_devices('GPU')
-        if gpus:
-            for gpu in gpus:
-                try:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                except RuntimeError:
-                    pass
-                try:
-                    tf.config.set_logical_device_configuration(
-                        gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]
-                    )
-                except RuntimeError:
-                    # Likely already initialized; ignore
-                    pass
-    except Exception as e:
-        print(f"GPU config skipped: {e}")
-
-    try:
-        tf.config.optimizer.set_jit(True)
-    except Exception as e:
-        print(f"XLA config skipped: {e}")
-
-    print(f"Eager execution enabled: {tf.executing_eagerly()}")
-    try:
-        tf.debugging.set_log_device_placement(debug_mode)
-    except Exception:
-        pass
-
-# Call safe TF configuration early
-safe_configure_tensorflow(DEBUG_MODE)
 
 MODEL_CONFIG = {
     'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
@@ -260,6 +193,78 @@ tf.config.optimizer.set_experimental_options({
     'shape_optimization': True,
     'remapping': True,
 })
+# Class weights: emphasize rare classes and ignore 'void' (index 19)
+# Adjust these if you compute dataset-specific frequencies
+CLASS_WEIGHTS = tf.constant(
+    [
+        0.5,  # 0: road
+        2.0,  # 1: sidewalk
+        1.0,  # 2: building
+        1.2,  # 3: wall
+        1.2,  # 4: fence
+        1.5,  # 5: pole
+        5.0,  # 6: traffic light (rare)
+        5.0,  # 7: traffic sign (rare)
+        1.0,  # 8: vegetation
+        1.3,  # 9: terrain
+        0.8,  # 10: sky
+        1.5,  # 11: person
+        1.5,  # 12: rider
+        1.5,  # 13: car
+        2.0,  # 14: truck
+        2.0,  # 15: bus
+        2.5,  # 16: train
+        2.0,  # 17: motorcycle
+        2.0,  # 18: bicycle
+        0.0,  # 19: void (ignored in loss)
+    ],
+    dtype=tf.float32,
+)
+
+
+def safe_configure_tensorflow(debug_mode=False):
+    """Safely configure TF threading and GPU options if not already initialized."""
+    try:
+        n_cores = multiprocessing.cpu_count()
+        tf.config.threading.set_inter_op_parallelism_threads(n_cores)
+        tf.config.threading.set_intra_op_parallelism_threads(n_cores)
+        tf.config.set_soft_device_placement(True)
+    except RuntimeError as e:
+        print(f"Skipping thread config (already initialized): {e}")
+
+    try:
+        gpus = tf.config.experimental.list_physical_devices("GPU")
+        if gpus:
+            for gpu in gpus:
+                try:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                except RuntimeError:
+                    pass
+                try:
+                    tf.config.set_logical_device_configuration(
+                        gpu,
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 10)],
+                    )
+                except RuntimeError:
+                    # Likely already initialized; ignore
+                    pass
+    except Exception as e:
+        print(f"GPU config skipped: {e}")
+
+    try:
+        tf.config.optimizer.set_jit(True)
+    except Exception as e:
+        print(f"XLA config skipped: {e}")
+
+    print(f"Eager execution enabled: {tf.executing_eagerly()}")
+    try:
+        tf.debugging.set_log_device_placement(debug_mode)
+    except Exception:
+        pass
+
+
+# Call safe TF configuration early
+safe_configure_tensorflow(DEBUG_MODE)
 
 # Add these loss functions after the imports
 def dice_loss(y_true, y_pred, smooth=1e-7):
@@ -667,7 +672,7 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
     """Data generator for Cityscapes dataset"""
-    
+
     def __init__(self, image_dir, mask_dir, batch_size=1, subset_ratio=1.0, 
                  target_height=512, target_width=1024, shuffle=True, augment=True):
         self.image_dir = Path(image_dir)
@@ -677,15 +682,15 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         self.target_width = target_width
         self.shuffle = shuffle
         self.augment = augment
-        
+
         # Get all image paths
         self.image_paths = list(self.image_dir.glob('**/*.png'))
         if subset_ratio < 1.0:
             subset_size = int(len(self.image_paths) * subset_ratio)
             self.image_paths = self.image_paths[:subset_size]
-        
+
         print(f"Found {len(self.image_paths)} images")
-        
+
         # Create balanced augmentation pipeline with reduced probabilities
         if self.augment:
             self.transform = A.Compose([
@@ -718,16 +723,16 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             ])
         else:
             self.transform = None
-        
+
         self.on_epoch_end()
-    
+
     def __len__(self):
         return math.ceil(len(self.image_paths) / self.batch_size)
-    
+
     def on_epoch_end(self):
         if self.shuffle:
             np.random.shuffle(self.image_paths)
-    
+
     def load_and_preprocess_image(self, image_path):
         """Load and preprocess a single image"""
         try:
@@ -735,9 +740,9 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             image = cv2.imread(str(image_path))
             if image is None:
                 raise ValueError(f"Could not load image: {image_path}")
-            
+
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
+
             # Load corresponding mask with robust Cityscapes handling
             # 1) Prefer *_labelTrainIds.png (already 0..18 with 255 ignore)
             mask_name_tids = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelTrainIds.png')
@@ -774,29 +779,29 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 for lid, tid in lid_to_tid.items():
                     mapped[mask == lid] = tid
                 mask = mapped
-            
+
             # Resize image and mask
             image = cv2.resize(image, (self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
             mask = cv2.resize(mask, (self.target_width, self.target_height), interpolation=cv2.INTER_NEAREST)
-            
+
             # Apply augmentations
             if self.transform:
                 augmented = self.transform(image=image, mask=mask)
                 image = augmented['image']
                 mask = augmented['mask']
-            
+
             # Normalize image
             image = image.astype(np.float32) / 255.0
-            
+
             # One-hot: map 255 (ignore) to void index 19 so it occupies a dedicated channel
             if mask.dtype != np.uint8:
                 mask = mask.astype(np.uint8)
             mask_safe = mask.copy()
             mask_safe[mask_safe == 255] = 19
             mask = tf.keras.utils.to_categorical(mask_safe, num_classes=NUM_CLASSES)
-            
+
             return image, mask
-            
+
         except Exception as e:
             print(f"Error loading {image_path}: {e}")
             # Return dummy data
@@ -804,384 +809,247 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             dummy_mask = np.zeros((self.target_height, self.target_width, NUM_CLASSES), dtype=np.float32)
             dummy_mask[:, :, 0] = 1  # Set background class
             return dummy_image, dummy_mask
-    
+
     def __getitem__(self, index):
         """Generate one batch of data"""
         batch_paths = self.image_paths[index * self.batch_size:(index + 1) * self.batch_size]
-        
+
         batch_images = []
         batch_masks = []
-        
+
         for path in batch_paths:
             image, mask = self.load_and_preprocess_image(path)
             batch_images.append(image)
             batch_masks.append(mask)
-        
+
         return np.array(batch_images), np.array(batch_masks)
 
-def depthwise_separable_conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, use_quantization=False, precision='8bit', name='depthwise_sep'):
-    """
-    Depthwise separable convolution block - FPGA optimized for reduced computation with dilated convolutions
-    
-    Args:
-        x: Input tensor
-        filters: Number of filters
-        kernel_size: Kernel size
-        strides: Stride value
-        dilation_rate: Dilation rate for dilated convolutions (default=1 for standard conv)
-        use_quantization: Whether to use QKeras quantized layers
-        precision: Quantization precision ('8bit', '16bit', '32bit')
-        name: Block name
-    """
+# Small helper to swap quantized/non-quantized layers
+def conv_bn_relu(x, filters, kernel_size=3, dilation_rate=1, name_prefix="conv", use_quantization=False, precision='8bit'):
     if use_quantization:
-        # Select quantization config based on precision
-        if precision == '8bit':
-            qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_config
-        elif precision == '16bit':
+        if precision == '16bit':
             qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_config
         elif precision == '32bit':
             qbits_config = quantized_bits_32_config
-            qrelu_config = quantized_relu_config
         else:
             qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_config
-        
-        # Depthwise convolution using dedicated QDepthwiseConv2D (QKeras does not support groups)
+        x = QConv2D(
+            filters,
+            kernel_size=kernel_size,
+            padding="same",
+            dilation_rate=dilation_rate,
+            kernel_quantizer=quantized_bits(**qbits_config),
+            bias_quantizer=quantized_bits(**qbits_config),
+            name=f"{name_prefix}_conv",
+        )(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+            name=f"{name_prefix}_bn",
+        )(x)
+        x = QActivation(
+            quantized_relu(**quantized_relu_config), name=f"{name_prefix}_act"
+        )(x)
+    else:
+        x = Conv2D(
+            filters,
+            kernel_size=kernel_size,
+            padding="same",
+            dilation_rate=dilation_rate,
+            activation=None,
+            name=f"{name_prefix}_conv",
+        )(x)
+        x = BatchNormalization(name=f"{name_prefix}_bn")(x)
+        x = Activation("relu", name=f"{name_prefix}_act")(x)
+    return x
+
+def conv_bn_act(x, filters, k=1, s=1, d=1, act=True, n='', use_quantization=False, precision='8bit'):
+    """Conv -> BN -> optional Act helper with quantized/float variants."""
+    if use_quantization:
+        if precision == '16bit':
+            qbits_config = quantized_bits_16_config
+        elif precision == '32bit':
+            qbits_config = quantized_bits_32_config
+        else:
+            qbits_config = quantized_bits_8_config
+        x = QConv2D(
+            filters, kernel_size=k, strides=s, padding='same', dilation_rate=d,
+            kernel_quantizer=quantized_bits(**qbits_config),
+            bias_quantizer=quantized_bits(**qbits_config),
+            name=f"{n}_qconv",
+        )(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+            name=f"{n}_qbn",
+        )(x)
+        if act:
+            x = QActivation(quantized_relu(**quantized_relu_config), name=f"{n}_qact")(x)
+    else:
+        x = Conv2D(filters, kernel_size=k, strides=s, padding='same', dilation_rate=d, activation=None,
+                   name=f"{n}_conv")(x)
+        x = BatchNormalization(name=f"{n}_bn")(x)
+        if act:
+            x = Activation('relu', name=f"{n}_act")(x)
+    return x
+
+def depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='', use_quantization=False, precision='8bit'):
+    """DepthwiseConv -> BN -> optional Act helper with quantized/float variants."""
+    if use_quantization:
+        if precision == '16bit':
+            qbits_config = quantized_bits_16_config
+        elif precision == '32bit':
+            qbits_config = quantized_bits_32_config
+        else:
+            qbits_config = quantized_bits_8_config
         x = QDepthwiseConv2D(
-                   kernel_size=kernel_size,
-                   strides=strides,
-                   padding='same',
-                   dilation_rate=dilation_rate,
-                   depthwise_quantizer=quantized_bits(**qbits_config),
-                   bias_quantizer=quantized_bits(**qbits_config),
-                   name=f'{name}_depthwise')(x)
-        # Layer-wise quantization: BatchNorm uses lower precision for stability
+            kernel_size=k, strides=s, padding='same', dilation_rate=d,
+            depthwise_quantizer=quantized_bits(**qbits_config),
+            bias_quantizer=quantized_bits(**qbits_config),
+            name=f"{n}_qdw",
+        )(x)
         x = QBatchNormalization(
             gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
             beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            name=f'{name}_depthwise_bn')(x)
-        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_depthwise_act')(x)
-        
-        # Pointwise convolution
-        x = QConv2D(filters, kernel_size=1, padding='same',
-                   kernel_quantizer=quantized_bits(**qbits_config),
-                   bias_quantizer=quantized_bits(**qbits_config),
-                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                   name=f'{name}_pointwise')(x)
-        # Layer-wise quantization: BatchNorm uses lower precision for stability
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            name=f'{name}_pointwise_bn')(x)
-        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_pointwise_act')(x)
+            name=f"{n}_qbn",
+        )(x)
+        if act:
+            x = QActivation(quantized_relu(**quantized_relu_config), name=f"{n}_qact")(x)
     else:
-        # Standard depthwise separable convolution
-        x = tf.keras.layers.DepthwiseConv2D(kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
-                                           name=f'{name}_depthwise')(x)
-        x = QBatchNormalization(name=f'{name}_depthwise_bn')(x)
-        x = QActivation('relu', name=f'{name}_depthwise_act')(x)
-        
-        x = QConv2D(filters, kernel_size=1, padding='same',
-                  kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                  name=f'{name}_pointwise')(x)
-        x = QBatchNormalization(name=f'{name}_pointwise_bn')(x)
-        x = QActivation('relu', name=f'{name}_pointwise_act')(x)
-    
+        x = DepthwiseConv2D(kernel_size=k, strides=s, padding='same', dilation_rate=d,
+                                            name=f"{n}_dw")(x)
+        x = BatchNormalization(name=f"{n}_bn")(x)
+        if act:
+            x = Activation('relu', name=f"{n}_act")(x)
     return x
 
-def conv_block(x, filters, kernel_size=3, strides=1, dilation_rate=1, use_quantization=False, precision='8bit', name='conv_block'):
-    """
-    Convolutional block with option for quantization and dilated convolutions
-    
-    Args:
-        x: Input tensor
-        filters: Number of filters
-        kernel_size: Kernel size
-        strides: Stride value
-        dilation_rate: Dilation rate for dilated convolutions (default=1 for standard conv)
-        use_quantization: Whether to use QKeras quantized layers
-        precision: Quantization precision ('8bit', '16bit', '32bit')
-        name: Block name
-    """
-    if use_quantization:
-        # Select quantization config based on precision
-        if precision == '8bit':
-            qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_config
-        elif precision == '16bit':
-            qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_config
-        elif precision == '32bit':
-            qbits_config = quantized_bits_32_config
-            qrelu_config = quantized_relu_config
-        else:
-            # Default to small config for unknown precision
-            qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_config
-        
-        # Use QKeras quantized layers with enhanced configuration and layer-wise quantization
-        x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
-                   kernel_quantizer=quantized_bits(**qbits_config),
-                   bias_quantizer=quantized_bits(**qbits_config),
-                   kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                   name=f'{name}_qconv')(x)
-        # Layer-wise quantization: BatchNorm uses lower precision for stability
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            name=f'{name}_qbn')(x)
-        # Activation quantization with stochastic rounding for better training
-        x = QActivation(quantized_relu(**qrelu_config), name=f'{name}_qact')(x)
-    else:
-        # Use standard float32 layers
-        x = QConv2D(filters, kernel_size=kernel_size, strides=strides, padding='same', dilation_rate=dilation_rate,
-                  kernel_regularizer=tf.keras.regularizers.l2(1e-4),
-                  name=f'{name}_conv')(x)
-        x = QBatchNormalization(name=f'{name}_bn')(x)
-        x = QActivation('relu', name=f'{name}_act')(x)
-    
-    return x
 
-def attention_block(x, use_quantization=False, precision='16bit', name='attention'):
-    """
-    Channel attention block with option for quantization
-    
-    Args:
-        x: Input tensor
-        use_quantization: Whether to use QKeras quantized layers
-        precision: Quantization precision ('8bit', '16bit', '32bit')
-        name: Block name
-    """
-    channels = x.shape[-1]
-    # Squeeze-and-Excitation style attention (optimized for mIoU)
-    y = tf.keras.layers.GlobalAveragePooling2D(name=f'{name}_gap')(x)
-    y = tf.keras.layers.Reshape((1, 1, channels), name=f'{name}_reshape')(y)
-    if use_quantization:
-        if precision == '8bit':
-            qbits_config = quantized_bits_8_config
-            qrelu_config = quantized_relu_config
-        elif precision == '16bit':
-            qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_config
-        elif precision == '32bit':
-            qbits_config = quantized_bits_32_config
-            qrelu_config = quantized_relu_config
-        else:
-            qbits_config = quantized_bits_16_config
-            qrelu_config = quantized_relu_config
-        # Reduce channels then restore (SE block)
-        y = QConv2D(channels // 4, kernel_size=1, padding='same',
-                   kernel_quantizer=quantized_bits(**qbits_config),
-                   bias_quantizer=quantized_bits(**qbits_config),
-                   name=f'{name}_qconv1')(y)
-        y = QActivation(quantized_relu(**qrelu_config), name=f'{name}_qact1')(y)
-        y = QConv2D(channels, kernel_size=1, padding='same',
-                   kernel_quantizer=quantized_bits(**qbits_config),
-                   bias_quantizer=quantized_bits(**qbits_config),
-                   name=f'{name}_qconv2')(y)
-        y = QActivation('sigmoid', name=f'{name}_sigmoid')(y)
-    else:
-        y = Conv2D(channels // 4, kernel_size=1, padding='same',
-                   name=f'{name}_conv1')(y)
-        y = Activation('relu', name=f'{name}_act1')(y)
-        y = Conv2D(channels, kernel_size=1, padding='same',
-                   name=f'{name}_conv2')(y)
-        y = Activation('sigmoid', name=f'{name}_sigmoid')(y)
-    return Multiply(name=f'{name}_scale')([x, y])
+def inverted_residual_block(x, out_channels, expansion_factor=6, stride=1, dilation_rate=1,
+                            use_quantization=False, name_prefix='ir'):
+    """MobileNetV2 inverted residual (MBConv) block built from scratch.
 
-
-def feature_pyramid_fusion(skip_connections, bridge_output, use_quantization=False, precision='32bit'):
+    Structure: 1x1 expand -> 3x3 depthwise (stride/dilation) -> 1x1 project (+ residual if shape matches)
     """
-    Lightweight feature fusion with dilation - HLS4ML optimized for parameter efficiency
-    
-    Args:
-        skip_connections: List of skip connection features from encoder
-        bridge_output: Output from bridge block
-        use_quantization: Whether to use QKeras quantized layers
-        precision: Quantization precision for fusion layers
-    """
-    # Process bridge output with dilated convolution for better context understanding
-    # Use dilation rate 2 to increase receptive field without affecting skip connections
-    bridge_processed = conv_block(bridge_output, MODEL_CONFIG['stage4_filters'],
-                                 dilation_rate=2, use_quantization=use_quantization, precision=precision, 
-                                 name='pyramid_bridge_dilated')
-    
-    # Start with bridge features
-    fused_features = [bridge_processed]
-    
-    # Process each skip connection with lightweight processing (no dilation to preserve skip connection integrity)
-    for i, skip in enumerate(skip_connections):
-        # Lightweight channel reduction (much smaller than 256)
-        target_channels = 64  # Much smaller than 256
-        
-        # Use 1x1 conv for efficient channel reduction (no dilation to preserve skip connections)
-        skip = conv_block(skip, target_channels, kernel_size=1, 
-                        use_quantization=use_quantization, precision=precision, 
-                        name=f'pyramid_conv_{i}')
-        
-        # Resize all features to match bridge spatial dimensions using HLS4ML-supported ops
-        if skip.shape[1] != bridge_output.shape[1] or skip.shape[2] != bridge_output.shape[2]:
-            skip_h = int(skip.shape[1])
-            skip_w = int(skip.shape[2])
-            bridge_h = int(bridge_output.shape[1])
-            bridge_w = int(bridge_output.shape[2])
+    in_channels = int(x.shape[-1])
+    expanded_channels = in_channels * expansion_factor
 
-            if skip_h > bridge_h and skip_w > bridge_w:
-                # Downsample with MaxPooling2D (supported by hls4ml)
-                pool_h = skip_h // bridge_h
-                pool_w = skip_w // bridge_w
-                skip = tf.keras.layers.MaxPooling2D(pool_size=(pool_h, pool_w), strides=(pool_h, pool_w), padding='same')(skip)
-            elif skip_h < bridge_h and skip_w < bridge_w:
-                # Upsample with UpSampling2D
-                up_h = bridge_h // skip_h
-                up_w = bridge_w // skip_w
-                skip = tf.keras.layers.UpSampling2D(size=(up_h, up_w), interpolation='bilinear')(skip)
-            else:
-                # Fallback: if only one dimension differs, adjust that dimension via pooling/upsampling
-                if skip_h != bridge_h:
-                    if skip_h > bridge_h:
-                        pool_h = skip_h // bridge_h
-                        skip = tf.keras.layers.MaxPooling2D(pool_size=(pool_h, 1), strides=(pool_h, 1), padding='same')(skip)
-                    else:
-                        up_h = bridge_h // skip_h
-                        skip = tf.keras.layers.UpSampling2D(size=(up_h, 1), interpolation='bilinear')(skip)
-                if skip_w != bridge_w:
-                    if skip_w > bridge_w:
-                        pool_w = skip_w // bridge_w
-                        skip = tf.keras.layers.MaxPooling2D(pool_size=(1, pool_w), strides=(1, pool_w), padding='same')(skip)
-                    else:
-                        up_w = bridge_w // skip_w
-                        skip = tf.keras.layers.UpSampling2D(size=(1, up_w), interpolation='bilinear')(skip)
-        
-        fused_features.append(skip)
-    
-    # Concatenate: 128 + 64 + 64 + 64 = 320 channels (much smaller than 1024)
-    return tf.keras.layers.Concatenate()(fused_features)
+    # 1) Expansion
+    t = conv_bn_act(x, expanded_channels, k=1, s=1, d=1, act=True, n=f'{name_prefix}_expand', use_quantization=use_quantization, precision='8bit') if expansion_factor != 1 else x
+    # 2) Depthwise
+    t = depthwise_bn_act(t, k=3, s=stride, d=dilation_rate, act=True, n=f'{name_prefix}_depthwise', use_quantization=use_quantization, precision='8bit')
+    # 3) Projection (no activation)
+    t = conv_bn_act(t, out_channels, k=1, s=1, d=1, act=False, n=f'{name_prefix}_project', use_quantization=use_quantization, precision='16bit')
+
+    # Residual connection when shape matches and stride == 1
+    if stride == 1 and in_channels == out_channels:
+        t = Add(name=f"{name_prefix}_add")([x, t])
+    return t
+
+def mobilenetv2(inputs, use_quantization=False):
+    """Build a MobileNetV2-like backbone using MODEL_CONFIG; returns (low_level_s8, encoder_out_s32)."""
+
+    # Initial conv, stride 2 -> 1/2
+    x = inputs
+    x = (QConv2D(MODEL_CONFIG['init_filters'], 3, strides=2, padding='same',
+                 kernel_quantizer=quantized_bits(**quantized_bits_8_config),
+                 bias_quantizer=quantized_bits(**quantized_bits_8_config),
+                 name='stage0_stem_qconv')(x)
+         if use_quantization else Conv2D(MODEL_CONFIG['init_filters'], 3, strides=2, padding='same', name='stage0_stem_conv')(x))
+    x = (QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
+                             beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name='stage0_stem_qbn')(x)
+         if use_quantization else BatchNormalization(name='stage0_stem_bn')(x))
+    x = (QActivation(quantized_relu(**quantized_relu_config), name='stage0_stem_qact')(x)
+         if use_quantization else Activation('relu', name='stage0_stem_act')(x))
+
+    # Settings: (expansion, out_channels, repeats, stride_to_enter_stage)
+    settings = [
+        (1, MODEL_CONFIG['stage1_filters'], 1, 1),  # 1/2 -> 1/2
+        (6, MODEL_CONFIG['stage2_filters'], 2, 2),  # 1/2 -> 1/4
+        (6, MODEL_CONFIG['stage3_filters'], 3, 2),  # 1/4 -> 1/8  (low-level after this stage)
+        (6, MODEL_CONFIG['stage4_filters'], 3, 2),  # 1/8 -> 1/16
+        (6, MODEL_CONFIG['stage4_filters'], 2, 2),  # 1/16 -> 1/32
+    ]
+
+    low_level_s8 = None
+    stage_idx = 1
+    for t, c, n, s in settings:
+        for i in range(n):
+            stride = s if i == 0 else 1
+            x = inverted_residual_block(
+                x,
+                out_channels=c,
+                expansion_factor=t,
+                stride=stride,
+                dilation_rate=1,
+                use_quantization=use_quantization,
+                name_prefix=f'stage{stage_idx}_ir{i+1}',
+            )
+        # Capture low-level after finishing the stage that outputs 1/8
+        if c == MODEL_CONFIG['stage3_filters']:
+            low_level_s8 = x
+        stage_idx += 1
+
+    encoder_out_s32 = x
+    return low_level_s8, encoder_out_s32
 
 def create_segmentation_model(use_quantization=False):
     """
-    Create semantic segmentation model
-    
+    Create DeepLabV3+ model with a from-scratch MobileNetV2-like backbone and ASPP.
+    Optionally use QKeras for quantized layers for FPGA implementation.
+
     Args:
         use_quantization: Whether to use QKeras quantized layers
     """
     tf.keras.backend.clear_session()
-    
+
     # Input
     inputs = Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
-    x = inputs
-    
-    # Initial feature extraction (INPUT block - 8-bit precision)
-    x = conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='init_conv')
-    
-    # Encoder path with skip connections
-    skip_connections = []
-    
-    # Encoder block 1 (ENCODER1 block - 8-bit precision)
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], strides=2, use_quantization=use_quantization, precision='8bit', name='enc1_down')
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='enc1_conv')
-    # No CBAM for shallow features (spatial attention not needed here)
-    skip_connections.append(x)  # Store features BEFORE dropout
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.1, name='dropout_encoder1')(x)
-    
-    # Encoder block 2 (ENCODER2 block - 16-bit precision) - FPGA optimized with depthwise separable conv
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc2_down')
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='enc2_conv')
-    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc2_attention')
-    skip_connections.append(x)  # Store features BEFORE dropout
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.15, name='dropout_encoder2')(x)
-    
-    # Encoder block 3 (ENCODER3 block - 16-bit precision) - FPGA optimized with depthwise separable conv
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], strides=2, use_quantization=use_quantization, precision='16bit', name='enc3_down')
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='enc3_conv')
-    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='enc3_attention')
-    skip_connections.append(x)  # Store features BEFORE dropout
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.2, name='dropout_encoder3')(x)
-    
-    # Bridge block: use depthwise separable convs with dilation for context
-    # First: dilated conv for context at higher resolution
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], kernel_size=3, dilation_rate=2,
-                   use_quantization=use_quantization, precision='32bit', name='bridge_normal_conv')
-    # Then: downsample
-    x = conv_block(x, MODEL_CONFIG['stage4_filters'], strides=2, use_quantization=use_quantization, precision='32bit', name='bridge_down')
-    # Finally: efficient depthwise separable conv
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage4_filters'], dilation_rate=2,
-                                       use_quantization=use_quantization, precision='32bit', name='bridge_sep1')
-    x = attention_block(x, use_quantization=use_quantization, precision='32bit', name='bridge_attention')
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.25, name='dropout_bridge')(x)
-    
-    # Feature Pyramid Fusion - combine multi-scale features
-    x = feature_pyramid_fusion(skip_connections, x, use_quantization=use_quantization, precision='32bit')
-    
-    # Decoder path - symmetry with encoder + skip connection cleanup
-    # Decoder block 3 (mirrors enc3: 128 filters, 16-bit precision)
-    x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec3_up')(x)
-    # Clean up skip connection with 1x1 conv + BN before concatenation
-    skip3_clean = conv_block(skip_connections[2], MODEL_CONFIG['stage3_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip3_clean')
-    x = tf.keras.layers.Concatenate(name='dec3_concat')([x, skip3_clean])
-    # Lightweight fusion after concatenation
-    x = conv_block(x, MODEL_CONFIG['stage3_filters'], kernel_size=1,
-                   use_quantization=use_quantization, precision='16bit', name='dec3_fuse')
-    # One sep conv + attention (mirror of enc3 post-down)
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage3_filters'], use_quantization=use_quantization, precision='16bit', name='dec3_sep')
-    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec3_attention')
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.2, name='dropout_decoder3')(x)
-    
-    # Decoder block 2 (mirrors enc2: 64 filters, 16-bit precision)
-    x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec2_up')(x)
-    # Clean up skip connection with 1x1 conv + BN before concatenation
-    skip2_clean = conv_block(skip_connections[1], MODEL_CONFIG['stage2_filters'], kernel_size=1, use_quantization=use_quantization, precision='16bit', name='skip2_clean')
-    x = tf.keras.layers.Concatenate(name='dec2_concat')([x, skip2_clean])
-    # Lightweight fusion after concatenation
-    x = conv_block(x, MODEL_CONFIG['stage2_filters'], kernel_size=1,
-                   use_quantization=use_quantization, precision='16bit', name='dec2_fuse')
-    # One sep conv + attention (mirror of enc2 post-down)
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage2_filters'], use_quantization=use_quantization, precision='16bit', name='dec2_sep')
-    x = attention_block(x, use_quantization=use_quantization, precision='16bit', name='dec2_attention')
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.15, name='dropout_decoder2')(x)
-    
-    # Decoder block 1 (mirrors enc1: 32 filters, 8-bit precision)
-    x = tf.keras.layers.UpSampling2D(size=(2, 2), name='dec1_up')(x)
-    # Clean up skip connection with 1x1 conv + BN before concatenation
-    skip1_clean = conv_block(skip_connections[0], MODEL_CONFIG['stage1_filters'], kernel_size=1, use_quantization=use_quantization, precision='8bit', name='skip1_clean')
-    
-    x = tf.keras.layers.Concatenate(name='dec1_concat')([x, skip1_clean])
-    # Lightweight fusion after concatenation
-    x = conv_block(x, MODEL_CONFIG['stage1_filters'], kernel_size=1,
-                   use_quantization=use_quantization, precision='8bit', name='dec1_fuse')
-    # One sep conv, no attention (mirror of enc1 post-down)
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['stage1_filters'], use_quantization=use_quantization, precision='8bit', name='dec1_sep')
-    # No CBAM for dec1 (like enc1 - shallow features)
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.1, name='dropout_decoder1')(x)
-    
-    # Final upsampling to original resolution
-    x = tf.keras.layers.UpSampling2D(size=(2, 2), name='final_up')(x)
-    
-    # Final convolution before output (efficient sep conv)
-    x = depthwise_separable_conv_block(x, MODEL_CONFIG['init_filters'], use_quantization=use_quantization, precision='8bit', name='final_sep')
-    if USE_DROPOUT_DURING_TRAINING:
-        x = Dropout(0.05, name='dropout_final')(x)
-    
-    # Output layer (OUTPUT block - 8-bit precision)
+
+    # Backbone from scratch (returns low-level at 1/8 and encoder_out at 1/32)
+    low_level, encoder_out = mobilenetv2(inputs, use_quantization=use_quantization)
+
+    # ASPP (Atrous Spatial Pyramid Pooling) on encoder_out
+    aspp_filters = MODEL_CONFIG['stage3_filters']
+    # ASPP is accuracy-critical: use 16-bit for its convs
+    aspp_d1 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=1, name_prefix='aspp_d1', use_quantization=use_quantization, precision='16bit')
+    aspp_d6 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=6, name_prefix='aspp_d6', use_quantization=use_quantization, precision='16bit')
+    aspp_d12 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=12, name_prefix='aspp_d12', use_quantization=use_quantization, precision='16bit')
+    aspp_d18 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=18, name_prefix='aspp_d18', use_quantization=use_quantization, precision='16bit')
+    x = Concatenate(name='aspp_concat')([aspp_d1, aspp_d6, aspp_d12, aspp_d18])
+
+    # Upsample ASPP output to match low-level spatial size (from 1/32 to 1/8)
+    x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='aspp_upsample')(x)
+
+    # Project low-level features to fewer channels
+    low_level_proj_filters = max(16, MODEL_CONFIG['stage1_filters'] // 2)
+    low_level_proj = conv_bn_relu(low_level, low_level_proj_filters, kernel_size=1, dilation_rate=1, name_prefix='low_level_proj', use_quantization=use_quantization, precision='16bit')
+
+    # Concatenate decoder features
+    x = Concatenate(name='decoder_concat')([x, low_level_proj])
+
+    # Decoder refinement
+    dec_filters = MODEL_CONFIG['stage2_filters']
+    x = conv_bn_relu(x, dec_filters, 3, name_prefix='dec_fuse1', use_quantization=use_quantization, precision='8bit')
+    x = conv_bn_relu(x, dec_filters, 3, name_prefix='dec_fuse2', use_quantization=use_quantization, precision='8bit')
+
+    # Final upsampling to original resolution (from 1/8 to 1/1)
+    x = UpSampling2D(size=(8, 8), interpolation='bilinear', name='decoder_upsample_final')(x)
+
+    # Output layer
     if use_quantization:
-        outputs = QConv2D(NUM_CLASSES, kernel_size=1, padding='same',
-                         kernel_quantizer=quantized_bits(**quantized_bits_32_config),
-                         bias_quantizer=quantized_bits(**quantized_bits_32_config),
-                         activation='softmax', name='output_qconv')(x)
+        # Output logits are critical; use 32-bit quantizer config
+        outputs = QConv2D(
+            NUM_CLASSES,
+            kernel_size=1,
+            padding='same',
+            kernel_quantizer=quantized_bits(**quantized_bits_32_config),
+            bias_quantizer=quantized_bits(**quantized_bits_32_config),
+            activation='softmax',
+            name='output_qconv',
+        )(x)
     else:
-        outputs = Conv2D(NUM_CLASSES, kernel_size=1, padding='same',
-                        activation='softmax', name='output_conv')(x)
-    
-    model = tf.keras.Model(inputs=inputs, outputs=outputs, name='segmentation_model')
+        outputs = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
+
+    model = tf.keras.Model(inputs=inputs, outputs=outputs, name='DeepLabV3Plus_MNV2_scratch')
     return model
 def create_hls4ml_export_model(trained_model=None, use_quantization=False):
     """Create a clean model for HLS4ML export without dropout layers"""
