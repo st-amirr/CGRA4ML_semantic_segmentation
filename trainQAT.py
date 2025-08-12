@@ -121,18 +121,19 @@ DEBUG_MODE = False
 
 
 MODEL_CONFIG = {
-    'mv2_init': 32,        # 32
-    'mv2_c1': 16,          # 16
-    'mv2_c2': 24,          # 24
-    'mv2_c3': 32,          # 32
-    'mv2_c4': 64,          # 64
-    'mv2_c5': 96,          # 96
-    'mv2_c6': 160,         # 160
-    'mv2_c7': 320,         # 320
-    # Decoder/ASPP defaults (already scaled as desired)
-    'aspp_filters': 128,   # 128
-    'low_level_proj': 32,  # 32
-    'decoder_filters': 128,# 128
+    # MobileNetV2 channels expressed as factors of INPUT_HEIGHT (exact at 512)
+    'mv2_init': INPUT_HEIGHT // 16,              # 32 @ 512
+    'mv2_c1':   INPUT_HEIGHT // 32,              # 16 @ 512
+    'mv2_c2':   (INPUT_HEIGHT * 3) // 64,        # 24 @ 512
+    'mv2_c3':   INPUT_HEIGHT // 16,              # 32 @ 512
+    'mv2_c4':   INPUT_HEIGHT // 8,               # 64 @ 512
+    'mv2_c5':   (INPUT_HEIGHT * 3) // 16,        # 96 @ 512
+    'mv2_c6':   (INPUT_HEIGHT * 5) // 16,        # 160 @ 512
+    'mv2_c7':   (INPUT_HEIGHT * 5) // 8,         # 320 @ 512
+    # Decoder/ASPP expressed as factors of INPUT_HEIGHT
+    'aspp_filters':    INPUT_HEIGHT // 4,        # 128 @ 512
+    'low_level_proj':  INPUT_HEIGHT // 16,       # 32 @ 512
+    'decoder_filters': INPUT_HEIGHT // 4,        # 128 @ 512
     # Use dilated convolutions in decoder refinement blocks
     'use_dilated_conv': True,
 }
@@ -435,7 +436,7 @@ class GroupClassIoUMetric(tf.keras.metrics.Metric):
     def result(self):
         return tf.where(self.total_union > 0.0, self.total_intersection / self.total_union, 0.0)
 
-    def reset_states(self):
+    def reset_state(self):
         self.total_intersection.assign(0.0)
         self.total_union.assign(0.0)
 
@@ -1021,6 +1022,8 @@ def create_segmentation_model(use_quantization=False):
     aspp_d18 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=18, name_prefix='aspp_d18', use_quantization=use_quantization, precision='16bit')
     
     x = Concatenate(name='aspp_concat')([aspp_d1, aspp_d6, aspp_d12, aspp_d18])
+    if USE_DROPOUT_DURING_TRAINING:
+        x = Dropout(0.15, name='aspp_dropout')(x)
 
     # Upsample ASPP output to match low-level spatial size (from 1/32 to 1/8)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='aspp_upsample')(x)
@@ -1038,13 +1041,21 @@ def create_segmentation_model(use_quantization=False):
     if use_dilated:
         # regular 3x3 with dilation for larger context
         x = conv_bn_relu(x, dec_filters, 3, dilation_rate=2, name_prefix='dec_fuse1_dil', use_quantization=use_quantization, precision='8bit')
+        if USE_DROPOUT_DURING_TRAINING:
+            x = Dropout(0.1, name='dec_fuse1_dropout')(x)
         x = conv_bn_relu(x, dec_filters, 3, dilation_rate=2, name_prefix='dec_fuse2_dil', use_quantization=use_quantization, precision='8bit')
+        if USE_DROPOUT_DURING_TRAINING:
+            x = Dropout(0.1, name='dec_fuse2_dropout')(x)
     else:
         # depthwise separable for efficiency
         x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse1_dw', use_quantization=use_quantization, precision='8bit')
         x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_pw', use_quantization=use_quantization, precision='8bit')
+        if USE_DROPOUT_DURING_TRAINING:
+            x = Dropout(0.1, name='dec_fuse1_dropout')(x)
         x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse2_dw', use_quantization=use_quantization, precision='8bit')
         x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_pw', use_quantization=use_quantization, precision='8bit')
+        if USE_DROPOUT_DURING_TRAINING:
+            x = Dropout(0.1, name='dec_fuse2_dropout')(x)
 
     # Final upsampling to original resolution (from 1/8 to 1/1)
     x = UpSampling2D(size=(8, 8), interpolation='bilinear', name='decoder_upsample_final')(x)
