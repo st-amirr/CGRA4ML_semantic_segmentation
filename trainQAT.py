@@ -121,11 +121,19 @@ DEBUG_MODE = False
 
 
 MODEL_CONFIG = {
-    'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
-    'stage1_filters': INPUT_HEIGHT // 16,  # 32 (512//16 = 32) - Factor of INPUT_HEIGHT
-    'stage2_filters': INPUT_HEIGHT // 8,  # 64 (512//8 = 64) - Factor of INPUT_HEIGHT
-    'stage3_filters': INPUT_HEIGHT // 4,  # 128 (512//4 = 128) - Factor of INPUT_HEIGHT
-    'stage4_filters': INPUT_HEIGHT // 2,  # 256 (512//2 = 256) - Factor of INPUT_HEIGHT
+    # Directly scaled MobileNetV2 channels
+    'mv2_init': 32,        # 32
+    'mv2_c1': 16,          # 16
+    'mv2_c2': 24,          # 24
+    'mv2_c3': 32,          # 32
+    'mv2_c4': 64,          # 64
+    'mv2_c5': 96,          # 96
+    'mv2_c6': 160,         # 160
+    'mv2_c7': 320,         # 320
+    # Decoder/ASPP defaults (already scaled as desired)
+    'aspp_filters': 128,   # 128
+    'low_level_proj': 32,  # 32
+    'decoder_filters': 128,# 128
 }
 
 # Enhanced quantization configurations for better QAT performance with layer-wise precision
@@ -672,7 +680,7 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
     """Data generator for Cityscapes dataset"""
-
+    
     def __init__(self, image_dir, mask_dir, batch_size=1, subset_ratio=1.0, 
                  target_height=512, target_width=1024, shuffle=True, augment=True):
         self.image_dir = Path(image_dir)
@@ -682,15 +690,15 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         self.target_width = target_width
         self.shuffle = shuffle
         self.augment = augment
-
+        
         # Get all image paths
         self.image_paths = list(self.image_dir.glob('**/*.png'))
         if subset_ratio < 1.0:
             subset_size = int(len(self.image_paths) * subset_ratio)
             self.image_paths = self.image_paths[:subset_size]
-
+        
         print(f"Found {len(self.image_paths)} images")
-
+        
         # Create balanced augmentation pipeline with reduced probabilities
         if self.augment:
             self.transform = A.Compose([
@@ -723,16 +731,16 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             ])
         else:
             self.transform = None
-
+        
         self.on_epoch_end()
-
+    
     def __len__(self):
         return math.ceil(len(self.image_paths) / self.batch_size)
-
+    
     def on_epoch_end(self):
         if self.shuffle:
             np.random.shuffle(self.image_paths)
-
+    
     def load_and_preprocess_image(self, image_path):
         """Load and preprocess a single image"""
         try:
@@ -740,9 +748,9 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             image = cv2.imread(str(image_path))
             if image is None:
                 raise ValueError(f"Could not load image: {image_path}")
-
+            
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
+            
             # Load corresponding mask with robust Cityscapes handling
             # 1) Prefer *_labelTrainIds.png (already 0..18 with 255 ignore)
             mask_name_tids = image_path.name.replace('_leftImg8bit.png', '_gtFine_labelTrainIds.png')
@@ -779,29 +787,29 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 for lid, tid in lid_to_tid.items():
                     mapped[mask == lid] = tid
                 mask = mapped
-
+            
             # Resize image and mask
             image = cv2.resize(image, (self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
             mask = cv2.resize(mask, (self.target_width, self.target_height), interpolation=cv2.INTER_NEAREST)
-
+            
             # Apply augmentations
             if self.transform:
                 augmented = self.transform(image=image, mask=mask)
                 image = augmented['image']
                 mask = augmented['mask']
-
+            
             # Normalize image
             image = image.astype(np.float32) / 255.0
-
+            
             # One-hot: map 255 (ignore) to void index 19 so it occupies a dedicated channel
             if mask.dtype != np.uint8:
                 mask = mask.astype(np.uint8)
             mask_safe = mask.copy()
             mask_safe[mask_safe == 255] = 19
             mask = tf.keras.utils.to_categorical(mask_safe, num_classes=NUM_CLASSES)
-
+            
             return image, mask
-
+            
         except Exception as e:
             print(f"Error loading {image_path}: {e}")
             # Return dummy data
@@ -813,15 +821,15 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
     def __getitem__(self, index):
         """Generate one batch of data"""
         batch_paths = self.image_paths[index * self.batch_size:(index + 1) * self.batch_size]
-
+        
         batch_images = []
         batch_masks = []
-
+        
         for path in batch_paths:
             image, mask = self.load_and_preprocess_image(path)
             batch_images.append(image)
             batch_masks.append(mask)
-
+        
         return np.array(batch_images), np.array(batch_masks)
 
 # Small helper to swap quantized/non-quantized layers
@@ -833,32 +841,18 @@ def conv_bn_relu(x, filters, kernel_size=3, dilation_rate=1, name_prefix="conv",
             qbits_config = quantized_bits_32_config
         else:
             qbits_config = quantized_bits_8_config
-        x = QConv2D(
-            filters,
-            kernel_size=kernel_size,
-            padding="same",
-            dilation_rate=dilation_rate,
-            kernel_quantizer=quantized_bits(**qbits_config),
-            bias_quantizer=quantized_bits(**qbits_config),
-            name=f"{name_prefix}_conv",
-        )(x)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            name=f"{name_prefix}_bn",
-        )(x)
-        x = QActivation(
-            quantized_relu(**quantized_relu_config), name=f"{name_prefix}_act"
-        )(x)
+            
+        x = QConv2D(filters, kernel_size=kernel_size, padding="same", dilation_rate=dilation_rate,
+                    kernel_quantizer=quantized_bits(**qbits_config), bias_quantizer=quantized_bits(**qbits_config), name=f"{name_prefix}_conv")(x)
+        
+        x = QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),name=f"{name_prefix}_bn")(x)
+        
+        x = QActivation(quantized_relu(**quantized_relu_config), name=f"{name_prefix}_act")(x)
     else:
-        x = Conv2D(
-            filters,
-            kernel_size=kernel_size,
-            padding="same",
-            dilation_rate=dilation_rate,
-            activation=None,
-            name=f"{name_prefix}_conv",
-        )(x)
+        x = Conv2D(filters, kernel_size=kernel_size, padding="same", dilation_rate=dilation_rate, activation=None, name=f"{name_prefix}_conv")(x)
+        
         x = BatchNormalization(name=f"{name_prefix}_bn")(x)
+        
         x = Activation("relu", name=f"{name_prefix}_act")(x)
     return x
 
@@ -871,23 +865,22 @@ def conv_bn_act(x, filters, k=1, s=1, d=1, act=True, n='', use_quantization=Fals
             qbits_config = quantized_bits_32_config
         else:
             qbits_config = quantized_bits_8_config
+            
         x = QConv2D(
-            filters, kernel_size=k, strides=s, padding='same', dilation_rate=d,
-            kernel_quantizer=quantized_bits(**qbits_config),
-            bias_quantizer=quantized_bits(**qbits_config),
-            name=f"{n}_qconv",
-        )(x)
+            filters, kernel_size=k, strides=s, padding='same', dilation_rate=d, kernel_quantizer=quantized_bits(**qbits_config),
+            bias_quantizer=quantized_bits(**qbits_config), name=f"{n}_qconv",)(x)
+        
         x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            name=f"{n}_qbn",
-        )(x)
+            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config), beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name=f"{n}_qbn",)(x)
+        
         if act:
             x = QActivation(quantized_relu(**quantized_relu_config), name=f"{n}_qact")(x)
     else:
         x = Conv2D(filters, kernel_size=k, strides=s, padding='same', dilation_rate=d, activation=None,
                    name=f"{n}_conv")(x)
+        
         x = BatchNormalization(name=f"{n}_bn")(x)
+        
         if act:
             x = Activation('relu', name=f"{n}_act")(x)
     return x
@@ -902,16 +895,11 @@ def depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='', use_quantization=False, p
         else:
             qbits_config = quantized_bits_8_config
         x = QDepthwiseConv2D(
-            kernel_size=k, strides=s, padding='same', dilation_rate=d,
-            depthwise_quantizer=quantized_bits(**qbits_config),
-            bias_quantizer=quantized_bits(**qbits_config),
-            name=f"{n}_qdw",
-        )(x)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-            name=f"{n}_qbn",
-        )(x)
+            kernel_size=k, strides=s, padding='same', dilation_rate=d, depthwise_quantizer=quantized_bits(**qbits_config),
+            bias_quantizer=quantized_bits(**qbits_config), name=f"{n}_qdw")(x)
+        
+        x = QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name=f"{n}_qbn")(x)
+        
         if act:
             x = QActivation(quantized_relu(**quantized_relu_config), name=f"{n}_qact")(x)
     else:
@@ -949,24 +937,39 @@ def mobilenetv2(inputs, use_quantization=False):
 
     # Initial conv, stride 2 -> 1/2
     x = inputs
-    x = (QConv2D(MODEL_CONFIG['init_filters'], 3, strides=2, padding='same',
-                 kernel_quantizer=quantized_bits(**quantized_bits_8_config),
-                 bias_quantizer=quantized_bits(**quantized_bits_8_config),
-                 name='stage0_stem_qconv')(x)
-         if use_quantization else Conv2D(MODEL_CONFIG['init_filters'], 3, strides=2, padding='same', name='stage0_stem_conv')(x))
-    x = (QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),
-                             beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name='stage0_stem_qbn')(x)
-         if use_quantization else BatchNormalization(name='stage0_stem_bn')(x))
-    x = (QActivation(quantized_relu(**quantized_relu_config), name='stage0_stem_qact')(x)
-         if use_quantization else Activation('relu', name='stage0_stem_act')(x))
+    stem_c, c1, c2, c3, c4, c5, c6, c7 = (
+        MODEL_CONFIG['mv2_init'], MODEL_CONFIG['mv2_c1'], MODEL_CONFIG['mv2_c2'],
+        MODEL_CONFIG['mv2_c3'], MODEL_CONFIG['mv2_c4'], MODEL_CONFIG['mv2_c5'],
+        MODEL_CONFIG['mv2_c6'], MODEL_CONFIG['mv2_c7']
+    )
+
+    if use_quantization:
+        x = QConv2D(
+            stem_c, 3, strides=2, padding='same', kernel_quantizer=quantized_bits(**quantized_bits_8_config),
+            bias_quantizer=quantized_bits(**quantized_bits_8_config),name='stage0_stem_qconv')(x)
+        
+        x = QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name='stage0_stem_qbn')(x)
+        
+        x = QActivation(quantized_relu(**quantized_relu_config), name='stage0_stem_qact')(x)
+        
+    else:
+        x = Conv2D(
+            stem_c, 3, strides=2, padding='same',
+            name='stage0_stem_conv')(x)
+        
+        x = BatchNormalization(name='stage0_stem_bn')(x)
+        
+        x = Activation('relu', name='stage0_stem_act')(x)
 
     # Settings: (expansion, out_channels, repeats, stride_to_enter_stage)
     settings = [
-        (1, MODEL_CONFIG['stage1_filters'], 1, 1),  # 1/2 -> 1/2
-        (6, MODEL_CONFIG['stage2_filters'], 2, 2),  # 1/2 -> 1/4
-        (6, MODEL_CONFIG['stage3_filters'], 3, 2),  # 1/4 -> 1/8  (low-level after this stage)
-        (6, MODEL_CONFIG['stage4_filters'], 3, 2),  # 1/8 -> 1/16
-        (6, MODEL_CONFIG['stage4_filters'], 2, 2),  # 1/16 -> 1/32
+        (1, c1, 1, 1),   # 1/2 -> 1/2
+        (6, c2, 2, 2),   # 1/2 -> 1/4
+        (6, c3, 3, 2),   # 1/4 -> 1/8  (low-level after this stage)
+        (6, c4, 4, 2),   # 1/8 -> 1/16
+        (6, c5, 3, 1),   # 1/16 -> 1/16
+        (6, c6, 3, 2),   # 1/16 -> 1/32
+        (6, c7, 1, 1),   # 1/32 -> 1/32
     ]
 
     low_level_s8 = None
@@ -984,7 +987,7 @@ def mobilenetv2(inputs, use_quantization=False):
                 name_prefix=f'stage{stage_idx}_ir{i+1}',
             )
         # Capture low-level after finishing the stage that outputs 1/8
-        if c == MODEL_CONFIG['stage3_filters']:
+        if c == c3:
             low_level_s8 = x
         stage_idx += 1
 
@@ -995,12 +998,12 @@ def create_segmentation_model(use_quantization=False):
     """
     Create DeepLabV3+ model with a from-scratch MobileNetV2-like backbone and ASPP.
     Optionally use QKeras for quantized layers for FPGA implementation.
-
+    
     Args:
         use_quantization: Whether to use QKeras quantized layers
     """
     tf.keras.backend.clear_session()
-
+    
     # Input
     inputs = Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
 
@@ -1008,28 +1011,32 @@ def create_segmentation_model(use_quantization=False):
     low_level, encoder_out = mobilenetv2(inputs, use_quantization=use_quantization)
 
     # ASPP (Atrous Spatial Pyramid Pooling) on encoder_out
-    aspp_filters = MODEL_CONFIG['stage3_filters']
+    # Use configured ASPP/decoder sizes
+    aspp_filters = MODEL_CONFIG['aspp_filters']
     # ASPP is accuracy-critical: use 16-bit for its convs
     aspp_d1 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=1, name_prefix='aspp_d1', use_quantization=use_quantization, precision='16bit')
     aspp_d6 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=6, name_prefix='aspp_d6', use_quantization=use_quantization, precision='16bit')
     aspp_d12 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=12, name_prefix='aspp_d12', use_quantization=use_quantization, precision='16bit')
     aspp_d18 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=18, name_prefix='aspp_d18', use_quantization=use_quantization, precision='16bit')
+    
     x = Concatenate(name='aspp_concat')([aspp_d1, aspp_d6, aspp_d12, aspp_d18])
 
     # Upsample ASPP output to match low-level spatial size (from 1/32 to 1/8)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='aspp_upsample')(x)
 
     # Project low-level features to fewer channels
-    low_level_proj_filters = max(16, MODEL_CONFIG['stage1_filters'] // 2)
+    low_level_proj_filters = max(16, MODEL_CONFIG['low_level_proj'])
     low_level_proj = conv_bn_relu(low_level, low_level_proj_filters, kernel_size=1, dilation_rate=1, name_prefix='low_level_proj', use_quantization=use_quantization, precision='16bit')
 
     # Concatenate decoder features
     x = Concatenate(name='decoder_concat')([x, low_level_proj])
 
-    # Decoder refinement
-    dec_filters = MODEL_CONFIG['stage2_filters']
-    x = conv_bn_relu(x, dec_filters, 3, name_prefix='dec_fuse1', use_quantization=use_quantization, precision='8bit')
-    x = conv_bn_relu(x, dec_filters, 3, name_prefix='dec_fuse2', use_quantization=use_quantization, precision='8bit')
+    # Decoder refinement (depthwise separable)
+    dec_filters = MODEL_CONFIG['decoder_filters']
+    x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse1_dw', use_quantization=use_quantization, precision='8bit')
+    x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_pw', use_quantization=use_quantization, precision='8bit')
+    x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse2_dw', use_quantization=use_quantization, precision='8bit')
+    x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_pw', use_quantization=use_quantization, precision='8bit')
 
     # Final upsampling to original resolution (from 1/8 to 1/1)
     x = UpSampling2D(size=(8, 8), interpolation='bilinear', name='decoder_upsample_final')(x)
@@ -1048,7 +1055,7 @@ def create_segmentation_model(use_quantization=False):
         )(x)
     else:
         outputs = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
-
+    
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name='DeepLabV3Plus_MNV2_scratch')
     return model
 def create_hls4ml_export_model(trained_model=None, use_quantization=False):
