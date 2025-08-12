@@ -581,7 +581,8 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         return colored_mask
     
     def on_epoch_end(self, epoch, logs=None):
-        if (epoch + 1) % self.save_frequency == 0:
+        # Save every epoch for the first 5 epochs, then follow save_frequency
+        if (epoch + 1) <= 5 or ((epoch + 1) % self.save_frequency == 0):
             try:
                 saved = 0
                 batch_idx = 0
@@ -1542,7 +1543,7 @@ def train_model():
             val_generator=val_generator,
             save_dir=viz_dir,
             num_samples=4,
-            save_frequency=1
+            save_frequency=5
         ),
         DetailedMetricsCallback(
             val_generator=val_generator,
