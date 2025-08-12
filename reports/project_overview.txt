@@ -19,7 +19,7 @@ Project Overview and Objectives - UPDATED August 8, 2025
       - U-Net encoder-decoder with skip connections, attention blocks, and optimized multi-precision quantization
       - NEW: Symmetric decoder mirrors encoder: conv + SE attention in mid/deep stages (dec3/dec2), no attention at shallow stage (dec1)
      - FPGA-compatible design (no MaxPooling2D, optimized for hls4ml synthesis)
-     - Input size: 512x1024x3, output: 512x1024x34 (Cityscapes dataset, 34 classes)
+     - Input size: 512x1024x3, output: 512x1024x20 (Cityscapes: 19 trainIds + 1 void)
      - Configurable dropout layers (automatically removed for HLS4ML export)
       - NEW: Depthwise separable convolutions in encoder/decoder blocks for FPGA efficiency
       - NEW: Feature Pyramid Fusion to combine multi-scale features from skips and bridge

@@ -119,34 +119,73 @@ PREFETCH_MAX = 8
 
 DEBUG_MODE = False
 
-# Configure TensorFlow
-n_cores = multiprocessing.cpu_count()
-tf.config.threading.set_inter_op_parallelism_threads(n_cores)
-tf.config.threading.set_intra_op_parallelism_threads(n_cores)
-tf.config.set_soft_device_placement(True)
+# Class weights: emphasize rare classes and ignore 'void' (index 19)
+# Adjust these if you compute dataset-specific frequencies
+CLASS_WEIGHTS = tf.constant([
+    0.5,  # 0: road
+    2.0,  # 1: sidewalk
+    1.0,  # 2: building
+    1.2,  # 3: wall
+    1.2,  # 4: fence
+    1.5,  # 5: pole
+    5.0,  # 6: traffic light (rare)
+    5.0,  # 7: traffic sign (rare)
+    1.0,  # 8: vegetation
+    1.3,  # 9: terrain
+    0.8,  # 10: sky
+    1.5,  # 11: person
+    1.5,  # 12: rider
+    1.5,  # 13: car
+    2.0,  # 14: truck
+    2.0,  # 15: bus
+    2.5,  # 16: train
+    2.0,  # 17: motorcycle
+    2.0,  # 18: bicycle
+    0.0,  # 19: void (ignored in loss)
+], dtype=tf.float32)
 
-# Configure GPU to use more VRAM (from train.py)
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
+def safe_configure_tensorflow(debug_mode=False):
+    """Safely configure TF threading and GPU options if not already initialized."""
     try:
-        for gpu in gpus:
-            # Allow TensorFlow to allocate more GPU memory
-            tf.config.experimental.set_memory_growth(gpu, True)
-            # Set memory limit to use more VRAM (10GB limit for better utilization)
-            # Note: For FPGA deployment, consider reducing batch size and using memory-efficient operations
-            tf.config.set_logical_device_configuration(
-                gpu,
-                [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]  # 10GB limit
-            )
+        n_cores = multiprocessing.cpu_count()
+        tf.config.threading.set_inter_op_parallelism_threads(n_cores)
+        tf.config.threading.set_intra_op_parallelism_threads(n_cores)
+        tf.config.set_soft_device_placement(True)
     except RuntimeError as e:
-        print(f"GPU memory growth setup failed: {e}")
+        print(f"Skipping thread config (already initialized): {e}")
 
-# Enable additional TensorFlow optimizations for GPU utilization
-tf.config.optimizer.set_jit(True)  # Enable XLA compilation for better GPU utilization
-# tf.config.experimental.enable_op_determinism(False)  # Allow non-deterministic ops for performance
+    try:
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        if gpus:
+            for gpu in gpus:
+                try:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                except RuntimeError:
+                    pass
+                try:
+                    tf.config.set_logical_device_configuration(
+                        gpu,
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024*10)]
+                    )
+                except RuntimeError:
+                    # Likely already initialized; ignore
+                    pass
+    except Exception as e:
+        print(f"GPU config skipped: {e}")
 
-print(f"Eager execution enabled: {tf.executing_eagerly()}")
-tf.debugging.set_log_device_placement(DEBUG_MODE)
+    try:
+        tf.config.optimizer.set_jit(True)
+    except Exception as e:
+        print(f"XLA config skipped: {e}")
+
+    print(f"Eager execution enabled: {tf.executing_eagerly()}")
+    try:
+        tf.debugging.set_log_device_placement(debug_mode)
+    except Exception:
+        pass
+
+# Call safe TF configuration early
+safe_configure_tensorflow(DEBUG_MODE)
 
 MODEL_CONFIG = {
     'init_filters': INPUT_HEIGHT // 32,  # 16 (512//32 = 16) - Factor of INPUT_HEIGHT
@@ -241,11 +280,15 @@ def dice_loss(y_true, y_pred, smooth=1e-7):
     PARAMETERS:
     - smooth: Prevents division by zero (default: 1e-6)
     """
-    y_true_f = K.flatten(y_true)
-    y_pred_f = K.flatten(y_pred)
-    intersection = K.sum(y_true_f * y_pred_f)
-    dice_coeff = (2. * intersection + smooth) / (K.sum(y_true_f) + K.sum(y_pred_f) + smooth)
-    return 1 - dice_coeff
+    # Weighted per-class dice loss, ignoring void via CLASS_WEIGHTS
+    y_true_clipped = K.clip(y_true, 0.0, 1.0)
+    y_pred_clipped = K.clip(y_pred, 0.0, 1.0)
+    intersection = K.sum(y_true_clipped * y_pred_clipped, axis=[0, 1, 2])
+    sums = K.sum(y_true_clipped, axis=[0, 1, 2]) + K.sum(y_pred_clipped, axis=[0, 1, 2])
+    dice_per_class = (2.0 * intersection + smooth) / (sums + smooth)
+    weights = CLASS_WEIGHTS / (K.sum(CLASS_WEIGHTS) + K.epsilon())
+    weighted_dice_loss = K.sum(weights * (1.0 - dice_per_class))
+    return weighted_dice_loss
 
 def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     """
@@ -266,16 +309,19 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     - alpha: Weighting factor for rare classes (default: 0.25)
     - gamma: Focusing parameter - higher values focus more on hard examples (default: 2.0)
     """
-    y_true_f = K.flatten(y_true)
-    y_pred_f = K.flatten(y_pred)
-    
-    # Clip predictions to prevent log(0)
-    y_pred_f = K.clip(y_pred_f, K.epsilon(), 1.0 - K.epsilon())
-    
-    # Calculate focal loss
-    pt = y_true_f * y_pred_f + (1 - y_true_f) * (1 - y_pred_f)
-    focal_loss = -alpha * K.pow(1 - pt, gamma) * K.log(pt)
-    return K.mean(focal_loss)
+    # Class-weighted focal loss on one-hot labels; void ignored via zero weight
+    y_true_safe = K.stop_gradient(y_true)
+    y_pred_safe = K.clip(y_pred, K.epsilon(), 1.0 - K.epsilon())
+    # Per-pixel CE per class
+    ce = -y_true_safe * K.log(y_pred_safe)
+    # pt is prob of true class
+    pt = K.sum(y_true_safe * y_pred_safe, axis=-1, keepdims=True)
+    modulating = K.pow(1.0 - pt, gamma)
+    # Broadcast class weights to last axis
+    weighted_ce = ce * CLASS_WEIGHTS
+    focal = modulating * weighted_ce
+    # Reduce: sum over classes, then mean over batch and spatial dims
+    return K.mean(K.sum(focal, axis=-1))
 
 
 def weighted_combined_loss(y_true, y_pred):
@@ -324,7 +370,7 @@ def set_dynamic_loss_weights(epoch, total_epochs, transition_point=0.7,
 
 def mean_iou(y_true, y_pred):
     """
-    Mean IoU metric for semantic segmentation - corrected to match calculate_iou logic
+    Mean IoU metric for semantic segmentation - ignores void class (index 19)
     """
     # Convert to class predictions
     y_pred = tf.argmax(y_pred, axis=-1)
@@ -332,7 +378,7 @@ def mean_iou(y_true, y_pred):
 
     # Calculate IoU for each class
     ious = []
-    for class_id in range(NUM_CLASSES):
+    for class_id in range(NUM_CLASSES - 1):  # exclude void=19
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(tf.equal(y_true, class_id), tf.equal(y_pred, class_id)), tf.float32))
 
@@ -347,48 +393,37 @@ def mean_iou(y_true, y_pred):
     del ious, intersection, union, iou
     return result
 
-# Class-specific IoU metrics for Cityscapes classes
-def group_class_iou(y_true, y_pred, target_class_ids):
-    """IoU for a group of classes treated as a single category."""
-    # Convert to class predictions
-    y_pred_ids = tf.argmax(y_pred, axis=-1)
-    y_true_ids = tf.argmax(y_true, axis=-1)
 
-    # Build boolean masks for group membership
-    def in_group(ids):
-        stacked = tf.stack([tf.equal(ids, tid) for tid in target_class_ids], axis=-1)
-        return tf.reduce_any(stacked, axis=-1)
+class GroupClassIoUMetric(tf.keras.metrics.Metric):
+    """Streaming IoU over an epoch for a group of classes (treated as one).
 
-    pred_pos = in_group(y_pred_ids)
-    true_pos = in_group(y_true_ids)
+    Returns 0.0 if the class never appears in the epoch (no-union case).
+    """
+    def __init__(self, target_class_ids, name="group_iou", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.target_class_ids = tf.constant(list(target_class_ids), dtype=tf.int32)
+        self.total_intersection = self.add_weight(name=f"{name}_intersection", initializer="zeros", dtype=tf.float32)
+        self.total_union = self.add_weight(name=f"{name}_union", initializer="zeros", dtype=tf.float32)
 
-    intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_pos, pred_pos), tf.float32))
-    union = tf.reduce_sum(tf.cast(tf.logical_or(true_pos, pred_pos), tf.float32))
-    iou = tf.where(union > 0, intersection / union,
-                   tf.where(intersection == 0, 1.0, 0.0))
-    return iou
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred_ids = tf.argmax(y_pred, axis=-1, output_type=tf.int32)
+        y_true_ids = tf.argmax(y_true, axis=-1, output_type=tf.int32)
 
-def cars(y_true, y_pred):
-    """IoU for car class only (trainId 13)."""
-    return group_class_iou(y_true, y_pred, target_class_ids=[13])
+        pred_pos = tf.reduce_any(tf.equal(tf.expand_dims(y_pred_ids, -1), self.target_class_ids), axis=-1)
+        true_pos = tf.reduce_any(tf.equal(tf.expand_dims(y_true_ids, -1), self.target_class_ids), axis=-1)
 
+        intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_pos, pred_pos), tf.float32))
+        union = tf.reduce_sum(tf.cast(tf.logical_or(true_pos, pred_pos), tf.float32))
 
-def road(y_true, y_pred):
-    """IoU for road group (road stays as 0 in CLASS_MAP)."""
-    return group_class_iou(y_true, y_pred, target_class_ids=[0])
+        self.total_intersection.assign_add(intersection)
+        self.total_union.assign_add(union)
 
-def sidewalk(y_true, y_pred):
-    """IoU for sidewalk group (sidewalk stays as 1)."""
-    return group_class_iou(y_true, y_pred, target_class_ids=[1])
+    def result(self):
+        return tf.where(self.total_union > 0.0, self.total_intersection / self.total_union, 0.0)
 
-def traffic_light(y_true, y_pred):
-    """IoU for traffic_light group (6)."""
-    return group_class_iou(y_true, y_pred, target_class_ids=[6])
-
-def traffic_sign(y_true, y_pred):
-    """IoU for traffic_sign group (7)."""
-    return group_class_iou(y_true, y_pred, target_class_ids=[7])
-
+    def reset_states(self):
+        self.total_intersection.assign(0.0)
+        self.total_union.assign(0.0)
 
 
 def precision_metric(y_true, y_pred):
@@ -1429,20 +1464,18 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         # loss=dice_loss,  # Use dice loss only
-        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
-        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
             mean_iou,
-            cars,
-            road,
-            sidewalk,
-            traffic_light,
-            traffic_sign
-            # precision_metric,
-            # recall_metric,
-            # f1_score_metric
+            # Streaming per-class IoUs (same names for CSV columns)
+            GroupClassIoUMetric([13], name="cars"),
+            GroupClassIoUMetric([0], name="road"),
+            GroupClassIoUMetric([1], name="sidewalk"),
+            GroupClassIoUMetric([6], name="traffic_light"),
+            GroupClassIoUMetric([7], name="traffic_sign"),
         ],
     )
     print(f"Model compiled with learning rate: {lr_schedule}")
@@ -1490,7 +1523,7 @@ def train_model():
         # Dynamic loss weight adjustment via stateless LambdaCallback to avoid symbolic binding issues
         tf.keras.callbacks.LambdaCallback(
             on_epoch_begin=lambda epoch, logs: set_dynamic_loss_weights(
-                epoch, EPOCHS, transition_point=0.7,
+                epoch, EPOCHS, transition_point=1.2,
                 initial_ce_weight=0.1, initial_dice_weight=0.8, initial_focal_weight=0.1
             )
         ),

@@ -15,25 +15,50 @@ DEFAULT_NUM_SAMPLES = 8
 
 
 def build_transforms(target_width=1024, target_height=512):
-    return A.Compose([
-        A.RandomCrop(width=target_width, height=target_height, p=1),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.2),
-        A.Rotate(limit=45, p=0.4, border_mode=cv2.BORDER_CONSTANT),
-        A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.3),
-        A.ElasticTransform(alpha=1, sigma=50, p=0.15),
-        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.15),
-        A.RandomBrightnessContrast(brightness_limit=0.4, contrast_limit=0.4, p=0.4),
-        A.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.3),
-        A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=40, val_shift_limit=30, p=0.3),
-        A.RandomGamma(gamma_limit=(80, 120), p=0.2),
-        A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),
-        A.GaussianBlur(blur_limit=(3, 7), p=0.15),
-        A.MotionBlur(blur_limit=7, p=0.15),
-        A.RandomRain(drop_length=20, drop_width=1, drop_color=(200, 200, 200), blur_value=3, brightness_coefficient=0.7, rain_type='drizzle', p=0.1),
-        A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.1),
-        A.CoarseDropout(max_holes=8, max_height=32, max_width=32, min_holes=1, min_height=8, min_width=8, p=0.15),
-    ])
+    return A.Compose(
+        [
+            A.RandomCrop(width=target_width, height=target_height, p=1),
+            A.HorizontalFlip(p=0.3),
+            A.Rotate(limit=15, p=0.3, border_mode=cv2.BORDER_CONSTANT),
+            A.ShiftScaleRotate(
+                shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.3
+            ),
+            A.ElasticTransform(alpha=1, sigma=50, p=0.15),
+            A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.15),
+            # Color and contrast augmentations - enhanced for lighting variations
+            A.RandomBrightnessContrast(brightness_limit=0.4, contrast_limit=0.4, p=0.4),
+            A.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.3),
+            A.HueSaturationValue(
+                hue_shift_limit=30, sat_shift_limit=40, val_shift_limit=30, p=0.3
+            ),
+            A.RandomGamma(gamma_limit=(80, 120), p=0.2),
+            # Noise and blur augmentations
+            A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),
+            A.GaussianBlur(blur_limit=(3, 7), p=0.15),
+            A.MotionBlur(blur_limit=4, p=0.15),
+            # Weather and lighting effects
+            A.RandomRain(
+                drop_length=20,
+                drop_width=1,
+                drop_color=(200, 200, 200),
+                blur_value=3,
+                brightness_coefficient=0.7,
+                rain_type="drizzle",
+                p=0.1,
+            ),
+            A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.1),
+            # Occlusion and masking
+            A.CoarseDropout(
+                max_holes=8,
+                max_height=32,
+                max_width=32,
+                min_holes=1,
+                min_height=8,
+                min_width=8,
+                p=0.15,
+            ),
+        ]
+    )
 
 
 # Cityscapes trainIds palette (0..18); 255 = ignore
@@ -159,5 +184,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

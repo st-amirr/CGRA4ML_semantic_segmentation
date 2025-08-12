@@ -41,7 +41,7 @@ PHASE 1: Initial Model Development and Architecture
 - U-Net encoder-decoder architecture with advanced attention mechanisms
 - FPGA-compatible design principles (no MaxPooling, optimized for hls4ml synthesis)
 - Multi-precision quantization strategy (8/16/32-bit) with layer-specific allocation
-- Input: 512x1024x3, Output: 512x1024x34 (Cityscapes dataset, 34 classes)
+ - Input: 512x1024x3, Output: 512x1024x20 (Cityscapes: 19 trainIds + 1 void)
 - Configurable dropout layers with automatic HLS4ML export cleanup
 
 1.2 Training Infrastructure Evolution
@@ -319,7 +319,7 @@ PHASE 4: Comprehensive Monitoring and Visualization System
 - **Storage**: Organized PNG files in structured directory hierarchy
 
 4.3 Detailed Performance Analytics
-- **Per-class IoU Calculations**: Comprehensive class-wise performance tracking for all 34 classes
+- **Per-class IoU Calculations**: Class-wise performance for 19 trainIds; void tracked separately
 - **Memory Monitoring**: Real-time memory usage tracking with automatic cleanup optimization
 - **Learning Rate Tracking**: ExponentialDecay schedule with detailed visualization
 - **Weight Distribution Analysis**: Statistical analysis enabling quantization optimization
