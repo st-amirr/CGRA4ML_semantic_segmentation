@@ -285,68 +285,43 @@ def weighted_combined_loss(y_true, y_pred):
     Weights are updated dynamically by DynamicLossWeightCallback
     """
     global ce_weight, dice_weight, focal_weight
-    ce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+    # Class-weighted categorical crossentropy (ignore void via zero weight)
+    y_pred_safe = K.clip(y_pred, K.epsilon(), 1.0 - K.epsilon())
+    ce_per_class = -y_true * K.log(y_pred_safe)
+    ce_weighted = ce_per_class * CLASS_WEIGHTS
+    ce = K.mean(K.sum(ce_weighted, axis=-1))
     dice = dice_loss(y_true, y_pred)
     focal = focal_loss(y_true, y_pred)
     # Dynamic weights updated by callback
     return ce_weight * ce + dice_weight * dice + focal_weight * focal
 
-class DynamicLossWeightCallback(tf.keras.callbacks.Callback):
-    """
-    Callback to dynamically adjust loss weights based on epoch progress.
-    
-    Weight Progression:
-    - Epoch 0-70%: CE weight increases from 0.2 to 0.9, Dice weight decreases from 0.7 to 0.0
-    - Epoch 70%+: CE weight = 0.9, Dice weight = 0.0, Focal weight = 0.1 (constant)
-    
-    This strategy helps with:
-    1. Early training: Dice loss helps with segmentation boundaries
-    2. Late training: CE loss dominates for better classification accuracy
-    3. Focal loss: Always present to handle class imbalance
-    """
-    def __init__(self, total_epochs, transition_point=0.7):
-        super().__init__()
-        self.total_epochs = total_epochs
-        self.transition_point = transition_point  # 70% of epochs
-        self.initial_ce_weight = 0.1
-        self.initial_dice_weight = 0.8
-        self.initial_focal_weight = 0.1
-        
-    def on_epoch_begin(self, epoch, logs=None):
-        global ce_weight, dice_weight, focal_weight
-        
-        # Calculate progress (0.0 to 1.0)
-        progress = epoch / self.total_epochs
-        
-        if progress <= self.transition_point:
-            # Before transition point: gradually reduce dice weight and increase CE weight
-            # Linear interpolation from initial weights to final weights
-            transition_progress = progress / self.transition_point
-            
-            # CE weight increases from 0.2 to 0.9
-            ce_weight = self.initial_ce_weight + (0.9 - self.initial_ce_weight) * transition_progress
-            
-            # Dice weight decreases from 0.7 to 0.0
-            dice_weight = self.initial_dice_weight * (1 - transition_progress)
-            
-            # Focal weight stays constant at 0.1
-            focal_weight = self.initial_focal_weight
-            
-        else:
-            # After transition point: fixed weights
-            ce_weight = 0.9
-            dice_weight = 0.0
-            focal_weight = 0.1
-        
-        # Ensure weights sum to 1.0
-        total_weight = ce_weight + dice_weight + focal_weight
-        ce_weight /= total_weight
-        dice_weight /= total_weight
-        focal_weight /= total_weight
-        
-        print(f"Epoch {epoch+1}/{self.total_epochs} - Loss weights: CE={ce_weight:.3f}, Dice={dice_weight:.3f}, Focal={focal_weight:.3f}")
-
 # Add custom metrics for better monitoring
+def set_dynamic_loss_weights(epoch, total_epochs, transition_point=0.7,
+                             initial_ce_weight=0.1, initial_dice_weight=0.8, initial_focal_weight=0.1):
+    """Stateless helper to set global loss weights based on epoch progress.
+
+    Avoids any callback binding issues by using a LambdaCallback.
+    """
+    global ce_weight, dice_weight, focal_weight
+    progress = float(epoch) / float(total_epochs) if total_epochs else 0.0
+    if progress <= transition_point:
+        transition_progress = progress / transition_point if transition_point else 1.0
+        ce_weight = initial_ce_weight + (0.9 - initial_ce_weight) * transition_progress
+        dice_weight = initial_dice_weight * (1.0 - transition_progress)
+        focal_weight = initial_focal_weight
+    else:
+        ce_weight = 0.9
+        dice_weight = 0.0
+        focal_weight = 0.1
+    total_weight = ce_weight + dice_weight + focal_weight
+    ce_weight /= total_weight
+    dice_weight /= total_weight
+    focal_weight /= total_weight
+    try:
+        print(f"Epoch {epoch+1}/{total_epochs} - Loss weights: CE={ce_weight:.3f}, Dice={dice_weight:.3f}, Focal={focal_weight:.3f}")
+    except Exception:
+        pass
+
 def mean_iou(y_true, y_pred):
     """
     Mean IoU metric for semantic segmentation - corrected to match calculate_iou logic
@@ -680,15 +655,15 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         if self.augment:
             self.transform = A.Compose([
                 # Geometric augmentations - more aggressive for robustness
-                A.RandomCrop(width=self.target_width, height=self.target_height, p=1),
-                A.HorizontalFlip(p=0.3),
-                A.Rotate(limit=15, p=0.3, border_mode=cv2.BORDER_CONSTANT),
-                A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.3),
+                A.RandomCrop(width=self.target_width, height=self.target_height, p=0.1),
+                A.HorizontalFlip(p=0.2),
+                A.Rotate(limit=15, p=0.2, border_mode=cv2.BORDER_CONSTANT),
+                A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.1),
                 A.ElasticTransform(alpha=1, sigma=50, p=0.15),
                 A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.15),
                 
                 # Color and contrast augmentations - enhanced for lighting variations
-                A.RandomBrightnessContrast(brightness_limit=0.4, contrast_limit=0.4, p=0.4),
+                A.RandomBrightnessContrast(brightness_limit=0.4, contrast_limit=0.4, p=0.3),
                 A.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.3),
                 A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=40, val_shift_limit=30, p=0.3),
                 A.RandomGamma(gamma_limit=(80, 120), p=0.2),
@@ -703,9 +678,8 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.1),
                 
                 # Occlusion and masking
-                A.CoarseDropout(max_holes=8, max_height=32, max_width=32, min_holes=1, min_height=8, min_width=8, p=0.15),
+                A.CoarseDropout(max_holes=8, max_height=16, max_width=16, min_holes=1, min_height=4, min_width=4, p=0.15),
                 
-                # Note: Removed A.Normalize to avoid double normalization; images are scaled by /255 below
             ])
         else:
             self.transform = None
@@ -1447,7 +1421,7 @@ def train_model():
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
             decay_steps=15000 // BATCH_SIZE,  # Decay every 5 epoch
-            decay_rate=0.7,
+            decay_rate=0.8,
             staircase=True,
         )
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
@@ -1513,8 +1487,13 @@ def train_model():
 
     # Enhanced callbacks with proper state management
     callbacks = [
-        # Dynamic loss weight adjustment callback
-        DynamicLossWeightCallback(total_epochs=EPOCHS, transition_point=0.7),
+        # Dynamic loss weight adjustment via stateless LambdaCallback to avoid symbolic binding issues
+        tf.keras.callbacks.LambdaCallback(
+            on_epoch_begin=lambda epoch, logs: set_dynamic_loss_weights(
+                epoch, EPOCHS, transition_point=0.7,
+                initial_ce_weight=0.1, initial_dice_weight=0.8, initial_focal_weight=0.1
+            )
+        ),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
             save_weights_only=True,  # Save weights only for compatibility
