@@ -128,10 +128,10 @@ MODEL_CONFIG = {
     'mv2_c3':   INPUT_HEIGHT // 16,              # 32 @ 512
     'mv2_c4':   INPUT_HEIGHT // 8,               # 64 @ 512
     'mv2_c5':   (INPUT_HEIGHT * 3) // 16,        # 96 @ 512
-    'mv2_c6':   (INPUT_HEIGHT * 5) // 16,        # 160 @ 512
-    'mv2_c7':   (INPUT_HEIGHT * 5) // 8,         # 320 @ 512
+    'mv2_c6':   INPUT_HEIGHT  // 4,        # 128 @ 512
+    'mv2_c7':   INPUT_HEIGHT // 2,         # 256 @ 512
     # Decoder/ASPP expressed as factors of INPUT_HEIGHT
-    'aspp_filters':    INPUT_HEIGHT // 4,        # 128 @ 512
+    'aspp_filters':    INPUT_HEIGHT // 8,        # 128 @ 512
     'low_level_proj':  INPUT_HEIGHT // 16,       # 32 @ 512
     'decoder_filters': INPUT_HEIGHT // 4,        # 128 @ 512
     # Use dilated convolutions in decoder refinement blocks
@@ -1417,7 +1417,7 @@ def train_model():
         # Dynamic loss weight adjustment via stateless LambdaCallback to avoid symbolic binding issues
         tf.keras.callbacks.LambdaCallback(
             on_epoch_begin=lambda epoch, logs: set_dynamic_loss_weights(
-                epoch, EPOCHS, transition_point=1.2,
+                epoch, EPOCHS, transition_point=0.8,
                 initial_ce_weight=0.1, initial_dice_weight=0.8, initial_focal_weight=0.1
             )
         ),
