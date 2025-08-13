@@ -62,6 +62,7 @@ from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activatio
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 from qkeras.utils import model_save_quantized_weights
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard
+from tensorflow.keras.metrics import MeanIoU
 import albumentations as A
 from PIL import Image
 import cv2
@@ -121,19 +122,19 @@ DEBUG_MODE = False
 
 
 MODEL_CONFIG = {
-    # MobileNetV2 channels expressed as factors of INPUT_HEIGHT (exact at 512)
-    'mv2_init': INPUT_HEIGHT // 16,              # 32 @ 512
-    'mv2_c1':   INPUT_HEIGHT // 32,              # 16 @ 512
-    'mv2_c2':   (INPUT_HEIGHT * 3) // 64,        # 24 @ 512
-    'mv2_c3':   INPUT_HEIGHT // 16,              # 32 @ 512
-    'mv2_c4':   INPUT_HEIGHT // 8,               # 64 @ 512
-    'mv2_c5':   (INPUT_HEIGHT * 3) // 16,        # 96 @ 512
-    'mv2_c6':   INPUT_HEIGHT  // 4,        # 128 @ 512
-    'mv2_c7':   INPUT_HEIGHT // 2,         # 256 @ 512
-    # Decoder/ASPP expressed as factors of INPUT_HEIGHT
-    'aspp_filters':    INPUT_HEIGHT // 8,        # 128 @ 512
-    'low_level_proj':  INPUT_HEIGHT // 16,       # 32 @ 512
-    'decoder_filters': INPUT_HEIGHT // 4,        # 128 @ 512
+    # MobileNetV2 channels (fixed to match DeepLabV3+ MobileNetV2 ~2.7M params)
+    'mv2_init': 16,
+    'mv2_c1':   16,
+    'mv2_c2':   24,
+    'mv2_c3':   32,
+    'mv2_c4':   64,
+    'mv2_c5':   96,
+    'mv2_c6':   160,
+    'mv2_c7':   320,
+    # ASPP and decoder configuration
+    'aspp_filters':    128,
+    'low_level_proj':  32,
+    'decoder_filters': 128,
     # Use dilated convolutions in decoder refinement blocks
     'use_dilated_conv': True,
 }
@@ -707,10 +708,8 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 # Geometric augmentations - more aggressive for robustness
                 A.RandomCrop(width=self.target_width, height=self.target_height, p=0.1),
                 A.HorizontalFlip(p=0.2),
-                A.Rotate(limit=15, p=0.2, border_mode=cv2.BORDER_CONSTANT),
+                A.Rotate(limit=5, p=0.2, border_mode=cv2.BORDER_CONSTANT),
                 A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.1),
-                A.ElasticTransform(alpha=1, sigma=50, p=0.15),
-                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.15),
                 
                 # Color and contrast augmentations - enhanced for lighting variations
                 A.RandomBrightnessContrast(brightness_limit=0.4, contrast_limit=0.4, p=0.3),
@@ -1012,14 +1011,20 @@ def create_segmentation_model(use_quantization=False):
     # Backbone from scratch (returns low-level at 1/8 and encoder_out at 1/32)
     low_level, encoder_out = mobilenetv2(inputs, use_quantization=use_quantization)
 
-    # ASPP (Atrous Spatial Pyramid Pooling) on encoder_out
     # Use configured ASPP/decoder sizes
     aspp_filters = MODEL_CONFIG['aspp_filters']
-    # ASPP is accuracy-critical: use 16-bit for its convs
-    aspp_d1 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=1, name_prefix='aspp_d1', use_quantization=use_quantization, precision='16bit')
-    aspp_d6 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=6, name_prefix='aspp_d6', use_quantization=use_quantization, precision='16bit')
-    aspp_d12 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=12, name_prefix='aspp_d12', use_quantization=use_quantization, precision='16bit')
-    aspp_d18 = conv_bn_relu(encoder_out, aspp_filters, 3, dilation_rate=18, name_prefix='aspp_d18', use_quantization=use_quantization, precision='16bit')
+    # ASPP: depthwise separable convs to reduce parameters (DW k3 with dilation + PW k1)
+    aspp_d1 = depthwise_bn_act(encoder_out, k=3, s=1, d=1, act=True, n='aspp_d1_dw', use_quantization=use_quantization, precision='16bit')
+    aspp_d1 = conv_bn_act(aspp_d1, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d1_pw', use_quantization=use_quantization, precision='16bit')
+
+    aspp_d6 = depthwise_bn_act(encoder_out, k=3, s=1, d=6, act=True, n='aspp_d6_dw', use_quantization=use_quantization, precision='16bit')
+    aspp_d6 = conv_bn_act(aspp_d6, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d6_pw', use_quantization=use_quantization, precision='16bit')
+
+    aspp_d12 = depthwise_bn_act(encoder_out, k=3, s=1, d=12, act=True, n='aspp_d12_dw', use_quantization=use_quantization, precision='16bit')
+    aspp_d12 = conv_bn_act(aspp_d12, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d12_pw', use_quantization=use_quantization, precision='16bit')
+
+    aspp_d18 = depthwise_bn_act(encoder_out, k=3, s=1, d=18, act=True, n='aspp_d18_dw', use_quantization=use_quantization, precision='16bit')
+    aspp_d18 = conv_bn_act(aspp_d18, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d18_pw', use_quantization=use_quantization, precision='16bit')
     
     x = Concatenate(name='aspp_concat')([aspp_d1, aspp_d6, aspp_d12, aspp_d18])
     if USE_DROPOUT_DURING_TRAINING:
@@ -1039,11 +1044,13 @@ def create_segmentation_model(use_quantization=False):
     dec_filters = MODEL_CONFIG['decoder_filters']
     use_dilated = MODEL_CONFIG.get('use_dilated_conv', False)
     if use_dilated:
-        # regular 3x3 with dilation for larger context
-        x = conv_bn_relu(x, dec_filters, 3, dilation_rate=2, name_prefix='dec_fuse1_dil', use_quantization=use_quantization, precision='8bit')
+        # depthwise separable with dilation for larger context and fewer params
+        x = depthwise_bn_act(x, k=3, s=1, d=2, act=True, n='dec_fuse1_dil_dw', use_quantization=use_quantization, precision='8bit')
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_dil_pw', use_quantization=use_quantization, precision='8bit')
         if USE_DROPOUT_DURING_TRAINING:
             x = Dropout(0.1, name='dec_fuse1_dropout')(x)
-        x = conv_bn_relu(x, dec_filters, 3, dilation_rate=2, name_prefix='dec_fuse2_dil', use_quantization=use_quantization, precision='8bit')
+        x = depthwise_bn_act(x, k=3, s=1, d=2, act=True, n='dec_fuse2_dil_dw', use_quantization=use_quantization, precision='8bit')
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_dil_pw', use_quantization=use_quantization, precision='8bit')
         if USE_DROPOUT_DURING_TRAINING:
             x = Dropout(0.1, name='dec_fuse2_dropout')(x)
     else:
@@ -1358,14 +1365,14 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         # loss=dice_loss,  # Use dice loss only
-        # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
-        loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
             mean_iou,
+            MeanIoU(num_classes=19),
             # Streaming per-class IoUs (same names for CSV columns)
-            GroupClassIoUMetric([13], name="cars"),
             GroupClassIoUMetric([0], name="road"),
             GroupClassIoUMetric([1], name="sidewalk"),
             GroupClassIoUMetric([6], name="traffic_light"),
