@@ -204,33 +204,7 @@ tf.config.optimizer.set_experimental_options({
     'shape_optimization': True,
     'remapping': True,
 })
-# Class weights: emphasize rare classes and ignore 'void' (index 19)
-# Adjust these if you compute dataset-specific frequencies
-CLASS_WEIGHTS = tf.constant(
-    [
-        0.5,  # 0: road
-        2.0,  # 1: sidewalk
-        1.0,  # 2: building
-        1.2,  # 3: wall
-        1.2,  # 4: fence
-        1.5,  # 5: pole
-        5.0,  # 6: traffic light (rare)
-        5.0,  # 7: traffic sign (rare)
-        1.0,  # 8: vegetation
-        1.3,  # 9: terrain
-        0.8,  # 10: sky
-        1.5,  # 11: person
-        1.5,  # 12: rider
-        1.5,  # 13: car
-        2.0,  # 14: truck
-        2.0,  # 15: bus
-        2.5,  # 16: train
-        2.0,  # 17: motorcycle
-        2.0,  # 18: bicycle
-        0.0,  # 19: void (ignored in loss)
-    ],
-    dtype=tf.float32,
-)
+# No class weights; losses ignore the void class (index 19) directly
 
 
 def safe_configure_tensorflow(debug_mode=False):
@@ -296,15 +270,15 @@ def dice_loss(y_true, y_pred, smooth=1e-7):
     PARAMETERS:
     - smooth: Prevents division by zero (default: 1e-6)
     """
-    # Weighted per-class dice loss, ignoring void via CLASS_WEIGHTS
-    y_true_clipped = K.clip(y_true, 0.0, 1.0)
-    y_pred_clipped = K.clip(y_pred, 0.0, 1.0)
+    # Compute per-class Dice over classes 0..18 (exclude void=19), unweighted
+    y_true_19 = y_true[..., :19]
+    y_pred_19 = y_pred[..., :19]
+    y_true_clipped = K.clip(y_true_19, 0.0, 1.0)
+    y_pred_clipped = K.clip(y_pred_19, 0.0, 1.0)
     intersection = K.sum(y_true_clipped * y_pred_clipped, axis=[0, 1, 2])
     sums = K.sum(y_true_clipped, axis=[0, 1, 2]) + K.sum(y_pred_clipped, axis=[0, 1, 2])
     dice_per_class = (2.0 * intersection + smooth) / (sums + smooth)
-    weights = CLASS_WEIGHTS / (K.sum(CLASS_WEIGHTS) + K.epsilon())
-    weighted_dice_loss = K.sum(weights * (1.0 - dice_per_class))
-    return weighted_dice_loss
+    return K.mean(1.0 - dice_per_class)
 
 def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     """
@@ -325,18 +299,15 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     - alpha: Weighting factor for rare classes (default: 0.25)
     - gamma: Focusing parameter - higher values focus more on hard examples (default: 2.0)
     """
-    # Class-weighted focal loss on one-hot labels; void ignored via zero weight
-    y_true_safe = K.stop_gradient(y_true)
-    y_pred_safe = K.clip(y_pred, K.epsilon(), 1.0 - K.epsilon())
-    # Per-pixel CE per class
+    # Focal loss on classes 0..18; void excluded
+    y_true_19 = y_true[..., :19]
+    y_pred_19 = y_pred[..., :19]
+    y_true_safe = K.stop_gradient(y_true_19)
+    y_pred_safe = K.clip(y_pred_19, K.epsilon(), 1.0 - K.epsilon())
     ce = -y_true_safe * K.log(y_pred_safe)
-    # pt is prob of true class
     pt = K.sum(y_true_safe * y_pred_safe, axis=-1, keepdims=True)
     modulating = K.pow(1.0 - pt, gamma)
-    # Broadcast class weights to last axis
-    weighted_ce = ce * CLASS_WEIGHTS
-    focal = modulating * weighted_ce
-    # Reduce: sum over classes, then mean over batch and spatial dims
+    focal = modulating * ce
     return K.mean(K.sum(focal, axis=-1))
 
 
@@ -347,11 +318,12 @@ def weighted_combined_loss(y_true, y_pred):
     Weights are updated dynamically by DynamicLossWeightCallback
     """
     global ce_weight, dice_weight, focal_weight
-    # Class-weighted categorical crossentropy (ignore void via zero weight)
-    y_pred_safe = K.clip(y_pred, K.epsilon(), 1.0 - K.epsilon())
-    ce_per_class = -y_true * K.log(y_pred_safe)
-    ce_weighted = ce_per_class * CLASS_WEIGHTS
-    ce = K.mean(K.sum(ce_weighted, axis=-1))
+    # Categorical crossentropy over classes 0..18 (exclude void)
+    y_true_19 = y_true[..., :19]
+    y_pred_19 = y_pred[..., :19]
+    y_pred_safe = K.clip(y_pred_19, K.epsilon(), 1.0 - K.epsilon())
+    ce_per_class = -y_true_19 * K.log(y_pred_safe)
+    ce = K.mean(K.sum(ce_per_class, axis=-1))
     dice = dice_loss(y_true, y_pred)
     focal = focal_loss(y_true, y_pred)
     # Dynamic weights updated by callback
