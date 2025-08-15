@@ -159,41 +159,44 @@ quantized_bits_16_config = {
     'scale_axis': None
 }
 
-# For Output Layer and large range layers: already set correctly
-quantized_bits_32_config = {
-    'bits': 32,
-    'integer': 8,  # already set correctly
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
+def create_quantized_bits_config(bits, integer_bits, symmetric=True):
+    """
+    Create quantization configuration dictionary based on weight analysis.
+    
+    Args:
+        bits: Total number of bits (8, 16, or 32)
+        integer_bits: Number of integer bits
+        symmetric: Whether to use symmetric quantization
+    
+    Returns:
+        Dictionary with quantization configuration
+    """
+    return {
+        'bits': bits,
+        'integer': integer_bits,
+        'symmetric': symmetric,
+        'alpha': 'auto_po2',
+        'use_stochastic_rounding': True,
+        'scale_axis': None
+    }
 
-# Layer-wise quantization configurations for different layer types
-# BatchNorm layers: lower precision (8-bits) to avoid quantization errors
-quantized_bits_batchnorm_config = {
-    'bits': 8,
-    'integer': 1,  # Lower integer bits for BatchNorm
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,  # Critical for BatchNorm stability
-    'scale_axis': None
-}
 
-# Activation quantization: 8-bits with stochastic rounding for better training
-quantized_bits_activation_config = {
-    'bits': 16,
-    'integer': 8,  # increase from 4 to 6 (max activation ~±64)
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,  # Critical for activation quantization
-    'scale_axis': None
-}
 
-# General activations: safely increase integer bits to avoid saturation or overflow
+# Default configurations for backward compatibility
+quantized_bits_8_config = create_quantized_bits_config(8, 1, True)
+quantized_bits_16_config = create_quantized_bits_config(16, 4, True)
+quantized_bits_32_config = create_quantized_bits_config(32, 8, True)
+
+# BatchNorm configuration (default)
+quantized_bits_batchnorm_config = create_quantized_bits_config(8, 1, True)
+
+# Activation quantization configuration
+quantized_bits_activation_config = create_quantized_bits_config(16, 8, True)
+
+# General activations configuration
 quantized_relu_config = {
     'bits': 16,
-    'integer': 8,  # increase from 4 to 6 (max activation ~±64)
+    'integer': 8,
     'use_stochastic_rounding': True
 }
 
@@ -806,19 +809,21 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         return np.array(batch_images), np.array(batch_masks)
 
 # Small helper to swap quantized/non-quantized layers
-def conv_bn_relu(x, filters, kernel_size=3, dilation_rate=1, name_prefix="conv", use_quantization=False, precision='8bit'):
+def conv_bn_relu(x, filters, kernel_size=3, dilation_rate=1, name_prefix="conv", use_quantization=False):
     if use_quantization:
-        if precision == '16bit':
-            qbits_config = quantized_bits_16_config
-        elif precision == '32bit':
-            qbits_config = quantized_bits_32_config
+        # Use 8-bit quantization for most conv layers, 16-bit for important ones
+        if 'output' in name_prefix or 'final' in name_prefix:
+            conv_config = create_quantized_bits_config(16, 4, True)  # 16-bit for output layers
         else:
-            qbits_config = quantized_bits_8_config
+            conv_config = create_quantized_bits_config(8, 2, True)   # 8-bit for regular layers
+            
+        # Use 16-bit for BatchNorm layers (important for accuracy)
+        bn_config = create_quantized_bits_config(16, 4, True)
             
         x = QConv2D(filters, kernel_size=kernel_size, padding="same", dilation_rate=dilation_rate,
-                    kernel_quantizer=quantized_bits(**qbits_config), bias_quantizer=quantized_bits(**qbits_config), name=f"{name_prefix}_conv")(x)
+                    kernel_quantizer=quantized_bits(**conv_config), bias_quantizer=quantized_bits(**conv_config), name=f"{name_prefix}_conv")(x)
         
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config),name=f"{name_prefix}_bn")(x)
+        x = QBatchNormalization(gamma_quantizer=quantized_bits(**bn_config), beta_quantizer=quantized_bits(**bn_config), name=f"{name_prefix}_bn")(x)
         
         x = QActivation(quantized_relu(**quantized_relu_config), name=f"{name_prefix}_act")(x)
     else:
@@ -829,22 +834,26 @@ def conv_bn_relu(x, filters, kernel_size=3, dilation_rate=1, name_prefix="conv",
         x = Activation("relu", name=f"{name_prefix}_act")(x)
     return x
 
-def conv_bn_act(x, filters, k=1, s=1, d=1, act=True, n='', use_quantization=False, precision='8bit'):
+def conv_bn_act(x, filters, k=1, s=1, d=1, act=True, n='', use_quantization=False):
     """Conv -> BN -> optional Act helper with quantized/float variants."""
     if use_quantization:
-        if precision == '16bit':
-            qbits_config = quantized_bits_16_config
-        elif precision == '32bit':
-            qbits_config = quantized_bits_32_config
+        # Use 8-bit for most layers, 16-bit for important ones, 32-bit for critical layers
+        if 'output' in n or 'final' in n:
+            conv_config = create_quantized_bits_config(32, 8, True)  # 32-bit for output layers
+        elif 'aspp' in n or 'decoder' in n:
+            conv_config = create_quantized_bits_config(16, 4, True)  # 16-bit for ASPP/decoder
         else:
-            qbits_config = quantized_bits_8_config
+            conv_config = create_quantized_bits_config(8, 2, True)   # 8-bit for regular layers
+            
+        # Use 16-bit for BatchNorm layers (important for accuracy)
+        bn_config = create_quantized_bits_config(16, 4, True)
             
         x = QConv2D(
-            filters, kernel_size=k, strides=s, padding='same', dilation_rate=d, kernel_quantizer=quantized_bits(**qbits_config),
-            bias_quantizer=quantized_bits(**qbits_config), name=f"{n}_qconv",)(x)
+            filters, kernel_size=k, strides=s, padding='same', dilation_rate=d, kernel_quantizer=quantized_bits(**conv_config),
+            bias_quantizer=quantized_bits(**conv_config), name=f"{n}_qconv",)(x)
         
         x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config), beta_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name=f"{n}_qbn",)(x)
+            gamma_quantizer=quantized_bits(**bn_config), beta_quantizer=quantized_bits(**bn_config), name=f"{n}_qbn",)(x)
         
         if act:
             x = QActivation(quantized_relu(**quantized_relu_config), name=f"{n}_qact")(x)
@@ -858,20 +867,20 @@ def conv_bn_act(x, filters, k=1, s=1, d=1, act=True, n='', use_quantization=Fals
             x = Activation('relu', name=f"{n}_act")(x)
     return x
 
-def depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='', use_quantization=False, precision='8bit'):
+def depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='', use_quantization=False):
     """DepthwiseConv -> BN -> optional Act helper with quantized/float variants."""
     if use_quantization:
-        if precision == '16bit':
-            qbits_config = quantized_bits_16_config
-        elif precision == '32bit':
-            qbits_config = quantized_bits_32_config
-        else:
-            qbits_config = quantized_bits_8_config
-        x = QDepthwiseConv2D(
-            kernel_size=k, strides=s, padding='same', dilation_rate=d, depthwise_quantizer=quantized_bits(**qbits_config),
-            bias_quantizer=quantized_bits(**qbits_config), name=f"{n}_qdw")(x)
+        # Use 8-bit for depthwise layers (they're usually less critical)
+        dw_config = create_quantized_bits_config(8, 2, True)
         
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name=f"{n}_qbn")(x)
+        # Use 16-bit for BatchNorm layers (important for accuracy)
+        bn_config = create_quantized_bits_config(16, 4, True)
+        
+        x = QDepthwiseConv2D(
+            kernel_size=k, strides=s, padding='same', dilation_rate=d, depthwise_quantizer=quantized_bits(**dw_config),
+            bias_quantizer=quantized_bits(**dw_config), name=f"{n}_qdw")(x)
+        
+        x = QBatchNormalization(gamma_quantizer=quantized_bits(**bn_config), beta_quantizer=quantized_bits(**bn_config), name=f"{n}_qbn")(x)
         
         if act:
             x = QActivation(quantized_relu(**quantized_relu_config), name=f"{n}_qact")(x)
@@ -894,11 +903,11 @@ def inverted_residual_block(x, out_channels, expansion_factor=6, stride=1, dilat
     expanded_channels = in_channels * expansion_factor
 
     # 1) Expansion
-    t = conv_bn_act(x, expanded_channels, k=1, s=1, d=1, act=True, n=f'{name_prefix}_expand', use_quantization=use_quantization, precision='8bit') if expansion_factor != 1 else x
+    t = conv_bn_act(x, expanded_channels, k=1, s=1, d=1, act=True, n=f'{name_prefix}_expand', use_quantization=use_quantization) if expansion_factor != 1 else x
     # 2) Depthwise
-    t = depthwise_bn_act(t, k=3, s=stride, d=dilation_rate, act=True, n=f'{name_prefix}_depthwise', use_quantization=use_quantization, precision='8bit')
+    t = depthwise_bn_act(t, k=3, s=stride, d=dilation_rate, act=True, n=f'{name_prefix}_depthwise', use_quantization=use_quantization)
     # 3) Projection (no activation)
-    t = conv_bn_act(t, out_channels, k=1, s=1, d=1, act=False, n=f'{name_prefix}_project', use_quantization=use_quantization, precision='16bit')
+    t = conv_bn_act(t, out_channels, k=1, s=1, d=1, act=False, n=f'{name_prefix}_project', use_quantization=use_quantization)
 
     # Residual connection when shape matches and stride == 1
     if stride == 1 and in_channels == out_channels:
@@ -917,11 +926,15 @@ def mobilenetv2(inputs, use_quantization=False):
     )
 
     if use_quantization:
-        x = QConv2D(
-            stem_c, 3, strides=2, padding='same', kernel_quantizer=quantized_bits(**quantized_bits_8_config),
-            bias_quantizer=quantized_bits(**quantized_bits_8_config),name='stage0_stem_qconv')(x)
+        # Use 16-bit for stem layers (important for initial feature extraction)
+        stem_conv_config = create_quantized_bits_config(16, 4, True)
+        stem_bn_config = create_quantized_bits_config(16, 4, True)
         
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**quantized_bits_batchnorm_config), name='stage0_stem_qbn')(x)
+        x = QConv2D(
+            stem_c, 3, strides=2, padding='same', kernel_quantizer=quantized_bits(**stem_conv_config),
+            bias_quantizer=quantized_bits(**stem_conv_config),name='stage0_stem_qconv')(x)
+        
+        x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_bn_config), beta_quantizer=quantized_bits(**stem_bn_config), name='stage0_stem_qbn')(x)
         
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage0_stem_qact')(x)
         
@@ -986,17 +999,17 @@ def create_segmentation_model(use_quantization=False):
     # Use configured ASPP/decoder sizes
     aspp_filters = MODEL_CONFIG['aspp_filters']
     # ASPP: depthwise separable convs to reduce parameters (DW k3 with dilation + PW k1)
-    aspp_d1 = depthwise_bn_act(encoder_out, k=3, s=1, d=1, act=True, n='aspp_d1_dw', use_quantization=use_quantization, precision='16bit')
-    aspp_d1 = conv_bn_act(aspp_d1, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d1_pw', use_quantization=use_quantization, precision='16bit')
+    aspp_d1 = depthwise_bn_act(encoder_out, k=3, s=1, d=1, act=True, n='aspp_d1_dw', use_quantization=use_quantization)
+    aspp_d1 = conv_bn_act(aspp_d1, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d1_pw', use_quantization=use_quantization)
 
-    aspp_d6 = depthwise_bn_act(encoder_out, k=3, s=1, d=6, act=True, n='aspp_d6_dw', use_quantization=use_quantization, precision='16bit')
-    aspp_d6 = conv_bn_act(aspp_d6, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d6_pw', use_quantization=use_quantization, precision='16bit')
+    aspp_d6 = depthwise_bn_act(encoder_out, k=3, s=1, d=6, act=True, n='aspp_d6_dw', use_quantization=use_quantization)
+    aspp_d6 = conv_bn_act(aspp_d6, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d6_pw', use_quantization=use_quantization)
 
-    aspp_d12 = depthwise_bn_act(encoder_out, k=3, s=1, d=12, act=True, n='aspp_d12_dw', use_quantization=use_quantization, precision='16bit')
-    aspp_d12 = conv_bn_act(aspp_d12, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d12_pw', use_quantization=use_quantization, precision='16bit')
+    aspp_d12 = depthwise_bn_act(encoder_out, k=3, s=1, d=12, act=True, n='aspp_d12_dw', use_quantization=use_quantization)
+    aspp_d12 = conv_bn_act(aspp_d12, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d12_pw', use_quantization=use_quantization)
 
-    aspp_d18 = depthwise_bn_act(encoder_out, k=3, s=1, d=18, act=True, n='aspp_d18_dw', use_quantization=use_quantization, precision='16bit')
-    aspp_d18 = conv_bn_act(aspp_d18, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d18_pw', use_quantization=use_quantization, precision='16bit')
+    aspp_d18 = depthwise_bn_act(encoder_out, k=3, s=1, d=18, act=True, n='aspp_d18_dw', use_quantization=use_quantization)
+    aspp_d18 = conv_bn_act(aspp_d18, aspp_filters, k=1, s=1, d=1, act=True, n='aspp_d18_pw', use_quantization=use_quantization)
     
     x = Concatenate(name='aspp_concat')([aspp_d1, aspp_d6, aspp_d12, aspp_d18])
     if USE_DROPOUT_DURING_TRAINING:
@@ -1007,7 +1020,7 @@ def create_segmentation_model(use_quantization=False):
 
     # Project low-level features to fewer channels
     low_level_proj_filters = max(16, MODEL_CONFIG['low_level_proj'])
-    low_level_proj = conv_bn_relu(low_level, low_level_proj_filters, kernel_size=1, dilation_rate=1, name_prefix='low_level_proj', use_quantization=use_quantization, precision='16bit')
+    low_level_proj = conv_bn_relu(low_level, low_level_proj_filters, kernel_size=1, dilation_rate=1, name_prefix='low_level_proj', use_quantization=use_quantization)
 
     # Concatenate decoder features
     x = Concatenate(name='decoder_concat')([x, low_level_proj])
@@ -1017,22 +1030,22 @@ def create_segmentation_model(use_quantization=False):
     use_dilated = MODEL_CONFIG.get('use_dilated_conv', False)
     if use_dilated:
         # depthwise separable with dilation for larger context and fewer params
-        x = depthwise_bn_act(x, k=3, s=1, d=2, act=True, n='dec_fuse1_dil_dw', use_quantization=use_quantization, precision='8bit')
-        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_dil_pw', use_quantization=use_quantization, precision='8bit')
+        x = depthwise_bn_act(x, k=3, s=1, d=2, act=True, n='dec_fuse1_dil_dw', use_quantization=use_quantization)
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_dil_pw', use_quantization=use_quantization)
         if USE_DROPOUT_DURING_TRAINING:
             x = Dropout(0.1, name='dec_fuse1_dropout')(x)
-        x = depthwise_bn_act(x, k=3, s=1, d=2, act=True, n='dec_fuse2_dil_dw', use_quantization=use_quantization, precision='8bit')
-        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_dil_pw', use_quantization=use_quantization, precision='8bit')
+        x = depthwise_bn_act(x, k=3, s=1, d=2, act=True, n='dec_fuse2_dil_dw', use_quantization=use_quantization)
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_dil_pw', use_quantization=use_quantization)
         if USE_DROPOUT_DURING_TRAINING:
             x = Dropout(0.1, name='dec_fuse2_dropout')(x)
     else:
         # depthwise separable for efficiency
-        x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse1_dw', use_quantization=use_quantization, precision='8bit')
-        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_pw', use_quantization=use_quantization, precision='8bit')
+        x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse1_dw', use_quantization=use_quantization)
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse1_pw', use_quantization=use_quantization)
         if USE_DROPOUT_DURING_TRAINING:
             x = Dropout(0.1, name='dec_fuse1_dropout')(x)
-        x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse2_dw', use_quantization=use_quantization, precision='8bit')
-        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_pw', use_quantization=use_quantization, precision='8bit')
+        x = depthwise_bn_act(x, k=3, s=1, d=1, act=True, n='dec_fuse2_dw', use_quantization=use_quantization)
+        x = conv_bn_act(x, dec_filters, k=1, s=1, d=1, act=True, n='dec_fuse2_pw', use_quantization=use_quantization)
         if USE_DROPOUT_DURING_TRAINING:
             x = Dropout(0.1, name='dec_fuse2_dropout')(x)
 
@@ -1041,13 +1054,14 @@ def create_segmentation_model(use_quantization=False):
 
     # Output layer
     if use_quantization:
-        # Output logits are critical; use 32-bit quantizer config
+        # Use 32-bit for output layer (critical for accuracy)
+        output_config = create_quantized_bits_config(32, 8, True)
         outputs = QConv2D(
             NUM_CLASSES,
             kernel_size=1,
             padding='same',
-            kernel_quantizer=quantized_bits(**quantized_bits_32_config),
-            bias_quantizer=quantized_bits(**quantized_bits_32_config),
+            kernel_quantizer=quantized_bits(**output_config),
+            bias_quantizer=quantized_bits(**output_config),
             activation='softmax',
             name='output_qconv',
         )(x)
@@ -1309,7 +1323,7 @@ def train_model():
         initial_learning_rate = USER_LR
         print(f"Using user-specified learning rate: {initial_learning_rate}")
     elif TRAIN_QAT:
-        initial_learning_rate = 1e-7
+        initial_learning_rate = 1e-8
         print(f"Using recommended QAT learning rate: {initial_learning_rate}")
     else:
         initial_learning_rate = 7e-4  # Lower initial learning rate for stability
