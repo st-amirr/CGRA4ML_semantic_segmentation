@@ -34,11 +34,11 @@ Key improvements:
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=True --subset_ratio=0.9 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=100 --batch_size=3 --use_dropout=False --subset_ratio=0.9 --LR=1e-5
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_70.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9 --LR=1e-7
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_99.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 analyze_iou.py
 """
@@ -139,25 +139,6 @@ MODEL_CONFIG = {
     'use_dilated_conv': True,
 }
 
-# Enhanced quantization configurations for better QAT performance with layer-wise precision
-quantized_bits_8_config = {
-    'bits': 8,
-    'integer': 1,  # for values within ±2 range
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,  # Better for training stability
-    'scale_axis': None
-}
-
-# For Kernels and Biases with medium range (~1 to ~4): final_reduce_bn (1.903646), boundary_enhance2_bn (1.524222)
-quantized_bits_16_config = {
-    'bits': 16,
-    'integer': 2,  # for values within ±4 range
-    'symmetric': True,
-    'alpha': 'auto_po2',
-    'use_stochastic_rounding': True,
-    'scale_axis': None
-}
 
 def create_quantized_bits_config(bits, integer_bits, symmetric=True):
     """
@@ -180,12 +161,6 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
         'scale_axis': None
     }
 
-
-
-# Default configurations for backward compatibility
-quantized_bits_8_config = create_quantized_bits_config(8, 1, True)
-quantized_bits_16_config = create_quantized_bits_config(16, 4, True)
-quantized_bits_32_config = create_quantized_bits_config(32, 8, True)
 
 # BatchNorm configuration (default)
 quantized_bits_batchnorm_config = create_quantized_bits_config(8, 1, True)
@@ -1323,7 +1298,7 @@ def train_model():
         initial_learning_rate = USER_LR
         print(f"Using user-specified learning rate: {initial_learning_rate}")
     elif TRAIN_QAT:
-        initial_learning_rate = 1e-8
+        initial_learning_rate = 3e-4
         print(f"Using recommended QAT learning rate: {initial_learning_rate}")
     else:
         initial_learning_rate = 7e-4  # Lower initial learning rate for stability
@@ -1334,7 +1309,7 @@ def train_model():
         # QAT: Exponential decay with smaller steps
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
-            decay_steps=15000 // BATCH_SIZE,  # Decay every 5 epoch
+            decay_steps=30000 // BATCH_SIZE,  # Decay every 10 epoch
             decay_rate=0.9,
             staircase=True,
         )
@@ -1342,8 +1317,8 @@ def train_model():
         # Float32: Exponential decay with larger steps
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
-            decay_steps=15000 // BATCH_SIZE,  # Decay every 5 epoch
-            decay_rate=0.8,
+            decay_steps=30000 // BATCH_SIZE,  # Decay every 19 epoch
+            decay_rate=0.9,
             staircase=True,
         )
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
