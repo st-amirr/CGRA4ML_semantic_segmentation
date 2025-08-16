@@ -22,6 +22,7 @@ Usage:
 Key Features:
 - HLS4ML-compatible LMIINet architecture with LFIB modules
 - Global context blocks (replacing transformer blocks) for HLS4ML compatibility
+- Configurable dropout layers for regularization (controlled by --use_dropout flag)
 - Baseline float32 training for optimal convergence
 - QAT application after float32 training completes
 - Memory-efficient data pipeline
@@ -254,10 +255,10 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
         'scale_axis': None
     }
 
-def lfib_module(x, filters, use_quantization=False, name_prefix='lfib'):
+def lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_rate=0.1):
     """
     HLS4ML-compatible Lightweight Feature Interaction Bottleneck (LFIB) module
-    Uses only supported layers: Conv2D, DepthwiseConv2D, BatchNormalization, Activation, Concatenate
+    Uses only supported layers: Conv2D, DepthwiseConv2D, BatchNormalization, Activation, Concatenate, Dropout
     """
     if use_quantization:
         # Quantization configs
@@ -341,9 +342,13 @@ def lfib_module(x, filters, use_quantization=False, name_prefix='lfib'):
         x_out = BatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
         x_out = Activation('relu', name=f'{name_prefix}_act_final')(x_out)
     
+    # Add dropout if enabled and rate > 0
+    if USE_DROPOUT_DURING_TRAINING and dropout_rate > 0:
+        x_out = Dropout(dropout_rate, name=f'{name_prefix}_dropout')(x_out)
+    
     return x_out
 
-def global_context_block(x, use_quantization=False, name_prefix='global_context'):
+def global_context_block(x, use_quantization=False, name_prefix='global_context', dropout_rate=0.1):
     """
     HLS4ML-compatible global context block using only supported layers
     Replaces transformer blocks with simpler global context mechanism
@@ -370,6 +375,10 @@ def global_context_block(x, use_quantization=False, name_prefix='global_context'
     else:
         x_mlp = Dense(channels // 4, activation='relu', name=f'{name_prefix}_mlp1')(x_pooled)
         x_mlp = Dense(channels, name=f'{name_prefix}_mlp2')(x_mlp)
+    
+    # Add dropout to MLP if enabled
+    if USE_DROPOUT_DURING_TRAINING and dropout_rate > 0:
+        x_mlp = Dropout(dropout_rate, name=f'{name_prefix}_mlp_dropout')(x_mlp)
     
     # Reshape to spatial dimensions for broadcasting (HLS4ML supported)
     x_mlp_reshaped = Reshape((1, 1, channels), name=f'{name_prefix}_reshape_mlp')(x_mlp)
@@ -416,8 +425,8 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = Conv2D(32, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
         x = BatchNormalization(name='stage1_downsample_bn')(x)
         x = Activation('relu', name='stage1_downsample_act')(x)
-    x = lfib_module(x, 32, use_quantization, 'stage1_lfib1')
-    x = lfib_module(x, 32, use_quantization, 'stage1_lfib2')
+    x = lfib_module(x, 32, use_quantization, 'stage1_lfib1', dropout_rate=0.05)
+    x = lfib_module(x, 32, use_quantization, 'stage1_lfib2', dropout_rate=0.05)
     stage1_out = x
     
     # Stage 2: 1/8 resolution (additional stride 2)
@@ -434,9 +443,9 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = Conv2D(64, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
         x = BatchNormalization(name='stage2_downsample_bn')(x)
         x = Activation('relu', name='stage2_downsample_act')(x)
-    x = lfib_module(x, 64, use_quantization, 'stage2_lfib1')
-    x = lfib_module(x, 64, use_quantization, 'stage2_lfib2')
-    x = lfib_module(x, 64, use_quantization, 'stage2_lfib3')
+    x = lfib_module(x, 64, use_quantization, 'stage2_lfib1', dropout_rate=0.1)
+    x = lfib_module(x, 64, use_quantization, 'stage2_lfib2', dropout_rate=0.1)
+    x = lfib_module(x, 64, use_quantization, 'stage2_lfib3', dropout_rate=0.1)
     stage2_out = x
     
     # Stage 3: 1/16 resolution (additional stride 2)
@@ -453,9 +462,9 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = Conv2D(128, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
         x = BatchNormalization(name='stage3_downsample_bn')(x)
         x = Activation('relu', name='stage3_downsample_act')(x)
-    x = lfib_module(x, 128, use_quantization, 'stage3_lfib1')
-    x = lfib_module(x, 128, use_quantization, 'stage3_lfib2')
-    x = global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global')
+    x = lfib_module(x, 128, use_quantization, 'stage3_lfib1', dropout_rate=0.15)
+    x = lfib_module(x, 128, use_quantization, 'stage3_lfib2', dropout_rate=0.15)
+    x = global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global', dropout_rate=0.15)
     stage3_out = x
     
     # Stage 4: 1/32 resolution (additional stride 2)
@@ -472,9 +481,9 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = Conv2D(256, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
         x = BatchNormalization(name='stage4_downsample_bn')(x)
         x = Activation('relu', name='stage4_downsample_act')(x)
-    x = lfib_module(x, 256, use_quantization, 'stage4_lfib1')
-    x = lfib_module(x, 256, use_quantization, 'stage4_lfib2')
-    x = global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global')
+    x = lfib_module(x, 256, use_quantization, 'stage4_lfib1', dropout_rate=0.2)
+    x = lfib_module(x, 256, use_quantization, 'stage4_lfib2', dropout_rate=0.2)
+    x = global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global', dropout_rate=0.2)
     stage4_out = x
     
     return stage1_out, stage2_out, stage3_out, stage4_out
@@ -491,19 +500,19 @@ def lmiinet_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up1')(x)
     # Ensure spatial dimensions match before concatenation
     x = Concatenate(name='concat1')([x, stage3_out])
-    x = lfib_module(x, 128, use_quantization, 'dec1_lfib')
+    x = lfib_module(x, 128, use_quantization, 'dec1_lfib', dropout_rate=0.15)
 
     # Upsample to stage2 (1/8) - stage2_out should be 1/8 resolution
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up2')(x)
     # Ensure spatial dimensions match before concatenation
     x = Concatenate(name='concat2')([x, stage2_out])
-    x = lfib_module(x, 64, use_quantization, 'dec2_lfib')
+    x = lfib_module(x, 64, use_quantization, 'dec2_lfib', dropout_rate=0.1)
 
     # Upsample to stage1 (1/4) - stage1_out should be 1/4 resolution
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up3')(x)
     # Ensure spatial dimensions match before concatenation
     x = Concatenate(name='concat3')([x, stage1_out])
-    x = lfib_module(x, 32, use_quantization, 'dec3_lfib')
+    x = lfib_module(x, 32, use_quantization, 'dec3_lfib', dropout_rate=0.05)
 
     # Final upsampling to full resolution (1/4 -> 1/1)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='up_final')(x)
@@ -1312,13 +1321,12 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                 print(f"⚠️  Could not save prediction visualizations: {e}")
 
 class DetailedMetricsCallback(tf.keras.callbacks.Callback):
-    def __init__(self, val_generator, save_dir, num_classes=NUM_CLASSES, save_frequency=5):
+    def __init__(self, val_generator, num_classes=NUM_CLASSES, save_frequency=5):
         super().__init__()
         self.val_generator = val_generator
-        self.save_dir = save_dir
         self.num_classes = num_classes
         self.save_frequency = save_frequency
-        os.makedirs(save_dir, exist_ok=True)
+
         
 
     
@@ -1465,16 +1473,16 @@ def train_model():
         # QAT: Exponential decay with smaller steps
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
-            decay_steps=30000 // BATCH_SIZE,  # Decay every 10 epoch
-            decay_rate=0.9,
+            decay_steps=20000 // BATCH_SIZE,  # Decay every 10 epoch
+            decay_rate=0.8,
             staircase=True,
         )
     else:
         # Float32: Exponential decay with larger steps
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=initial_learning_rate,
-            decay_steps=30000 // BATCH_SIZE,  # Decay every 19 epoch
-            decay_rate=0.9,
+            decay_steps=20000 // BATCH_SIZE,  # Decay every 19 epoch
+            decay_rate=0.8,
             staircase=True,
         )
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
@@ -1482,8 +1490,8 @@ def train_model():
     model.compile(
         optimizer=optimizer,
         # loss=dice_loss,  # Use dice loss only
-        loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
-        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
+        loss='categorical_crossentropy',  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,
@@ -1532,7 +1540,6 @@ def train_model():
 
     # Setup visualization directories
     viz_dir = os.path.join(model_dir, 'visualizations')
-    metrics_dir = os.path.join(model_dir, 'metrics')
     os.makedirs(viz_dir, exist_ok=True)
 
     # Enhanced callbacks with proper state management
@@ -1576,7 +1583,6 @@ def train_model():
         ),
         DetailedMetricsCallback(
             val_generator=val_generator,
-            save_dir=metrics_dir,
             save_frequency=5
         ),
         TensorBoard(
@@ -1692,6 +1698,7 @@ if __name__ == "__main__":
         print("Phase 1: Training HLS4ML-compatible LMIINet float32 baseline model")
         print("This will create a high-quality baseline model without quantization")
         print("LMIINet architecture: LFIB modules + Global Context blocks (HLS4ML compatible)")
+        print(f"Dropout: {'Enabled' if USE_DROPOUT_DURING_TRAINING else 'Disabled'} (use --use_dropout=True/False to control)")
         print("Expected performance: ~72.0% mIoU on Cityscapes with 0.72M parameters")
         print("All layers are HLS4ML-compatible for FPGA deployment")
         print("After training completes, use --trainQAT=True to apply QAT")
