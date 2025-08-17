@@ -190,8 +190,8 @@ quantized_bits_batchnorm_config = create_quantized_bits_config(16, 4, True)
 quantized_bits_activation_config = create_quantized_bits_config(32, 16, True)
 
 quantized_relu_config = {
-    'bits': 32,
-    'integer': 16,
+    'bits': 16,
+    'integer': 8,
     'use_stochastic_rounding': True
 }
 # Disable layout optimizer to prevent conflicts with QKeras
