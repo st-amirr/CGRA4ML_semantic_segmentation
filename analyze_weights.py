@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Weight Analysis Script for HLS4ML Quantization
-==============================================
+Weight Analysis Script for HLS4ML Quantization - LMIINet Compatible
+==================================================================
 
-This script analyzes the weights of a trained model and generates a text report
+This script analyzes the weights of a trained LMIINet model and generates a text report
 showing the min/max ranges for each layer. This information helps in setting
 appropriate quantized_bits_ parameters for each layer.
+
+Modified to handle weights-only model files from trainQAT.py.
 
 Usage:
     python analyze_weights.py --model_path ./models/your_model.keras
@@ -19,24 +21,53 @@ import glob
 import time
 from pathlib import Path
 
+# Import the LMIINet model creation function from trainQAT.py
+import sys
+sys.path.append('/workspace')
+
+# Temporarily disable argument parsing to avoid conflicts
+old_argv = sys.argv
+sys.argv = ['analyze_weights.py']
+
+try:
+    from trainQAT import create_segmentation_model
+finally:
+    # Restore original argv
+    sys.argv = old_argv
+
 def analyze_model_weights(model_path):
     """
-    Analyze weights of a trained model and generate a text report.
+    Analyze weights of a trained LMIINet model and generate a text report.
     
     Args:
-        model_path: Path to the trained model file
+        model_path: Path to the trained model file (weights-only)
     """
     print(f"Loading model from: {model_path}")
     
-    # Load the model
+    # Try to load as full model first
+    model = None
     try:
         model = tf.keras.models.load_model(model_path, compile=False)
-        print(f"Model loaded successfully: {model.name}")
-        print(f"Total layers: {len(model.layers)}")
-        print("=" * 80)
+        print(f"Model loaded successfully as full model: {model.name}")
     except Exception as e:
-        print(f"Error loading model: {e}")
-        return
+        print(f"Could not load as full model: {e}")
+        print("Attempting to load as weights-only file...")
+        
+        # Create a fresh LMIINet model and load weights
+        try:
+            # Determine if it's a QAT model based on filename
+            is_qat = 'qat_model' in os.path.basename(model_path)
+            print(f"Creating fresh LMIINet model (QAT: {is_qat})")
+            
+            model = create_segmentation_model(use_quantization=is_qat)
+            model.load_weights(model_path)
+            print(f"LMIINet model created and weights loaded successfully")
+        except Exception as e2:
+            print(f"Error creating LMIINet model and loading weights: {e2}")
+            return
+    
+    print(f"Total layers: {len(model.layers)}")
+    print("=" * 80)
     
     # Analyze each layer with weights
     weight_layers = []
@@ -172,7 +203,7 @@ def find_latest_model(models_dir="./models"):
     return model_files[0]
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Analyze model weights for quantization')
+    parser = argparse.ArgumentParser(description='Analyze LMIINet model weights for quantization')
     parser.add_argument('--model_path', type=str, default='',
                        help='Path to the model file to analyze')
     parser.add_argument('--models_dir', type=str, default='./models',

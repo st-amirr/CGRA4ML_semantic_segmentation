@@ -46,6 +46,12 @@ Key improvements:
 - Activation quantization with stochastic rounding for better training
 - Improved learning rate scheduling with cooldown
 - Global context blocks for better context understanding (HLS4ML compatible)
+- ACCURACY-FOCUSED QAT CONFIGURATION: Prioritizes maximum accuracy over model size
+  * Convolution layers: 32-bit (8 int bits) for maximum precision
+  * BatchNorm layers: 16-bit (4-8 int bits) for stable training
+  * Dense/MLP layers: 16-bit (4 int bits) for efficiency without accuracy loss
+  * Output layer: 32-bit (8 int bits) for critical final predictions
+  * Activations: 32-bit (16 int bits) for maximum accuracy preservation
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
@@ -53,7 +59,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_checkpoint_epoch_99.keras --epochs=30 --batch_size=2 --use_dropout=False --subset_ratio=0.9
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_best.keras --epochs=120 --batch_size=2 --use_dropout=True --subset_ratio=0.9
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 analyze_iou.py
 """
@@ -177,19 +183,17 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
     }
 
 
-# BatchNorm configuration (default)
-quantized_bits_batchnorm_config = create_quantized_bits_config(8, 1, True)
+# BatchNorm configuration (accuracy-focused)
+quantized_bits_batchnorm_config = create_quantized_bits_config(16, 4, True)
 
-# Activation quantization configuration
-quantized_bits_activation_config = create_quantized_bits_config(16, 8, True)
+# Activation quantization configuration - accuracy-focused
+quantized_bits_activation_config = create_quantized_bits_config(32, 16, True)
 
-# General activations configuration
 quantized_relu_config = {
-    'bits': 16,
-    'integer': 8,
+    'bits': 32,
+    'integer': 16,
     'use_stochastic_rounding': True
 }
-
 # Disable layout optimizer to prevent conflicts with QKeras
 tf.config.optimizer.set_experimental_options({
     'layout_optimizer': False,
@@ -245,7 +249,7 @@ safe_configure_tensorflow(DEBUG_MODE)
 
 # LMIINet Architecture Functions
 def create_quantized_bits_config(bits, integer_bits, symmetric=True):
-    """Create quantization configuration for LMIINet"""
+    """Create quantization configuration for LMIINet with tolerance for training"""
     return {
         'bits': bits,
         'integer': integer_bits,
@@ -255,16 +259,46 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
         'scale_axis': None
     }
 
+def get_optimized_quantization_config(layer_name, layer_type):
+    """
+    Get accuracy-focused quantization configuration
+    Uses 32-bit by default, only reduces to 16-bit for layers that can handle it well
+    """
+    # Prioritize accuracy - use 32-bit unless we have strong evidence that lower precision works well
+    
+    if 'bn' in layer_name.lower() or 'batch' in layer_name.lower():
+        if 'moving_mean' in layer_name.lower() or 'moving_variance' in layer_name.lower():
+            # BatchNorm moving stats can be large and sensitive to precision
+            # Use 16-bit with generous range for these critical statistics
+            return create_quantized_bits_config(16, 8, True)
+        else:
+            # BatchNorm gamma/beta - use 16-bit as these are typically stable
+            return create_quantized_bits_config(16, 4, True)
+    
+    elif 'dense' in layer_name.lower() or 'mlp' in layer_name.lower():
+        # Dense/MLP layers - these can often work well with 16-bit
+        # But use 32-bit if accuracy is critical
+        return create_quantized_bits_config(16, 4, True)
+    
+    elif 'output' in layer_name.lower():
+        # Output layer - critical for accuracy, use 32-bit
+        return create_quantized_bits_config(32, 8, True)
+    
+    else:
+        # Default to 32-bit for maximum accuracy
+        # Only use 16-bit for layers that are proven to work well with it
+        return create_quantized_bits_config(32, 8, True)
+
 def lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_rate=0.1):
     """
     HLS4ML-compatible Lightweight Feature Interaction Bottleneck (LFIB) module
     Uses only supported layers: Conv2D, DepthwiseConv2D, BatchNormalization, Activation, Concatenate, Dropout
     """
     if use_quantization:
-        # Quantization configs
-        conv_config = create_quantized_bits_config(8, 2, True)
-        bn_config = create_quantized_bits_config(16, 4, True)
-        act_config = create_quantized_bits_config(8, 6, True)
+        # Accuracy-focused quantization configs
+        conv_config = get_optimized_quantization_config(f'{name_prefix}_conv', 'Conv2D')
+        bn_config = get_optimized_quantization_config(f'{name_prefix}_bn', 'BatchNormalization')
+        act_config = quantized_relu_config  # Use 32-bit for activations
         
         # Branch 1: Depth-wise separable convolution (HLS4ML supported)
         x1 = QDepthwiseConv2D(kernel_size=3, padding='same', use_bias=False,
@@ -360,13 +394,13 @@ def global_context_block(x, use_quantization=False, name_prefix='global_context'
     
     # Simple MLP for global context (HLS4ML supported)
     if use_quantization:
-        mlp_config = create_quantized_bits_config(8, 2, True)
+        mlp_config = get_optimized_quantization_config(f'{name_prefix}_mlp', 'Dense')
         
         x_mlp = QDense(channels // 4, use_bias=False,
                       kernel_quantizer=quantized_bits(**mlp_config),
                       bias_quantizer=quantized_bits(**mlp_config),
                       name=f'{name_prefix}_mlp1')(x_pooled)
-        x_mlp = QActivation(quantized_relu(**create_quantized_bits_config(8, 6, True)), 
+        x_mlp = QActivation(quantized_relu(**quantized_relu_config), 
                            name=f'{name_prefix}_mlp_act')(x_mlp)
         x_mlp = QDense(channels, use_bias=False,
                       kernel_quantizer=quantized_bits(**mlp_config),
@@ -397,7 +431,7 @@ def lmiinet_encoder(inputs, use_quantization=False):
     
     # Initial stem convolution (stride 2: 1/2 resolution)
     if use_quantization:
-        stem_config = create_quantized_bits_config(16, 4, True)
+        stem_config = get_optimized_quantization_config('stem_conv', 'Conv2D')
         x = QConv2D(16, kernel_size=3, strides=2, padding='same', use_bias=False,
                    kernel_quantizer=quantized_bits(**stem_config),
                    bias_quantizer=quantized_bits(**stem_config),
@@ -405,7 +439,7 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
                                name='stem_bn')(x)
-        x = QActivation(quantized_relu(**create_quantized_bits_config(8, 6, True)), name='stem_act')(x)
+        x = QActivation(quantized_relu(**quantized_relu_config), name='stem_act')(x)
     else:
         x = Conv2D(16, kernel_size=3, strides=2, padding='same', use_bias=False, name='stem_conv')(x)
         x = BatchNormalization(name='stem_bn')(x)
@@ -420,7 +454,7 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
                                name='stage1_downsample_bn')(x)
-        x = QActivation(quantized_relu(**create_quantized_bits_config(8, 6, True)), name='stage1_downsample_act')(x)
+        x = QActivation(quantized_relu(**quantized_relu_config), name='stage1_downsample_act')(x)
     else:
         x = Conv2D(32, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
         x = BatchNormalization(name='stage1_downsample_bn')(x)
@@ -438,7 +472,7 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
                                name='stage2_downsample_bn')(x)
-        x = QActivation(quantized_relu(**create_quantized_bits_config(8, 6, True)), name='stage2_downsample_act')(x)
+        x = QActivation(quantized_relu(**quantized_relu_config), name='stage2_downsample_act')(x)
     else:
         x = Conv2D(64, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
         x = BatchNormalization(name='stage2_downsample_bn')(x)
@@ -457,7 +491,7 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
                                name='stage3_downsample_bn')(x)
-        x = QActivation(quantized_relu(**create_quantized_bits_config(8, 6, True)), name='stage3_downsample_act')(x)
+        x = QActivation(quantized_relu(**quantized_relu_config), name='stage3_downsample_act')(x)
     else:
         x = Conv2D(128, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
         x = BatchNormalization(name='stage3_downsample_bn')(x)
@@ -476,7 +510,7 @@ def lmiinet_encoder(inputs, use_quantization=False):
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
                                name='stage4_downsample_bn')(x)
-        x = QActivation(quantized_relu(**create_quantized_bits_config(8, 6, True)), name='stage4_downsample_act')(x)
+        x = QActivation(quantized_relu(**quantized_relu_config), name='stage4_downsample_act')(x)
     else:
         x = Conv2D(256, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
         x = BatchNormalization(name='stage4_downsample_bn')(x)
@@ -519,7 +553,7 @@ def lmiinet_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
 
     # Final convolution for output
     if use_quantization:
-        output_config = create_quantized_bits_config(32, 8, True)
+        output_config = get_optimized_quantization_config('output_conv', 'Conv2D')
         x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax',
                    kernel_quantizer=quantized_bits(**output_config),
                    bias_quantizer=quantized_bits(**output_config),
