@@ -225,7 +225,7 @@ def safe_configure_tensorflow(debug_mode=False):
                 try:
                     tf.config.set_logical_device_configuration(
                         gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 10)],
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 13)],
                     )
                 except RuntimeError:
                     # Likely already initialized; ignore
@@ -407,8 +407,8 @@ def global_context_block(x, use_quantization=False, name_prefix='global_context'
                       bias_quantizer=quantized_bits(**mlp_config),
                       name=f'{name_prefix}_mlp2')(x_mlp)
     else:
-        x_mlp = Dense(channels // 4, activation='relu', name=f'{name_prefix}_mlp1')(x_pooled)
-        x_mlp = Dense(channels, name=f'{name_prefix}_mlp2')(x_mlp)
+        x_mlp = Dense(channels // 4, activation='relu', use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
+        x_mlp = Dense(channels, use_bias=False, name=f'{name_prefix}_mlp2')(x_mlp)
     
     # Add dropout to MLP if enabled
     if USE_DROPOUT_DURING_TRAINING and dropout_rate > 0:
@@ -1426,8 +1426,19 @@ def train_model():
     if LOAD_MODEL_PATH:
         # Load specific model path
         print(f"Loading model from specified path: {LOAD_MODEL_PATH}")
+        
+        # Extract epoch number from checkpoint filename if present
+        if 'checkpoint_epoch_' in LOAD_MODEL_PATH:
+            try:
+                epoch_part = LOAD_MODEL_PATH.split('checkpoint_epoch_')[1].split('.')[0]
+                initial_epoch = int(epoch_part)
+                print(f"Resuming from epoch {initial_epoch}")
+            except:
+                print("Could not extract epoch number, starting from epoch 0")
+                initial_epoch = 0
+        
         try:
-            if TRAIN_QAT and not LOAD_MODEL_PATH.endswith('_qat'):
+            if TRAIN_QAT and 'float32_model' in LOAD_MODEL_PATH:
                 # Load float32 model and convert to QAT
                 print("Loading float32 model and converting to QAT...")
                 try:
