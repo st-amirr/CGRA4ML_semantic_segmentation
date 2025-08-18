@@ -1307,7 +1307,14 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
             try:
                 saved = 0
                 batch_idx = 0
-                max_batches = min(6, len(self.val_generator))  # Limit to 3 batches max
+                max_batches = min(8, len(self.val_generator))  # Allow 4 batches with optimizations
+                
+                # Temporarily disable XLA for prediction to avoid compilation issues
+                try:
+                    # Disable JIT compilation for prediction
+                    tf.config.experimental.disable_jit()
+                except:
+                    pass  # JIT might already be disabled
                 
                 while saved < self.num_samples and batch_idx < max_batches:
                     try:
@@ -1325,7 +1332,10 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                             batch_masks = batch_masks[:2]
                             batch_weights = batch_weights[:2] if batch_weights is not None else None
                         
-                        predictions = self.model.predict(batch_images, verbose=0, batch_size=1)
+                        # Use eager execution for prediction to avoid XLA compilation
+                        with tf.device('/CPU:0'):  # Force CPU execution for prediction
+                            predictions = self.model(batch_images, training=False)
+                            predictions = predictions.numpy()
 
                         take = min(self.num_samples - saved, batch_images.shape[0])
                         for i in range(take):
@@ -1378,6 +1388,13 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                 print(f"⚠️  Could not save prediction visualizations: {e}")
                 import traceback
                 traceback.print_exc()
+            finally:
+                # Restore XLA settings
+                try:
+                    # Re-enable JIT compilation for training
+                    tf.config.experimental.enable_jit()
+                except:
+                    pass  # Ignore errors in cleanup
 
 class DetailedMetricsCallback(tf.keras.callbacks.Callback):
     def __init__(self, val_generator, num_classes=NUM_CLASSES, save_frequency=5):
