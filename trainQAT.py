@@ -59,8 +59,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --load_model=./models/float32_model_best.keras --epochs=120 --batch_size=2 --use_dropout=True --subset_ratio=0.9
-
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --epochs=120 --batch_size=1 --use_dropout=True --subset_ratio=0.9 --LR=1.536e-4 --load_model=./models/qat_model_checkpoint_epoch_60.keras
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 analyze_iou.py
 """
 
@@ -1024,23 +1023,23 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     return K.mean(K.sum(focal, axis=-1))
 
 
-def weighted_combined_loss(y_true, y_pred):
-    """
-    Combined categorical crossentropy, dice loss, and focal loss
-    Best of all three worlds for class imbalance and segmentation
-    Weights are updated dynamically by DynamicLossWeightCallback
-    """
-    global ce_weight, dice_weight, focal_weight
-    # Categorical crossentropy over classes 0..18 (exclude void)
-    y_true_19 = y_true[..., :19]
-    y_pred_19 = y_pred[..., :19]
-    y_pred_safe = K.clip(y_pred_19, K.epsilon(), 1.0 - K.epsilon())
-    ce_per_class = -y_true_19 * K.log(y_pred_safe)
-    ce = K.mean(K.sum(ce_per_class, axis=-1))
-    dice = dice_loss(y_true, y_pred)
-    focal = focal_loss(y_true, y_pred)
-    # Dynamic weights updated by callback
-    return ce_weight * ce + dice_weight * dice + focal_weight * focal
+# def weighted_combined_loss(y_true, y_pred):
+#     """
+#     Combined categorical crossentropy, dice loss, and focal loss
+#     Best of all three worlds for class imbalance and segmentation
+#     Weights are updated dynamically by DynamicLossWeightCallback
+#     """
+#     global ce_weight, dice_weight, focal_weight
+#     # Categorical crossentropy over classes 0..18 (exclude void)
+#     y_true_19 = y_true[..., :19]
+#     y_pred_19 = y_pred[..., :19]
+#     y_pred_safe = K.clip(y_pred_19, K.epsilon(), 1.0 - K.epsilon())
+#     ce_per_class = -y_true_19 * K.log(y_pred_safe)
+#     ce = K.mean(K.sum(ce_per_class, axis=-1))
+#     dice = dice_loss(y_true, y_pred)
+#     focal = focal_loss(y_true, y_pred)
+#     # Dynamic weights updated by callback
+#     return ce_weight * ce + dice_weight * dice + focal_weight * focal
 
 
 # Add custom metrics for better monitoring
@@ -1468,7 +1467,7 @@ def train_model():
     if LOAD_MODEL_PATH:
         # Load specific model path
         print(f"Loading model from specified path: {LOAD_MODEL_PATH}")
-        
+
         # Extract epoch number from checkpoint filename if present
         if 'checkpoint_epoch_' in LOAD_MODEL_PATH:
             try:
@@ -1478,7 +1477,7 @@ def train_model():
             except:
                 print("Could not extract epoch number, starting from epoch 0")
                 initial_epoch = 0
-        
+
         try:
             if TRAIN_QAT and 'float32_model' in LOAD_MODEL_PATH:
                 # Load float32 model and convert to QAT
@@ -1521,7 +1520,7 @@ def train_model():
                 model = tf.keras.models.load_model(latest_checkpoint, compile=False)
                 print("Checkpoint loaded successfully")
             except Exception as e:
-                print(f"Failed to load full checkpoint, trying weights-only: {e}")
+                print(f"trying weights-only: {e}")
                 # Create model and load weights
                 if TRAIN_QAT:
                     model = create_segmentation_model(use_quantization=True)
@@ -1579,6 +1578,7 @@ def train_model():
         # loss=dice_loss,  # Use dice loss only
         # loss=weighted_combined_loss,  # Use weighted combined loss (best for scattered pixels)
         loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        # loss=focal_loss,  # Use categorical crossentropy loss
         metrics=[
             "accuracy",
             dice_loss,

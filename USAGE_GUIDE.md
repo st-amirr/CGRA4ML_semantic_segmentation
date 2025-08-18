@@ -315,9 +315,192 @@ ls -la /app/models/qat_*.h5
 ## 📋 **Next Steps After Phase 2 Completion**
 
 1. **Validate QAT Model**: Test performance with optimized quantization
-2. **Export to HLS4ML**: Use generated optimized `.h5` quantized weights
+2. **Build FPGA Model**: Use the new `build_fpga_model.py` script to convert to HLS4ML
 3. **FPGA Synthesis**: Deploy with mathematically optimized parameters
 4. **Performance Analysis**: Compare with previous generic quantization
+
+## 🚀 **NEW: FPGA Model Building with HLS4ML**
+
+**BREAKTHROUGH FEATURE**: Complete FPGA model building pipeline with comprehensive validation and deployment guides.
+
+### **Available Scripts:**
+- **`build_fpga_model.py`** - Main FPGA model builder with full HLS4ML conversion
+- **`example_fpga_build.py`** - Example demonstrations with different configurations
+
+### **Key Features:**
+- ✅ **Automatic Model Loading**: Loads trained float32 or QAT models
+- ✅ **HLS4ML Conversion**: Converts to FPGA-compatible format
+- ✅ **Comprehensive Validation**: Tests conversion accuracy with test data
+- ✅ **Performance Analysis**: Generates detailed resource and timing reports
+- ✅ **Vivado HLS Integration**: Full synthesis pipeline with IP export
+- ✅ **Deployment Guides**: Automatic generation of deployment documentation
+- ✅ **Multiple Configurations**: Support for different FPGA parts and strategies
+
+### **Quick Start - FPGA Model Building:**
+
+```bash
+# Basic conversion (float32 model)
+python build_fpga_model.py \
+  --model_path ./models/float32_model_final.keras \
+  --output_dir ./fpga_models/basic_float32 \
+  --validate
+
+# QAT model with optimized multiple precisions (RECOMMENDED)
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"
+docker-compose exec hls4ml-training python3 build_fpga_model.py `
+  --model_path ./models/qat_model_quantized_weights.h5 `
+  --quantized `
+  --output_dir ./fpga_models/optimized_qat `
+  --strategy Latency `
+  --reuse_factor 2 `
+  --validate
+
+# QAT model with single precision override (for testing)
+python build_fpga_model.py \
+  --model_path ./models/qat_model_final.keras \
+  --quantized \
+  --override_precision "ap_fixed<16,6>" \
+  --output_dir ./fpga_models/single_precision_test \
+  --validate
+```
+
+# Full synthesis with custom FPGA
+python build_fpga_model.py \
+  --model_path ./models/qat_model_final.keras \
+  --quantized \
+  --output_dir ./fpga_models/full_synthesis \
+  --part "xc7z020clg484-1" \
+  --clock_period 6.0 \
+  --io_type io_stream \
+  --validate \
+  --synthesize
+```
+
+### **Automatic Precision Handling for QAT Models:**
+
+Your LMIINet QAT model automatically uses the optimized precision levels that were determined during training. The `build_fpga_model.py` script automatically detects QAT models and applies the appropriate precision configuration.
+
+#### **QAT Models (Automatic Multiple Precisions):**
+```bash
+# Automatically uses optimized precisions from your QAT training
+python build_fpga_model.py \
+  --model_path ./models/qat_model_final.keras \
+  --quantized \
+  --validate
+```
+
+**This automatically uses the following optimized precision configuration:**
+- **Conv2D/DepthwiseConv2D**: `ap_fixed<32,8>` (32-bit, 8 int, 24 frac) - Maximum precision for feature extraction
+- **BatchNormalization**: `ap_fixed<16,4>` (16-bit, 4 int, 12 frac) - Stable training and inference
+- **Dense/MLP**: `ap_fixed<16,4>` (16-bit, 4 int, 12 frac) - Efficient for fully connected layers
+- **Output Layer**: `ap_fixed<32,8>` (32-bit, 8 int, 24 frac) - Critical for final predictions
+- **Activations**: `ap_fixed<32,16>` (32-bit, 16 int, 16 frac) - Preserve accuracy in feature maps
+
+#### **Testing with Single Precision:**
+```bash
+# Override with single precision for testing (not recommended for production)
+python build_fpga_model.py \
+  --model_path ./models/qat_model_final.keras \
+  --quantized \
+  --override_precision "ap_fixed<16,6>" \
+  --validate
+```
+
+#### **Float32 Models (Single Precision):**
+```bash
+# Use single precision for float32 models
+python build_fpga_model.py \
+  --model_path ./models/float32_model_final.keras \
+  --precision "ap_fixed<16,6>" \
+  --validate
+```
+
+### **Run All Examples:**
+```bash
+# Execute all FPGA building examples
+python example_fpga_build.py
+```
+
+### **Generated Output Structure:**
+```
+fpga_models/
+├── lmiinet_float32_1234567890/           # Timestamped output directory
+│   ├── myproject.cpp                      # Main HLS implementation
+│   ├── myproject.h                        # Header file
+│   ├── myproject_test.cpp                 # Testbench
+│   ├── myproject_tb.cpp                   # Testbench implementation
+│   ├── myproject_prj/                     # Vivado HLS project
+│   │   └── solution1/                     # Synthesis solution
+│   │       ├── syn/                       # Synthesis reports
+│   │       └── impl/                      # Implementation files
+│   ├── validation_results.json            # Conversion validation results
+│   ├── performance_report.json            # Performance analysis
+│   └── DEPLOYMENT_GUIDE.md               # Complete deployment guide
+│
+├── lmiinet_qat_1234567890/               # QAT model conversion
+│   └── [same structure as above]
+│
+└── example1_basic/                        # Example outputs
+    └── [same structure as above]
+```
+
+### **Available Configuration Options:**
+```bash
+--model_path PATH           # Path to trained model (.keras file)
+--quantized                 # Model is quantized (QAT model)
+--output_dir PATH           # Output directory for FPGA model
+--part PART                 # FPGA part number (default: xczu7ev-ffvc1156-2-e)
+--clock_period FLOAT        # Clock period in nanoseconds (default: 5.0)
+--io_type TYPE              # I/O type: io_parallel or io_stream
+--strategy STRATEGY         # Optimization: Latency or Resource
+--reuse_factor INT          # Reuse factor for resource optimization
+--precision PRECISION       # Fixed-point precision (default: ap_fixed<16,6>)
+--override_precision PRECISION # Override all precisions with single value (for testing)
+--validate                  # Validate model conversion with test data
+--synthesize                # Run Vivado HLS synthesis
+--verbose                   # Enable verbose output
+```
+
+### **Validation and Testing:**
+```bash
+# Run conversion validation
+python build_fpga_model.py --model_path ./models/qat_model_final.keras --quantized --validate
+
+# Expected output:
+# Validation Results:
+#   Mean Squared Error: 0.000123
+#   Mean Absolute Error: 0.008456
+#   Original model time: 0.1234s
+#   HLS4ML model time: 0.2345s
+```
+
+### **Synthesis and Deployment:**
+```bash
+# Run full synthesis pipeline
+python build_fpga_model.py --model_path ./models/qat_model_final.keras --quantized --synthesize
+
+# Expected output:
+# ✅ Synthesis completed successfully!
+# ✅ Synthesis files generated successfully
+# ✅ Implementation files generated successfully
+# 📁 Output directory: ./fpga_models/lmiinet_qat_1234567890/
+# 🔧 HLS4ML project: ./fpga_models/lmiinet_qat_1234567890/myproject_prj/
+# 📋 Deployment guide: ./fpga_models/lmiinet_qat_1234567890/DEPLOYMENT_GUIDE.md
+```
+
+### **Integration with Vivado:**
+1. **Open Vivado** and create a new project
+2. **Add IP Core**: Import the generated IP from `myproject_prj/solution1/impl/ip/`
+3. **Instantiate IP**: Add the IP core to your design
+4. **Connect Ports**: Wire up input/output signals
+5. **Generate Bitstream**: Create the final FPGA configuration
+
+### **Performance Optimization:**
+- **Latency Strategy**: Optimized for minimum inference time
+- **Resource Strategy**: Optimized for minimum FPGA resource usage
+- **Reuse Factor**: Controls resource sharing (higher = more sharing, lower latency)
+- **Precision**: Fixed-point precision for optimal accuracy vs. resource trade-off
+- **I/O Type**: Parallel for maximum throughput, Stream for memory efficiency
 
 ## 🔍 **Enhanced Troubleshooting**
 
