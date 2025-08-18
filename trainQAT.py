@@ -1307,42 +1307,65 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
             try:
                 saved = 0
                 batch_idx = 0
-                while saved < self.num_samples and batch_idx < len(self.val_generator):
-                    # Fetch a small validation batch
-                    batch = self.val_generator[batch_idx]
-                    if len(batch) == 3:
-                        batch_images, batch_masks, batch_weights = batch
-                    else:
-                        batch_images, batch_masks = batch
-                        batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
-                    predictions = self.model.predict(batch_images, verbose=0)
-
-                    take = min(self.num_samples - saved, batch_images.shape[0])
-                    for i in range(take):
-                        sample_dir = os.path.join(self.save_dir, f'sample_{saved + 1}')
-                        os.makedirs(sample_dir, exist_ok=True)
-
-                        original_img = (batch_images[i] * 255).astype(np.uint8)
-
-                        gt_mask = np.argmax(batch_masks[i], axis=-1)
-                        # Reapply ignore (255) where sample weights are 0
-                        if batch_weights is not None:
-                            ignore_mask = batch_weights[i] < 0.5
-                            gt_mask_vis = gt_mask.copy()
-                            gt_mask_vis[ignore_mask] = 255
+                max_batches = min(6, len(self.val_generator))  # Limit to 3 batches max
+                
+                while saved < self.num_samples and batch_idx < max_batches:
+                    try:
+                        # Fetch a small validation batch
+                        batch = self.val_generator[batch_idx]
+                        if len(batch) == 3:
+                            batch_images, batch_masks, batch_weights = batch
                         else:
-                            gt_mask_vis = gt_mask
-                        gt_colored = self.colorize_mask(gt_mask_vis)
+                            batch_images, batch_masks = batch
+                            batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
+                        
+                        # Use a smaller batch size for prediction to avoid memory issues
+                        if batch_images.shape[0] > 2:
+                            batch_images = batch_images[:2]
+                            batch_masks = batch_masks[:2]
+                            batch_weights = batch_weights[:2] if batch_weights is not None else None
+                        
+                        predictions = self.model.predict(batch_images, verbose=0, batch_size=1)
 
-                        pred_mask = np.argmax(predictions[i], axis=-1)
-                        pred_colored = self.colorize_mask(pred_mask)
+                        take = min(self.num_samples - saved, batch_images.shape[0])
+                        for i in range(take):
+                            try:
+                                sample_dir = os.path.join(self.save_dir, f'sample_{saved + 1}')
+                                os.makedirs(sample_dir, exist_ok=True)
 
-                        combined = np.hstack([original_img, gt_colored, pred_colored])
+                                original_img = (batch_images[i] * 255).astype(np.uint8)
 
-                        save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
-                        cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+                                gt_mask = np.argmax(batch_masks[i], axis=-1)
+                                # Reapply ignore (255) where sample weights are 0
+                                if batch_weights is not None:
+                                    ignore_mask = batch_weights[i] < 0.5
+                                    gt_mask_vis = gt_mask.copy()
+                                    gt_mask_vis[ignore_mask] = 255
+                                else:
+                                    gt_mask_vis = gt_mask
+                                gt_colored = self.colorize_mask(gt_mask_vis)
 
-                        saved += 1
+                                pred_mask = np.argmax(predictions[i], axis=-1)
+                                pred_colored = self.colorize_mask(pred_mask)
+
+                                combined = np.hstack([original_img, gt_colored, pred_colored])
+
+                                save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
+                                success = cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+                                
+                                if success:
+                                    saved += 1
+                                else:
+                                    print(f"⚠️  Failed to save image: {save_path}")
+                                    
+                            except Exception as img_error:
+                                print(f"⚠️  Error processing image {i}: {img_error}")
+                                continue
+
+                    except Exception as batch_error:
+                        print(f"⚠️  Error processing batch {batch_idx}: {batch_error}")
+                        batch_idx += 1
+                        continue
 
                     batch_idx += 1
 
@@ -1353,6 +1376,8 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
 
             except Exception as e:
                 print(f"⚠️  Could not save prediction visualizations: {e}")
+                import traceback
+                traceback.print_exc()
 
 class DetailedMetricsCallback(tf.keras.callbacks.Callback):
     def __init__(self, val_generator, num_classes=NUM_CLASSES, save_frequency=5):
