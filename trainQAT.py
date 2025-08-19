@@ -93,7 +93,6 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 import tensorflow.keras.backend as K
 
-
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='HLS4ML Semantic Segmentation with QAT Toggle')
