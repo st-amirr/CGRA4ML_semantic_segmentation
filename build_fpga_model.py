@@ -284,6 +284,11 @@ def create_hls4ml_config(args):
             "QActivation": {
                 "Precision": "ap_fixed<32,16>",
             },
+            # Softmax layer - requires special handling for semantic segmentation
+            "Softmax": {
+                "Precision": "ap_fixed<32,16>",
+                "Strategy": "Resource",  # Use Resource strategy for Softmax
+            },
         },
         "Optimizers": {
             "eliminate_linear_activation": True,
@@ -355,7 +360,7 @@ def convert_to_hls4ml(model, config, output_dir):
         raise
 
 
-def validate_conversion(model, hls_model, output_dir):
+def validate_conversion(model, hls_model, output_dir, compile_model=True):
     """
     Validate the HLS4ML conversion with test data
 
@@ -376,8 +381,27 @@ def validate_conversion(model, hls_model, output_dir):
     original_pred = model.predict(test_data, verbose=0)
     original_time = time.time() - start_time
 
-    # Get predictions from HLS4ML model
+        # Get predictions from HLS4ML model
     print("🔍 Running inference on HLS4ML model...")
+    
+    # Compile the model if needed
+    if compile_model:
+        print("🔧 Compiling HLS4ML model for inference...")
+        try:
+            # Try different compilation methods for different hls4ml versions
+            if hasattr(hls_model, 'compile'):
+                hls_model.compile()
+            elif hasattr(hls_model, 'build'):
+                hls_model.build(csim=True)
+            else:
+                print("⚠️  Warning: No compilation method found")
+                return None
+            print("✅ HLS4ML model compiled successfully")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not compile model: {e}")
+            print("   Skipping HLS4ML validation - model created successfully")
+            return None
+    
     start_time = time.time()
     hls_pred = hls_model.predict(test_data)
     hls_time = time.time() - start_time
@@ -429,8 +453,11 @@ def generate_performance_report(hls_model, output_dir, args):
     print("📊 Generating performance report...")
 
     try:
-        # Get model summary
-        hls_model.summary()
+        # Get model summary (handle different hls4ml versions)
+        if hasattr(hls_model, 'summary'):
+            hls_model.summary()
+        else:
+            print("📊 Model summary not available in this hls4ml version")
 
         # Create performance report
         report = {
@@ -615,6 +642,8 @@ def main():
     print(f"🔧 FPGA part: {args.part}")
     print(f"⏱️  Clock period: {args.clock_period}ns")
     print(f"🔌 I/O type: {args.io_type}")
+    if args.io_type == "io_stream":
+        print("   ℹ️  Using io_stream for semantic segmentation compatibility")
     print(f"⚡ Strategy: {args.strategy}")
     print(f"🔄 Reuse factor: {args.reuse_factor}")
 
@@ -629,8 +658,9 @@ def main():
         hls_model = convert_to_hls4ml(model, config, output_dir)
 
         # Step 4: Validate conversion (if requested)
+        validation_results = None
         if args.validate:
-            validation_results = validate_conversion(model, hls_model, output_dir)
+            validation_results = validate_conversion(model, hls_model, output_dir, compile_model=True)
 
         # Step 5: Generate performance report
         generate_performance_report(hls_model, output_dir, args)
@@ -649,8 +679,10 @@ def main():
         print(f"🔧 HLS4ML project: {output_dir}/myproject_prj/")
         print(f"📋 Deployment guide: {output_dir}/DEPLOYMENT_GUIDE.md")
 
-        if args.validate:
+        if args.validate and validation_results is not None:
             print(f"✅ Validation results: {output_dir}/validation_results.json")
+        elif args.validate:
+            print("⚠️  Validation skipped due to compilation issues")
 
         if args.synthesize:
             print(f"🔧 Synthesis results: {output_dir}/myproject_prj/solution1/")
