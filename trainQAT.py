@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 LMIINet: HLS4ML-Compatible Lightweight Multiple-Information Interaction Network
@@ -93,42 +94,43 @@ from matplotlib.colors import ListedColormap
 import tensorflow.keras.backend as K
 
 
-# Parse command line arguments
-parser = argparse.ArgumentParser(description='HLS4ML Semantic Segmentation with QAT Toggle')
-parser.add_argument('--trainQAT', type=str, default='False', 
-                   help='Enable QAT training (True/False). Default: False for float32 baseline')
-parser.add_argument('--load_model', type=str, default='', 
-                   help='Path to float32 model to load for QAT training')
-parser.add_argument('--epochs', type=int, default=50, 
-                   help='Number of epochs to train')
-parser.add_argument('--batch_size', type=int, default=2, 
-                   help='Batch size for training (smaller for FPGA memory constraints)')
-parser.add_argument('--use_dropout', type=str, default='True',
-                   help='Enable dropout during training (True/False). Default: True')
-parser.add_argument('--subset_ratio', type=float, default=1.0,
-                   help='Fraction of dataset to use per epoch (0.1-1.0). Default: 1.0 (full dataset)')
-parser.add_argument('--LR', type=float, default=None,
-                   help='Override default learning rate. If not set, uses recommended value for float32/QAT.')
+if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='HLS4ML Semantic Segmentation with QAT Toggle')
+    parser.add_argument('--trainQAT', type=str, default='False', 
+                       help='Enable QAT training (True/False). Default: False for float32 baseline')
+    parser.add_argument('--load_model', type=str, default='', 
+                       help='Path to float32 model to load for QAT training')
+    parser.add_argument('--epochs', type=int, default=50, 
+                       help='Number of epochs to train')
+    parser.add_argument('--batch_size', type=int, default=2, 
+                       help='Batch size for training (smaller for FPGA memory constraints)')
+    parser.add_argument('--use_dropout', type=str, default='True',
+                       help='Enable dropout during training (True/False). Default: True')
+    parser.add_argument('--subset_ratio', type=float, default=1.0,
+                       help='Fraction of dataset to use per epoch (0.1-1.0). Default: 1.0 (full dataset)')
+    parser.add_argument('--LR', type=float, default=None,
+                       help='Override default learning rate. If not set, uses recommended value for float32/QAT.')
 
-args = parser.parse_args()
+    args = parser.parse_args()
 
-# Convert string to boolean and parse args
-TRAIN_QAT = args.trainQAT.lower() == 'true'
-LOAD_MODEL_PATH = args.load_model
-EPOCHS = args.epochs
-BATCH_SIZE = args.batch_size
-USE_DROPOUT_DURING_TRAINING = args.use_dropout.lower() == 'true'
-SUBSET_RATIO = args.subset_ratio
-USER_LR = args.LR
+    # Convert string to boolean and parse args
+    TRAIN_QAT = args.trainQAT.lower() == 'true'
+    LOAD_MODEL_PATH = args.load_model
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size
+    USE_DROPOUT_DURING_TRAINING = args.use_dropout.lower() == 'true'
+    SUBSET_RATIO = args.subset_ratio
+    USER_LR = args.LR
 
-print(f"Training Configuration:")
-print(f"  QAT Training: {TRAIN_QAT}")
-print(f"  Load Model: {LOAD_MODEL_PATH if LOAD_MODEL_PATH else 'None (training from scratch)'}")
-print(f"  Epochs: {EPOCHS}")
-print(f"  Batch Size: {BATCH_SIZE}")
-print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
-print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
-print(f"  Dynamic Loss Weights: CE+Dice+Focal → CE+Focal (dice=0 by epoch {int(EPOCHS*0.7)})")
+    print(f"Training Configuration:")
+    print(f"  QAT Training: {TRAIN_QAT}")
+    print(f"  Load Model: {LOAD_MODEL_PATH if LOAD_MODEL_PATH else 'None (training from scratch)'}")
+    print(f"  Epochs: {EPOCHS}")
+    print(f"  Batch Size: {BATCH_SIZE}")
+    print(f"  Use Dropout: {USE_DROPOUT_DURING_TRAINING}")
+    print(f"  Subset Ratio: {SUBSET_RATIO} ({SUBSET_RATIO*100:.1f}% of dataset)")
+    print(f"  Dynamic Loss Weights: CE+Dice+Focal → CE+Focal (dice=0 by epoch {int(EPOCHS*0.7)})")
 
 # Define constants
 INPUT_HEIGHT = 512
@@ -139,7 +141,8 @@ NUM_WORKERS = 4
 PREFETCH_MAX = 8
 
 DEBUG_MODE = False
-
+# Ensure global dropout flag is always defined for import
+USE_DROPOUT_DURING_TRAINING = False
 
 MODEL_CONFIG = {
     # MobileNetV2 channels (fixed to match DeepLabV3+ MobileNetV2 ~2.7M params)
@@ -1486,7 +1489,7 @@ def train_model():
                     float32_model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
                 except Exception as e:
                     print(f"Failed to load full model, trying weights-only: {e}")
-                    # Create model and load weights
+                    # Always reconstruct architecture before loading weights
                     float32_model = create_segmentation_model(use_quantization=False)
                     float32_model.load_weights(LOAD_MODEL_PATH)
                 model = convert_float32_to_qat(float32_model)
@@ -1501,7 +1504,7 @@ def train_model():
                     print("Model loaded successfully")
                 except Exception as e:
                     print(f"Failed to load full model, trying weights-only: {e}")
-                    # Create model and load weights
+                    # Always reconstruct architecture before loading weights
                     if TRAIN_QAT:
                         model = create_segmentation_model(use_quantization=True)
                     else:
@@ -1640,7 +1643,7 @@ def train_model():
         ),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_checkpoint_epoch_{{epoch:02d}}.keras'),
-            save_weights_only=True,  # Save weights only for compatibility
+            save_weights_only=True,  # Save weights only for checkpoints
             save_best_only=False,
             monitor='val_mean_iou',  # Monitor IoU instead of loss
             mode='max',  # Higher IoU is better
@@ -1648,7 +1651,7 @@ def train_model():
         ),
         ModelCheckpoint(
             filepath=os.path.join(model_dir, f'{model_prefix}_best.keras'),
-            save_weights_only=True,  # Save weights only for compatibility
+            save_weights_only=True,  # Save weights only for best checkpoint
             save_best_only=True,
             monitor='val_mean_iou',  # Monitor IoU instead of loss
             mode='max',  # Higher IoU is better
@@ -1713,27 +1716,23 @@ def train_model():
             max_queue_size=PREFETCH_MAX
         )
 
-        # Save final model (compatible format)
+        # Always save the full model (architecture + weights) at the end of training
         final_model_path = os.path.join(model_dir, f'{model_prefix}_final.keras')
         try:
             model.save(final_model_path, save_format='keras')
             print(f"Final model saved to: {final_model_path}")
         except Exception as e:
-            print(f"Warning: Could not save full model, saving weights only: {e}")
-            model.save_weights(final_model_path)
-            print(f"Final weights saved to: {final_model_path}")
+            print(f"Error: Could not save full model: {e}")
 
         # Create and save clean model for HLS4ML export (without dropout)
         print("Creating clean model for HLS4ML export...")
         clean_model = create_hls4ml_export_model(trained_model=model, use_quantization=TRAIN_QAT)
-        clean_model_path = os.path.join(model_dir, f'{model_prefix}_clean_for_hls4ml.keras')
+        clean_model_path = os.path.join(model_dir, f'{model_prefix}_clean_for_hls4ml.h5')
         try:
-            clean_model.save(clean_model_path, save_format='keras')
+            clean_model.save(clean_model_path, save_format='h5')
             print(f"Clean model (no dropout) saved to: {clean_model_path}")
         except Exception as e:
-            print(f"Warning: Could not save full clean model, saving weights only: {e}")
-            clean_model.save_weights(clean_model_path)
-            print(f"Clean weights saved to: {clean_model_path}")
+            print(f"Error: Could not save full clean model: {e}")
 
         # If QAT training, save quantized weights for hls4ml
         if TRAIN_QAT:
