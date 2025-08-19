@@ -179,7 +179,7 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
         'bits': bits,
         'integer': integer_bits,
         'symmetric': symmetric,
-        'alpha': 1.0,  # Explicitly set alpha to 1.0 to avoid po2 quantizers
+        'alpha': 'auto_po2',
         'use_stochastic_rounding': True
     }
 

@@ -25,12 +25,7 @@ Requirements:
 - vivado_hls (for FPGA synthesis)
 
 Example:
-    docker-compose exec hls4ml-training python3 build_fpga_model.py \
-        --model_path ./models/qat_model_quantized_weights.h5 \
-        --output_dir ./fpga_models/optimized_qat \
-        --strategy Latency \
-        --reuse_factor 2 \
-        --validate
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 build_fpga_model.py --model_path ./models/qat_model_clean_for_compatible.h5 --output_dir ./fpga_models/optimized_qat --strategy Latency --reuse_factor 2 --validate
 """
 
 import os
@@ -453,11 +448,8 @@ def generate_performance_report(hls_model, output_dir, args):
     print("📊 Generating performance report...")
 
     try:
-        # Get model summary (handle different hls4ml versions)
-        if hasattr(hls_model, 'summary'):
-            hls_model.summary()
-        else:
-            print("📊 Model summary not available in this hls4ml version")
+        # Get model summary
+        hls_model.summary()
 
         # Create performance report
         report = {

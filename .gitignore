@@ -4,6 +4,8 @@
 **/*.h5
 old models/**
 old_models/**/*
+fpga_models/**
+fpga_models/**/*
 models/** 
 models/** /*
 old/** 
