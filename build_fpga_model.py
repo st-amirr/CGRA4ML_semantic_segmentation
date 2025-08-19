@@ -3,16 +3,15 @@
 HLS4ML FPGA Model Builder for LMIINet Semantic Segmentation
 ===========================================================
 
-This script converts a trained LMIINet model to HLS4ML format and generates
-FPGA implementation code. It handles the complete pipeline from model loading
-to HLS4ML code generation.
+This script converts a trained LMIINet QAT model to HLS4ML format and generates
+FPGA implementation code. It follows hls4ml best practices and examples.
 
 Usage:
-    python build_fpga_model.py --model_path ./models/qat_model_final.keras
-    python build_fpga_model.py --model_path ./models/float32_model_final.keras --quantized
+    python build_fpga_model.py --model_path ./models/qat_model_quantized_weights.h5
+    python build_fpga_model.py --model_path ./models/qat_model_clean_for_hls4ml.h5 --validate
 
 Features:
-- Loads trained LMIINet models (float32 or QAT)
+- Loads trained LMIINet QAT models
 - Converts to HLS4ML-compatible format
 - Generates FPGA implementation with Vivado HLS
 - Configurable precision and resource constraints
@@ -25,13 +24,13 @@ Requirements:
 - qkeras (for QAT models)
 - vivado_hls (for FPGA synthesis)
 
-docker-compose exec hls4ml-training python3 build_fpga_model.py `
---model_path ./models/qat_model_clean_for_hls4ml.h5 `
---quantized `
---output_dir ./fpga_models/optimized_qat `
---strategy Latency `
---reuse_factor 2 `
---validate
+Example:
+    docker-compose exec hls4ml-training python3 build_fpga_model.py \
+        --model_path ./models/qat_model_quantized_weights.h5 \
+        --output_dir ./fpga_models/optimized_qat \
+        --strategy Latency \
+        --reuse_factor 2 \
+        --validate
 """
 
 import os
@@ -44,15 +43,12 @@ from pathlib import Path
 import json
 import time
 from datetime import datetime
+import pprint
 
-# Import model architecture from training script
-from trainQAT import (
-    create_segmentation_model,
-    create_hls4ml_export_model,
-    INPUT_HEIGHT,
-    INPUT_WIDTH,
-    NUM_CLASSES,
-)
+# Model constants from training script
+INPUT_HEIGHT = 512
+INPUT_WIDTH = 1024
+NUM_CLASSES = 20
 
 
 def parse_arguments():
@@ -62,10 +58,7 @@ def parse_arguments():
         "--model_path",
         type=str,
         required=True,
-        help="Path to trained model (.keras file)",
-    )
-    parser.add_argument(
-        "--quantized", action="store_true", help="Model is quantized (QAT model)"
+        help="Path to trained QAT model (.h5 file)",
     )
     parser.add_argument(
         "--output_dir",
@@ -74,17 +67,23 @@ def parse_arguments():
         help="Output directory for FPGA model",
     )
     parser.add_argument(
-        "--part", type=str, default="xczu7ev-ffvc1156-2-e", help="FPGA part number"
+        "--part", 
+        type=str, 
+        default="xczu7ev-ffvc1156-2-e", 
+        help="FPGA part number"
     )
     parser.add_argument(
-        "--clock_period", type=float, default=5.0, help="Clock period in nanoseconds"
+        "--clock_period", 
+        type=float, 
+        default=5.0, 
+        help="Clock period in nanoseconds"
     )
     parser.add_argument(
         "--io_type",
         type=str,
-        default="io_parallel",
+        default="io_stream",  # Changed default to io_stream for semantic segmentation
         choices=["io_parallel", "io_stream"],
-        help="I/O type for HLS4ML",
+        help="I/O type for HLS4ML (io_stream recommended for semantic segmentation)",
     )
     parser.add_argument(
         "--strategy",
@@ -100,109 +99,105 @@ def parse_arguments():
         help="Reuse factor for resource optimization",
     )
     parser.add_argument(
-        "--precision",
-        type=str,
-        default="ap_fixed<16,6>",
-        help="Precision for fixed-point arithmetic (used for float32 models or as fallback)",
-    )
-    parser.add_argument(
-        "--override_precision",
-        type=str,
-        default=None,
-        help="Override all precisions with single value (for testing)",
-    )
-    parser.add_argument(
         "--validate",
         action="store_true",
         help="Validate model conversion with test data",
     )
     parser.add_argument(
-        "--synthesize", action="store_true", help="Run Vivado HLS synthesis"
+        "--synthesize", 
+        action="store_true", 
+        help="Run Vivado HLS synthesis"
     )
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument(
+        "--verbose", 
+        action="store_true", 
+        help="Enable verbose output"
+    )
 
     return parser.parse_args()
 
 
-def load_trained_model(model_path, is_quantized=False):
+def load_qat_model(model_path):
     """
-    Load trained model and prepare for HLS4ML conversion
+    Load QAT model and prepare for HLS4ML conversion
 
     Args:
-        model_path: Path to the trained model
-        is_quantized: Whether the model is quantized (QAT)
+        model_path: Path to the QAT model (.h5 file)
 
     Returns:
-        Loaded and prepared model
+        Loaded QAT model
     """
-    print(f"Loading model from: {model_path}")
+    print(f"Loading QAT model from: {model_path}")
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
     try:
-        # Enforce .h5 format for QKeras models
-        custom_objects = None
-        if is_quantized:
-            if model_path.endswith('.keras'):
-                raise ValueError("QKeras models must be saved and loaded in .h5 format. Please re-save your model as .h5 and use that file.")
-            from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
-            custom_objects = {
-                "QActivation": QActivation,
-                "QConv2D": QConv2D,
-                "QBatchNormalization": QBatchNormalization,
-                "quantized_bits": quantized_bits,
-                "quantized_relu": quantized_relu,
-                "QDense": QDense,
-                "QDepthwiseConv2D": QDepthwiseConv2D,
-            }
+        # Import QKeras components for loading quantized models
+        from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
+        
+        custom_objects = {
+            "QActivation": QActivation,
+            "QConv2D": QConv2D,
+            "QBatchNormalization": QBatchNormalization,
+            "quantized_bits": quantized_bits,
+            "quantized_relu": quantized_relu,
+            "QDense": QDense,
+            "QDepthwiseConv2D": QDepthwiseConv2D,
+        }
+
+        # Load the model
         model = tf.keras.models.load_model(model_path, compile=False, custom_objects=custom_objects)
-        print(f"Model loaded successfully: {model.name}")
-        print(f"Model input shape: {model.input_shape}")
-        print(f"Model output shape: {model.output_shape}")
-
-        # Create clean model for HLS4ML export (remove dropout layers)
-        print("Creating clean model for HLS4ML export...")
-        clean_model = create_hls4ml_export_model(
-            trained_model=model, use_quantization=is_quantized
-        )
-
-        # Verify model compatibility
-        verify_model_compatibility(clean_model)
-
-        return clean_model
+        
+        print(f"✅ Model loaded successfully: {model.name}")
+        print(f"📊 Model input shape: {model.input_shape}")
+        print(f"📊 Model output shape: {model.output_shape}")
+        
+        # Verify model structure
+        verify_model_structure(model)
+        
+        return model
 
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"❌ Error loading model: {e}")
         raise
 
 
-def verify_model_compatibility(model):
+def verify_model_structure(model):
     """
-    Verify that the model is compatible with HLS4ML
+    Verify that the model has the expected structure for HLS4ML
 
     Args:
         model: Keras model to verify
     """
-    print("Verifying HLS4ML compatibility...")
+    print("🔍 Verifying model structure...")
 
-    # Check for unsupported layers
-    unsupported_layers = []
+    # Check input/output shapes
+    input_shape = model.input_shape[1:] if isinstance(model.input_shape, tuple) else model.input_shape[0][1:]
+    output_shape = model.output_shape[1:] if isinstance(model.output_shape, tuple) else model.output_shape[0][1:]
+
+    print(f"📥 Input shape: {input_shape}")
+    print(f"📤 Output shape: {output_shape}")
+
+    expected_input = (INPUT_HEIGHT, INPUT_WIDTH, 3)
+    expected_output = (INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES)
+
+    if input_shape != expected_input:
+        print(f"⚠️  Warning: Expected input shape {expected_input}, got {input_shape}")
+    
+    if output_shape != expected_output:
+        print(f"⚠️  Warning: Expected output shape {expected_output}, got {output_shape}")
+
+    # Check for HLS4ML-compatible layers
+    print("🔍 Checking layer compatibility...")
     supported_layers = [
-        "InputLayer",
-        "Conv2D",
-        "DepthwiseConv2D",
-        "BatchNormalization",
-        "Activation",
-        "Dense",
-        "GlobalAveragePooling2D",
-        "Reshape",
-        "Add",
-        "Concatenate",
-        "UpSampling2D",
-        "Dropout",
+        "InputLayer", "Conv2D", "QConv2D", "DepthwiseConv2D", "QDepthwiseConv2D",
+        "BatchNormalization", "QBatchNormalization", "Activation", "QActivation",
+        "Dense", "QDense", "GlobalAveragePooling2D", "Reshape", "Add", 
+        "Concatenate", "UpSampling2D", "Dropout"
     ]
 
+    unsupported_layers = []
     for layer in model.layers:
         layer_type = type(layer).__name__
         if layer_type not in supported_layers:
@@ -212,39 +207,17 @@ def verify_model_compatibility(model):
         print("⚠️  Warning: Found potentially unsupported layers:")
         for layer in unsupported_layers:
             print(f"   - {layer}")
-        print("   These layers may cause issues during HLS4ML conversion.")
     else:
         print("✅ All layers are HLS4ML-compatible")
 
-    # Check input/output shapes
-    input_shape = (
-        model.input_shape[0][1:]
-        if isinstance(model.input_shape, list)
-        else model.input_shape[1:]
-    )
-    output_shape = (
-        model.output_shape[1:]
-        if isinstance(model.output_shape, tuple)
-        else model.output_shape[0][1:]
-    )
-
-    print(f"Input shape: {input_shape}")
-    print(f"Output shape: {output_shape}")
-
-    if input_shape != (INPUT_HEIGHT, INPUT_WIDTH, 3):
-        print(
-            f"⚠️  Warning: Expected input shape {(INPUT_HEIGHT, INPUT_WIDTH, 3)}, got {input_shape}"
-        )
-
-    if output_shape != (INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES):
-        print(
-            f"⚠️  Warning: Expected output shape {(INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES)}, got {output_shape}"
-        )
+    # Count model parameters
+    total_params = model.count_params()
+    print(f"📊 Total parameters: {total_params:,}")
 
 
 def create_hls4ml_config(args):
     """
-    Create HLS4ML configuration with multiple precision support
+    Create HLS4ML configuration optimized for QAT models
 
     Args:
         args: Command line arguments
@@ -252,129 +225,91 @@ def create_hls4ml_config(args):
     Returns:
         HLS4ML configuration dictionary
     """
-    # Let HLS4ML handle input layer naming automatically
+    print("⚙️  Creating HLS4ML configuration...")
+
+    # Base configuration following hls4ml examples
     config = {
         "Backend": "Vivado",
+        "IOType": args.io_type,  # IOType at top level as per hls4ml docs
         "Model": {
-            "Precision": args.precision,
+            "Precision": "ap_fixed<16,6>",  # Default precision
             "ReuseFactor": args.reuse_factor,
             "Strategy": args.strategy,
-            "IOType": args.io_type,
         },
-
-        "LayerType": {},
+        "LayerType": {
+            # Conv2D layers - higher precision for accuracy
+            "Conv2D": {
+                "Precision": "ap_fixed<32,8>",
+                "ReuseFactor": args.reuse_factor,
+                "Strategy": args.strategy,
+            },
+            "QConv2D": {
+                "Precision": "ap_fixed<32,8>",
+                "ReuseFactor": args.reuse_factor,
+                "Strategy": args.strategy,
+            },
+            # DepthwiseConv2D layers
+            "DepthwiseConv2D": {
+                "Precision": "ap_fixed<32,8>",
+                "ReuseFactor": args.reuse_factor,
+                "Strategy": args.strategy,
+            },
+            "QDepthwiseConv2D": {
+                "Precision": "ap_fixed<32,8>",
+                "ReuseFactor": args.reuse_factor,
+                "Strategy": args.strategy,
+            },
+            # BatchNormalization layers - lower precision for efficiency
+            "BatchNormalization": {
+                "Precision": "ap_fixed<16,4>",
+            },
+            "QBatchNormalization": {
+                "Precision": "ap_fixed<16,4>",
+            },
+            # Dense layers
+            "Dense": {
+                "Precision": "ap_fixed<16,4>",
+                "ReuseFactor": args.reuse_factor,
+                "Strategy": args.strategy,
+            },
+            "QDense": {
+                "Precision": "ap_fixed<16,4>",
+                "ReuseFactor": args.reuse_factor,
+                "Strategy": args.strategy,
+            },
+            # Activation layers
+            "Activation": {
+                "Precision": "ap_fixed<32,16>",
+            },
+            "QActivation": {
+                "Precision": "ap_fixed<32,16>",
+            },
+        },
         "Optimizers": {
             "eliminate_linear_activation": True,
             "fuse_batch_norm_quantized_tanh": True,
             "fuse_consecutive_batch_norm": True,
         },
-        "SkipOptimizers": [],
         "LayerConfig": {},
     }
 
-    # Define precision configurations based on model type
-    if args.quantized:
-        # QAT model - use the optimized precisions from your weight analysis
-        conv_precision = "ap_fixed<32,8>"  # Conv layers: 32-bit (8 int, 24 frac) for maximum precision
-        bn_precision = (
-            "ap_fixed<16,4>"  # BatchNorm: 16-bit (4 int, 12 frac) for stability
-        )
-        dense_precision = (
-            "ap_fixed<16,4>"  # Dense/MLP: 16-bit (4 int, 12 frac) for efficiency
-        )
-        output_precision = (
-            "ap_fixed<32,8>"  # Output: 32-bit (8 int, 24 frac) for critical predictions
-        )
-        activation_precision = (
-            "ap_fixed<32,16>"  # Activations: 32-bit (16 int, 16 frac) for accuracy
-        )
-    else:
-        # Float32 model - use consistent precision
-        conv_precision = args.precision
-        bn_precision = args.precision
-        dense_precision = args.precision
-        output_precision = args.precision
-        activation_precision = args.precision
-
-    # Apply override if specified (for testing purposes)
-    if args.override_precision:
-        conv_precision = args.override_precision
-        bn_precision = args.override_precision
-        dense_precision = args.override_precision
-        output_precision = args.override_precision
-        activation_precision = args.override_precision
-
-    # Add layer-specific configurations with multiple precisions
-    config["LayerType"]["Conv2D"] = {
-        "Precision": conv_precision,
-        "ReuseFactor": args.reuse_factor,
-        "Strategy": args.strategy,
+    # Add FPGA configuration
+    config["FPGA"] = {
+        "Part": args.part,
+        "ClockPeriod": args.clock_period,
     }
+    
+    # IOType is set at the top level as per hls4ml documentation
 
-    config["LayerType"]["QConv2D"] = {
-        "Precision": conv_precision,
-        "ReuseFactor": args.reuse_factor,
-        "Strategy": args.strategy,
-    }
-
-    config["LayerType"]["DepthwiseConv2D"] = {
-        "Precision": conv_precision,
-        "ReuseFactor": args.reuse_factor,
-        "Strategy": args.strategy,
-    }
-
-    config["LayerType"]["QDepthwiseConv2D"] = {
-        "Precision": conv_precision,
-        "ReuseFactor": args.reuse_factor,
-        "Strategy": args.strategy,
-    }
-
-    config["LayerType"]["Dense"] = {
-        "Precision": dense_precision,
-        "ReuseFactor": args.reuse_factor,
-        "Strategy": args.strategy,
-    }
-
-    config["LayerType"]["QDense"] = {
-        "Precision": dense_precision,
-        "ReuseFactor": args.reuse_factor,
-        "Strategy": args.strategy,
-    }
-
-    config["LayerType"]["BatchNormalization"] = {
-        "Precision": bn_precision,
-    }
-
-    config["LayerType"]["QBatchNormalization"] = {
-        "Precision": bn_precision,
-    }
-
-    config["LayerType"]["Activation"] = {
-        "Precision": activation_precision,
-    }
-
-    config["LayerType"]["QActivation"] = {
-        "Precision": activation_precision,
-    }
-
-    # Let HLS4ML use default layer configurations
-
-    # Print precision configuration
-    if args.quantized:
-        print("Using QAT-optimized multiple precision configuration:")
-        print(f"  Conv2D/DepthwiseConv2D: {conv_precision}")
-        print(f"  BatchNormalization: {bn_precision}")
-        print(f"  Dense/MLP: {dense_precision}")
-        print(f"  Output layer: {output_precision}")
-        print(f"  Activations: {activation_precision}")
-    else:
-        print(f"Using uniform precision: {args.precision}")
+    print("✅ HLS4ML configuration created")
+    if args.verbose:
+        print("Configuration details:")
+        pprint.pprint(config)
 
     return config
 
 
 def convert_to_hls4ml(model, config, output_dir):
-
     """
     Convert Keras model to HLS4ML format
 
@@ -386,52 +321,37 @@ def convert_to_hls4ml(model, config, output_dir):
     Returns:
         HLS4ML model
     """
-    print("Converting model to HLS4ML format...")
-    print("HLS4ML config:")
-    import pprint
-    pprint.pprint(config)
-    print("Model input layers:")
-    for layer in model.layers:
-        if hasattr(layer, 'input_shape'):
-            print(f"Layer name: {layer.name}, type: {layer.__class__.__name__}, input_shape: {layer.input_shape}")
+    print("🔄 Converting model to HLS4ML format...")
 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
 
-    # Set part, clock_period, io_type in config
-    config['FPGA'] = {
-        'Part': args.part,
-        'ClockPeriod': args.clock_period,
-        'IOType': args.io_type
-    }
-    # For hls4ml 1.1.0, add model to config
-    config['KerasModel'] = model
-    # Add HLSConfig key for hls4ml 1.1.0 compatibility
-    config['HLSConfig'] = {
-        'Model': config.get('Model', {}),
-        'LayerName': config.get('LayerName', {}),
-        'LayerType': config.get('LayerType', {}),
-        'Optimizers': config.get('Optimizers', {}),
-        'SkipOptimizers': config.get('SkipOptimizers', []),
-        'LayerConfig': config.get('LayerConfig', {}),
-        'FPGA': config.get('FPGA', {}),
-    }
-    # Remove top-level LayerName key so only HLSConfig contains it
-    if 'LayerName' in config:
-        del config['LayerName']
-    # Remove SkipOptimizers if Optimizers is present (hls4ml expects only one)
-    if 'Optimizers' in config['HLSConfig'] and 'SkipOptimizers' in config['HLSConfig']:
-        del config['HLSConfig']['SkipOptimizers']
-
-    # Let HLS4ML use default IOType handling
-
     try:
-        # Convert model to HLS4ML (hls4ml 1.1.0 expects only config)
+        # Add model to config for hls4ml conversion
+        config["KerasModel"] = model
+        
+        # Create HLSConfig structure for hls4ml compatibility
+        config["HLSConfig"] = {
+            "Model": config.get("Model", {}),
+            "LayerName": config.get("LayerName", {}),
+            "LayerType": config.get("LayerType", {}),
+            "Optimizers": config.get("Optimizers", {}),
+            "LayerConfig": config.get("LayerConfig", {}),
+            "FPGA": config.get("FPGA", {}),
+        }
+        
+        # IOType is already set at the top level of the config
+
+        # Convert model to HLS4ML
         hls_model = hls4ml.converters.keras_to_hls(config)
-        print(f"HLS4ML model created in: {output_dir}")
+        
+        print(f"✅ HLS4ML model created successfully")
+        print(f"📁 Output directory: {output_dir}")
+        
         return hls_model
+
     except Exception as e:
-        print(f"Error converting to HLS4ML: {e}")
+        print(f"❌ Error converting to HLS4ML: {e}")
         raise
 
 
@@ -444,92 +364,106 @@ def validate_conversion(model, hls_model, output_dir):
         hls_model: HLS4ML model
         output_dir: Output directory for results
     """
-    print("Validating model conversion...")
+    print("🧪 Validating model conversion...")
 
     # Generate test data
-    print("Generating test data...")
+    print("📊 Generating test data...")
     test_data = np.random.rand(1, INPUT_HEIGHT, INPUT_WIDTH, 3).astype(np.float32)
 
     # Get predictions from original model
-    print("Running inference on original model...")
+    print("🔍 Running inference on original model...")
     start_time = time.time()
     original_pred = model.predict(test_data, verbose=0)
     original_time = time.time() - start_time
 
     # Get predictions from HLS4ML model
-    print("Running inference on HLS4ML model...")
+    print("🔍 Running inference on HLS4ML model...")
     start_time = time.time()
     hls_pred = hls_model.predict(test_data)
     hls_time = time.time() - start_time
 
     # Compare predictions
-    print("Comparing predictions...")
+    print("📈 Comparing predictions...")
     mse = np.mean((original_pred - hls_pred) ** 2)
     mae = np.mean(np.abs(original_pred - hls_pred))
+    max_error = np.max(np.abs(original_pred - hls_pred))
 
-    print(f"Validation Results:")
-    print(f"  Mean Squared Error: {mse:.6f}")
-    print(f"  Mean Absolute Error: {mae:.6f}")
-    print(f"  Original model time: {original_time:.4f}s")
-    print(f"  HLS4ML model time: {hls_time:.4f}s")
+    print(f"📊 Validation Results:")
+    print(f"   Mean Squared Error: {mse:.6f}")
+    print(f"   Mean Absolute Error: {mae:.6f}")
+    print(f"   Max Absolute Error: {max_error:.6f}")
+    print(f"   Original model time: {original_time:.4f}s")
+    print(f"   HLS4ML model time: {hls_time:.4f}s")
 
     # Save validation results
     validation_results = {
         "mse": float(mse),
         "mae": float(mae),
+        "max_error": float(max_error),
         "original_time": float(original_time),
         "hls_time": float(hls_time),
         "test_data_shape": test_data.shape,
         "original_pred_shape": original_pred.shape,
         "hls_pred_shape": hls_pred.shape,
+        "validation_timestamp": datetime.now().isoformat(),
     }
 
     results_file = os.path.join(output_dir, "validation_results.json")
     with open(results_file, "w") as f:
         json.dump(validation_results, f, indent=2)
 
-    print(f"Validation results saved to: {results_file}")
+    print(f"💾 Validation results saved to: {results_file}")
 
     return validation_results
 
 
-def generate_performance_report(hls_model, output_dir):
+def generate_performance_report(hls_model, output_dir, args):
     """
     Generate performance and resource report
 
     Args:
         hls_model: HLS4ML model
         output_dir: Output directory
+        args: Command line arguments
     """
-    print("Generating performance report...")
+    print("📊 Generating performance report...")
 
     try:
         # Get model summary
         hls_model.summary()
 
-        # Get resource estimates
-        if hasattr(hls_model, "get_resource_usage"):
-            resources = hls_model.get_resource_usage()
-            print(f"Resource Usage: {resources}")
-
-        # Save performance report
+        # Create performance report
         report = {
             "model_name": hls_model.name,
             "input_shape": hls_model.input_shape,
             "output_shape": hls_model.output_shape,
             "total_params": hls_model.get_weights_count(),
+            "fpga_part": args.part,
+            "clock_period": args.clock_period,
+            "io_type": args.io_type,
+            "strategy": args.strategy,
+            "reuse_factor": args.reuse_factor,
             "generated_at": datetime.now().isoformat(),
             "hls4ml_version": hls4ml.__version__,
         }
+
+        # Try to get resource estimates if available
+        try:
+            if hasattr(hls_model, "get_resource_usage"):
+                resources = hls_model.get_resource_usage()
+                report["resource_usage"] = resources
+                print(f"📊 Resource Usage: {resources}")
+        except Exception as e:
+            print(f"⚠️  Could not get resource usage: {e}")
 
         report_file = os.path.join(output_dir, "performance_report.json")
         with open(report_file, "w") as f:
             json.dump(report, f, indent=2)
 
-        print(f"Performance report saved to: {report_file}")
+        print(f"💾 Performance report saved to: {report_file}")
 
     except Exception as e:
-        print(f"Warning: Could not generate complete performance report: {e}")
+        print(f"⚠️  Could not generate complete performance report: {e}")
 
 
 def run_synthesis(hls_model, output_dir):
@@ -540,34 +474,33 @@ def run_synthesis(hls_model, output_dir):
         hls_model: HLS4ML model
         output_dir: Output directory
     """
-    print("Running Vivado HLS synthesis...")
+    print("🔧 Running Vivado HLS synthesis...")
 
     try:
         # Build the project
         hls_model.build(
-            csim=True,  # Run C simulation
-            synth=True,  # Run synthesis
-            cosim=True,  # Run co-simulation
+            csim=True,    # Run C simulation
+            synth=True,   # Run synthesis
+            cosim=True,   # Run co-simulation
             export=True,  # Export IP
         )
 
-        print("Synthesis completed successfully!")
+        print("✅ Synthesis completed successfully!")
 
         # Check synthesis results
-        if os.path.exists(
-            os.path.join(output_dir, "myproject_prj", "solution1", "syn")
-        ):
-            print("Synthesis files generated successfully")
-
-        if os.path.exists(
-            os.path.join(output_dir, "myproject_prj", "solution1", "impl")
-        ):
-            print("Implementation files generated successfully")
+        synth_dir = os.path.join(output_dir, "myproject_prj", "solution1", "syn")
+        impl_dir = os.path.join(output_dir, "myproject_prj", "solution1", "impl")
+        
+        if os.path.exists(synth_dir):
+            print(f"📁 Synthesis files: {synth_dir}")
+        
+        if os.path.exists(impl_dir):
+            print(f"📁 Implementation files: {impl_dir}")
 
     except Exception as e:
-        print(f"Error during synthesis: {e}")
-        print("Synthesis failed, but HLS4ML model was created successfully")
-        print("You can manually run synthesis later using the generated project")
+        print(f"❌ Error during synthesis: {e}")
+        print("⚠️  Synthesis failed, but HLS4ML model was created successfully")
+        print("💡 You can manually run synthesis later using the generated project")
 
 
 def create_deployment_guide(output_dir, args):
@@ -578,19 +511,19 @@ def create_deployment_guide(output_dir, args):
         output_dir: Output directory
         args: Command line arguments
     """
-    print("Creating deployment guide...")
+    print("📝 Creating deployment guide...")
 
-    guide_content = f"""
-# LMIINet FPGA Deployment Guide
+    guide_content = f"""# LMIINet FPGA Deployment Guide
 
 ## Model Information
-- **Model Type**: {'Quantized (QAT)' if args.quantized else 'Float32'}
+- **Model Type**: Quantized (QAT)
 - **Input Shape**: {INPUT_HEIGHT}x{INPUT_WIDTH}x3
 - **Output Shape**: {INPUT_HEIGHT}x{INPUT_WIDTH}x{NUM_CLASSES}
 - **FPGA Part**: {args.part}
 - **Clock Period**: {args.clock_period}ns
 - **I/O Type**: {args.io_type}
 - **Strategy**: {args.strategy}
+- **Reuse Factor**: {args.reuse_factor}
 
 ## Generated Files
 The following files were generated in: {output_dir}
@@ -641,7 +574,6 @@ The synthesized IP core can be found in:
 ## Performance Notes
 - The model is optimized for {args.strategy} strategy
 - Reuse factor: {args.reuse_factor}
-- Precision: {args.precision}
 - Expected latency and resource usage can be found in synthesis reports
 
 ## Troubleshooting
@@ -662,37 +594,33 @@ For issues with HLS4ML conversion, check:
     with open(guide_file, "w") as f:
         f.write(guide_content)
 
-    print(f"Deployment guide saved to: {guide_file}")
+    print(f"💾 Deployment guide saved to: {guide_file}")
 
 
 def main():
     """Main function"""
-    global args
     args = parse_arguments()
 
     print("=" * 60)
-    print("HLS4ML FPGA Model Builder for LMIINet")
+    print("🚀 HLS4ML FPGA Model Builder for LMIINet")
     print("=" * 60)
 
-    # Create output directory
-    output_dir = os.path.join(
-        args.output_dir,
-        f"lmiinet_{'qat' if args.quantized else 'float32'}_{int(time.time())}",
-    )
+    # Create output directory with timestamp
+    timestamp = int(time.time())
+    output_dir = os.path.join(args.output_dir, f"lmiinet_qat_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"Output directory: {output_dir}")
-    print(f"Model path: {args.model_path}")
-    print(f"Quantized: {args.quantized}")
-    print(f"FPGA part: {args.part}")
-    print(f"Clock period: {args.clock_period}ns")
-    print(f"I/O type: {args.io_type}")
-    print(f"Strategy: {args.strategy}")
-    print(f"Precision: {args.precision}")
+    print(f"📁 Output directory: {output_dir}")
+    print(f"📄 Model path: {args.model_path}")
+    print(f"🔧 FPGA part: {args.part}")
+    print(f"⏱️  Clock period: {args.clock_period}ns")
+    print(f"🔌 I/O type: {args.io_type}")
+    print(f"⚡ Strategy: {args.strategy}")
+    print(f"🔄 Reuse factor: {args.reuse_factor}")
 
     try:
-        # Step 1: Load trained model
-        model = load_trained_model(args.model_path, args.quantized)
+        # Step 1: Load QAT model
+        model = load_qat_model(args.model_path)
 
         # Step 2: Create HLS4ML configuration
         config = create_hls4ml_config(args)
@@ -705,7 +633,7 @@ def main():
             validation_results = validate_conversion(model, hls_model, output_dir)
 
         # Step 5: Generate performance report
-        generate_performance_report(hls_model, output_dir)
+        generate_performance_report(hls_model, output_dir, args)
 
         # Step 6: Run synthesis (if requested)
         if args.synthesize:
@@ -727,7 +655,7 @@ def main():
         if args.synthesize:
             print(f"🔧 Synthesis results: {output_dir}/myproject_prj/solution1/")
 
-        print("\nNext steps:")
+        print("\n🚀 Next steps:")
         print("1. Review the deployment guide")
         print("2. Run simulation: cd {output_dir} && ./myproject")
         print("3. Run synthesis: vivado_hls -f run_hls.tcl")
@@ -736,7 +664,6 @@ def main():
     except Exception as e:
         print(f"\n❌ Error during FPGA model build: {e}")
         import traceback
-
         traceback.print_exc()
         sys.exit(1)
 
