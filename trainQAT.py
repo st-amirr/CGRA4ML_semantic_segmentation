@@ -294,6 +294,8 @@ def lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_
                              name=f'{name_prefix}_dw1')(x)
         x1 = QBatchNormalization(gamma_quantizer=quantized_bits(**bn_config),
                                beta_quantizer=quantized_bits(**bn_config),
+                               mean_quantizer=quantized_bits(**bn_config),
+                               variance_quantizer=quantized_bits(**bn_config),
                                name=f'{name_prefix}_bn1')(x1)
         x1 = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act1')(x1)
         x1 = QConv2D(filters//2, kernel_size=1, padding='same', use_bias=False,
@@ -308,6 +310,8 @@ def lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_
                     name=f'{name_prefix}_asym1')(x)
         x2 = QBatchNormalization(gamma_quantizer=quantized_bits(**bn_config),
                                beta_quantizer=quantized_bits(**bn_config),
+                               mean_quantizer=quantized_bits(**bn_config),
+                               variance_quantizer=quantized_bits(**bn_config),
                                name=f'{name_prefix}_bn2')(x2)
         x2 = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act2')(x2)
         x2 = QConv2D(filters//4, kernel_size=(3, 1), padding='same', use_bias=False,
@@ -332,6 +336,8 @@ def lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_
                        name=f'{name_prefix}_final')(x_concat)
         x_out = QBatchNormalization(gamma_quantizer=quantized_bits(**bn_config),
                                   beta_quantizer=quantized_bits(**bn_config),
+                                  mean_quantizer=quantized_bits(**bn_config),
+                                  variance_quantizer=quantized_bits(**bn_config),
                                   name=f'{name_prefix}_bn_final')(x_out)
         x_out = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act_final')(x_out)
         
@@ -428,6 +434,8 @@ def lmiinet_encoder(inputs, use_quantization=False):
                    name='stem_conv')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
+                               mean_quantizer=quantized_bits(**stem_config),
+                               variance_quantizer=quantized_bits(**stem_config),
                                name='stem_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stem_act')(x)
     else:
@@ -443,6 +451,8 @@ def lmiinet_encoder(inputs, use_quantization=False):
                    name='stage1_downsample')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
+                               mean_quantizer=quantized_bits(**stem_config),
+                               variance_quantizer=quantized_bits(**stem_config),
                                name='stage1_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage1_downsample_act')(x)
     else:
@@ -461,6 +471,8 @@ def lmiinet_encoder(inputs, use_quantization=False):
                    name='stage2_downsample')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
+                               mean_quantizer=quantized_bits(**stem_config),
+                               variance_quantizer=quantized_bits(**stem_config),
                                name='stage2_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage2_downsample_act')(x)
     else:
@@ -480,6 +492,8 @@ def lmiinet_encoder(inputs, use_quantization=False):
                    name='stage3_downsample')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
+                               mean_quantizer=quantized_bits(**stem_config),
+                               variance_quantizer=quantized_bits(**stem_config),
                                name='stage3_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage3_downsample_act')(x)
     else:
@@ -499,6 +513,8 @@ def lmiinet_encoder(inputs, use_quantization=False):
                    name='stage4_downsample')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
                                beta_quantizer=quantized_bits(**stem_config),
+                               mean_quantizer=quantized_bits(**stem_config),
+                               variance_quantizer=quantized_bits(**stem_config),
                                name='stage4_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage4_downsample_act')(x)
     else:
