@@ -158,6 +158,35 @@ def load_qat_model(model_path):
         raise
 
 
+def fix_upsampling_layers(model):
+    """
+    Fix UpSampling2D layers to use nearest neighbor interpolation for HLS4ML compatibility
+    
+    Args:
+        model: Keras model to fix
+        
+    Returns:
+        Fixed model
+    """
+    print("🔧 Fixing UpSampling2D layers for HLS4ML compatibility...")
+    
+    fixed_count = 0
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.layers.UpSampling2D):
+            # Check if it's using bilinear interpolation
+            if hasattr(layer, 'interpolation') and layer.interpolation == 'bilinear':
+                print(f"   Fixing layer {layer.name}: bilinear -> nearest")
+                layer.interpolation = 'nearest'
+                fixed_count += 1
+    
+    if fixed_count > 0:
+        print(f"✅ Fixed {fixed_count} UpSampling2D layers")
+    else:
+        print("✅ No UpSampling2D layers needed fixing")
+    
+    return model
+
+
 def verify_model_structure(model):
     """
     Verify that the model has the expected structure for HLS4ML
@@ -284,6 +313,12 @@ def create_hls4ml_config(args):
             "Softmax": {
                 "Precision": "ap_fixed<32,16>",
                 "Strategy": "Resource",  # Use Resource strategy for Softmax
+            },
+            # UpSampling2D layers - use nearest neighbor interpolation for HLS4ML compatibility
+            "UpSampling2D": {
+                "Precision": "ap_fixed<32,16>",
+                "Strategy": "Resource",  # Use Resource strategy for upsampling
+                "Interpolation": "nearest",  # Use nearest neighbor instead of bilinear
             },
         },
         "Optimizers": {
@@ -418,8 +453,17 @@ def validate_conversion(model, hls_model, output_dir, compile_model=True):
     hls_pred = hls_model.predict(test_data)
     hls_time = time.time() - start_time
 
-    # Compare predictions
+    # Reshape HLS4ML predictions to match original model output shape
     print("📈 Comparing predictions...")
+    print(f"   Original prediction shape: {original_pred.shape}")
+    print(f"   HLS4ML prediction shape: {hls_pred.shape}")
+    
+    # Reshape HLS4ML predictions to match original model output
+    if hls_pred.ndim == 1:
+        # HLS4ML returns flattened output, reshape to match original
+        hls_pred = hls_pred.reshape(original_pred.shape)
+        print(f"   Reshaped HLS4ML prediction to: {hls_pred.shape}")
+    
     mse = np.mean((original_pred - hls_pred) ** 2)
     mae = np.mean(np.abs(original_pred - hls_pred))
     max_error = np.max(np.abs(original_pred - hls_pred))
@@ -465,15 +509,12 @@ def generate_performance_report(hls_model, output_dir, args):
     print("📊 Generating performance report...")
 
     try:
-        # Get model summary
-        hls_model.summary()
-
         # Create performance report
         report = {
-            "model_name": hls_model.name,
-            "input_shape": hls_model.input_shape,
-            "output_shape": hls_model.output_shape,
-            "total_params": hls_model.get_weights_count(),
+            "model_name": getattr(hls_model, 'name', 'hls4ml_model'),
+            "input_shape": getattr(hls_model, 'input_shape', None),
+            "output_shape": getattr(hls_model, 'output_shape', None),
+            "total_params": getattr(hls_model, 'get_weights_count', lambda: None)(),
             "fpga_part": args.part,
             "clock_period": args.clock_period,
             "io_type": args.io_type,
@@ -482,6 +523,16 @@ def generate_performance_report(hls_model, output_dir, args):
             "generated_at": datetime.now().isoformat(),
             "hls4ml_version": hls4ml.__version__,
         }
+        
+        # Try to get model summary if available
+        try:
+            if hasattr(hls_model, 'summary'):
+                hls_model.summary()
+                print("✅ Model summary generated")
+            else:
+                print("ℹ️  Model summary not available for HLS4ML ModelGraph")
+        except Exception as e:
+            print(f"⚠️  Could not generate model summary: {e}")
 
         # Try to get resource estimates if available
         try:
@@ -659,6 +710,9 @@ def main():
     try:
         # Step 1: Load QAT model
         model = load_qat_model(args.model_path)
+
+        # Step 1.5: Fix UpSampling2D layers for HLS4ML compatibility
+        model = fix_upsampling_layers(model)
 
         # Step 2: Create HLS4ML configuration
         config = create_hls4ml_config(args)

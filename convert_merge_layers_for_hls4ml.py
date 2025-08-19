@@ -1,3 +1,7 @@
+"""
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 convert_merge_layers_for_hls4ml.py
+"""
+
 import tensorflow as tf
 from tensorflow.keras.models import load_model, Model
 from tensorflow.keras.layers import Concatenate, Add, Input
