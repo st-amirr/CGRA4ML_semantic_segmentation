@@ -230,6 +230,7 @@ def create_hls4ml_config(args):
             "Precision": "ap_fixed<16,6>",  # Default precision
             "ReuseFactor": args.reuse_factor,
             "Strategy": args.strategy,
+            "ProjectName": "myproject",  # Explicitly set project name
         },
         "LayerType": {
             # Conv2D layers - higher precision for accuracy
@@ -338,7 +339,14 @@ def convert_to_hls4ml(model, config, output_dir):
             "Optimizers": config.get("Optimizers", {}),
             "LayerConfig": config.get("LayerConfig", {}),
             "FPGA": config.get("FPGA", {}),
+            "OutputDir": output_dir,
         }
+        
+        # Ensure project name is set at the top level as well
+        config["ProjectName"] = "myproject"
+        
+        # Set output directory
+        config["OutputDir"] = output_dir
         
         # IOType is already set at the top level of the config
 
