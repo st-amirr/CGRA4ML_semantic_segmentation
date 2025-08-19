@@ -34,6 +34,8 @@ HLS4ML Compatibility:
 - GlobalAveragePooling2D, Dense, Reshape, Add, Concatenate, UpSampling2D
 - No unsupported layers: Lambda, LayerNormalization, MultiHeadAttention, Permute
 - All operations are hardware-friendly for FPGA deployment
+- FIXED: Removed 'alpha': 'auto_po2' from quantizer config to prevent unsupported quantized_po2/quantized_relu_po2
+- Uses only HLS4ML-supported quantizers: quantized_bits and quantized_relu
 
 Key improvements:
 - Combined loss function (categorical crossentropy + dice loss + focal loss)
@@ -178,7 +180,7 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
         'bits': bits,
         'integer': integer_bits,
         'symmetric': symmetric,
-        'alpha': 'auto_po2',
+        # Removed 'alpha': 'auto_po2' to prevent unsupported quantizers
         'use_stochastic_rounding': True
     }
 
