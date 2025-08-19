@@ -356,6 +356,15 @@ def convert_to_hls4ml(model, config, output_dir):
         print(f"✅ HLS4ML model created successfully")
         print(f"📁 Output directory: {output_dir}")
         
+        # Write HLS project files
+        print("📝 Writing HLS project files...")
+        try:
+            hls_model.write()
+            print("✅ HLS project files written successfully")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not write HLS project files: {e}")
+            print("   HLS4ML model was created successfully, but project files may be incomplete")
+        
         return hls_model
 
     except Exception as e:
