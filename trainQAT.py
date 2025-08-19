@@ -336,7 +336,8 @@ def lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_
                     name=f'{name_prefix}_dilated')(x)
         
         # Concatenate branches (HLS4ML supported)
-        x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2, x3])
+        x_concat_temp = Concatenate(name=f'{name_prefix}_concat_temp')([x1, x2])
+        x_concat = Concatenate(name=f'{name_prefix}_concat')([x_concat_temp, x3])
         
         # Final 1x1 convolution for channel adjustment (HLS4ML supported)
         x_out = QConv2D(filters, kernel_size=1, padding='same', use_bias=False,
@@ -369,8 +370,9 @@ def lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_
         x3 = Conv2D(filters//4, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
                    name=f'{name_prefix}_dilated')(x)
         
-        # Concatenate branches (HLS4ML supported)
-        x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2, x3])
+        # Concatenate branches (HLS4ML supported, only two at a time)
+        x_concat_temp = Concatenate(name=f'{name_prefix}_concat_temp')([x1, x2])
+        x_concat = Concatenate(name=f'{name_prefix}_concat')([x_concat_temp, x3])
         
         # Final 1x1 convolution for channel adjustment (HLS4ML supported)
         x_out = Conv2D(filters, kernel_size=1, padding='same', use_bias=False,
@@ -577,7 +579,7 @@ def create_segmentation_model(use_quantization=False):
     tf.keras.backend.clear_session()
 
     # Input
-    inputs = Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name="input")
+    inputs = Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name="input_image")
 
     # LMIINet encoder
     stage1_out, stage2_out, stage3_out, stage4_out = lmiinet_encoder(

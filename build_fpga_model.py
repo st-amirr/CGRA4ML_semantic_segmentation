@@ -244,13 +244,24 @@ def create_hls4ml_config(args):
     Returns:
         HLS4ML configuration dictionary
     """
+    # Get input layer name from model if available
+    input_layer_name = None
+    if hasattr(args, 'model') and args.model is not None:
+        input_layer_name = args.model.inputs[0].name.split(':')[0]
+    else:
+        input_layer_name = 'input_image'  # fallback
     config = {
+        "Backend": "Vivado",
         "Model": {
             "Precision": args.precision,
             "ReuseFactor": args.reuse_factor,
             "Strategy": args.strategy,
         },
-        "LayerName": {},
+        "LayerName": {
+            input_layer_name: {
+                "IOType": args.io_type
+            }
+        },
         "LayerType": {},
         "Optimizers": {
             "eliminate_linear_activation": True,
@@ -368,6 +379,7 @@ def create_hls4ml_config(args):
 
 
 def convert_to_hls4ml(model, config, output_dir):
+
     """
     Convert Keras model to HLS4ML format
 
@@ -380,6 +392,13 @@ def convert_to_hls4ml(model, config, output_dir):
         HLS4ML model
     """
     print("Converting model to HLS4ML format...")
+    print("HLS4ML config:")
+    import pprint
+    pprint.pprint(config)
+    print("Model input layers:")
+    for layer in model.layers:
+        if hasattr(layer, 'input_shape'):
+            print(f"Layer name: {layer.name}, type: {layer.__class__.__name__}, input_shape: {layer.input_shape}")
 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -390,17 +409,27 @@ def convert_to_hls4ml(model, config, output_dir):
         'ClockPeriod': args.clock_period,
         'IOType': args.io_type
     }
+    # For hls4ml 1.1.0, add model to config
+    config['KerasModel'] = model
+    # Add HLSConfig key for hls4ml 1.1.0 compatibility
+    config['HLSConfig'] = {
+        'Model': config.get('Model', {}),
+        'LayerName': config.get('LayerName', {}),
+        'LayerType': config.get('LayerType', {}),
+        'Optimizers': config.get('Optimizers', {}),
+        'SkipOptimizers': config.get('SkipOptimizers', []),
+        'LayerConfig': config.get('LayerConfig', {}),
+        'FPGA': config.get('FPGA', {}),
+    }
+    # Remove SkipOptimizers if Optimizers is present (hls4ml expects only one)
+    if 'Optimizers' in config['HLSConfig'] and 'SkipOptimizers' in config['HLSConfig']:
+        del config['HLSConfig']['SkipOptimizers']
 
     try:
-        # Convert model to HLS4ML
-        hls_model = hls4ml.converters.keras_to_hls(
-            model,
-            config=config
-        )
-
+        # Convert model to HLS4ML (hls4ml 1.1.0 expects only config)
+        hls_model = hls4ml.converters.keras_to_hls(config)
         print(f"HLS4ML model created in: {output_dir}")
         return hls_model
-
     except Exception as e:
         print(f"Error converting to HLS4ML: {e}")
         raise
