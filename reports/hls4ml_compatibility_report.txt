@@ -1,8 +1,38 @@
 HLS4ML COMPATIBILITY REPORT
 ============================
-Generated: 2025-08-08
+Generated: 2025-08-19
 Project: HLS4ML Semantic Segmentation Model
-Status: Enhanced with Latest FPGA Optimizations
+Status: UPDATED with Quantizer Compatibility Analysis
+HLS4ML Version: 1.1.0
+
+NOT SUPPORTED BY HLS4ML & ALTERNATIVES
+======================================
+
+QUANTIZERS:
+❌ quantized_po2 → ✅ quantized_bits
+❌ quantized_relu_po2 → ✅ quantized_relu
+
+PARAMETERS:
+❌ alpha: 'auto' → ✅ Remove parameter entirely
+❌ alpha: 'auto_po2' → ✅ Remove parameter entirely
+❌ scale_axis: None → ✅ Remove parameter entirely
+
+LAYERS:
+❌ Lambda layers → ✅ Conv2D, Dense, Add, Concatenate
+❌ Dynamic shape calculations → ✅ Fixed parameters
+❌ Custom loss functions → ✅ Standard metrics
+❌ Transposed convolutions → ✅ Bilinear upsampling
+
+CURRENT MODEL ISSUES:
+❌ Uses quantized_po2 and quantized_relu_po2 (NOT SUPPORTED)
+❌ Uses alpha: 'auto' parameter (NOT SUPPORTED)
+❌ IOType configuration problems
+
+FIXES NEEDED:
+1. Replace quantized_po2 → quantized_bits
+2. Replace quantized_relu_po2 → quantized_relu  
+3. Remove alpha: 'auto' parameter
+4. Fix IOType configuration
 
 OVERVIEW
 --------

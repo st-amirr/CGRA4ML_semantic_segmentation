@@ -60,7 +60,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --epochs=120 --batch_size=1 --use_dropout=True --subset_ratio=0.9 --LR=1.536e-4 --load_model=./models/qat_model_checkpoint_epoch_60.keras
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT.py --trainQAT=True --epochs=1 --batch_size=1 --use_dropout=True --subset_ratio=0.9 --LR=1.536e-4 --load_model=./models/qat_model_checkpoint_epoch_60.keras
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 analyze_iou.py
 """
 
@@ -179,9 +179,8 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
         'bits': bits,
         'integer': integer_bits,
         'symmetric': symmetric,
-        'alpha': 'auto_po2',
-        'use_stochastic_rounding': True,
-        'scale_axis': None
+        'alpha': 1.0,  # Explicitly set alpha to 1.0 to avoid po2 quantizers
+        'use_stochastic_rounding': True
     }
 
 
@@ -248,18 +247,6 @@ def safe_configure_tensorflow(debug_mode=False):
 
 # Call safe TF configuration early
 safe_configure_tensorflow(DEBUG_MODE)
-
-# LMIINet Architecture Functions
-def create_quantized_bits_config(bits, integer_bits, symmetric=True):
-    """Create quantization configuration for LMIINet with tolerance for training"""
-    return {
-        'bits': bits,
-        'integer': integer_bits,
-        'symmetric': symmetric,
-        'alpha': 'auto_po2',
-        'use_stochastic_rounding': True,
-        'scale_axis': None
-    }
 
 def get_optimized_quantization_config(layer_name, layer_type):
     """

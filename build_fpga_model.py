@@ -24,6 +24,14 @@ Requirements:
 - tensorflow
 - qkeras (for QAT models)
 - vivado_hls (for FPGA synthesis)
+
+docker-compose exec hls4ml-training python3 build_fpga_model.py `
+--model_path ./models/qat_model_clean_for_hls4ml.h5 `
+--quantized `
+--output_dir ./fpga_models/optimized_qat `
+--strategy Latency `
+--reuse_factor 2 `
+--validate
 """
 
 import os
@@ -244,24 +252,16 @@ def create_hls4ml_config(args):
     Returns:
         HLS4ML configuration dictionary
     """
-    # Get input layer name from model if available
-    input_layer_name = None
-    if hasattr(args, 'model') and args.model is not None:
-        input_layer_name = args.model.inputs[0].name.split(':')[0]
-    else:
-        input_layer_name = 'input_image'  # fallback
+    # Let HLS4ML handle input layer naming automatically
     config = {
         "Backend": "Vivado",
         "Model": {
             "Precision": args.precision,
             "ReuseFactor": args.reuse_factor,
             "Strategy": args.strategy,
+            "IOType": args.io_type,
         },
-        "LayerName": {
-            input_layer_name: {
-                "IOType": args.io_type
-            }
-        },
+
         "LayerType": {},
         "Optimizers": {
             "eliminate_linear_activation": True,
@@ -357,12 +357,7 @@ def create_hls4ml_config(args):
         "Precision": activation_precision,
     }
 
-    # Layer-specific configurations for critical layers
-    config["LayerName"]["output_conv"] = {
-        "Precision": output_precision,
-        "ReuseFactor": args.reuse_factor,
-        "Strategy": args.strategy,
-    }
+    # Let HLS4ML use default layer configurations
 
     # Print precision configuration
     if args.quantized:
@@ -421,9 +416,14 @@ def convert_to_hls4ml(model, config, output_dir):
         'LayerConfig': config.get('LayerConfig', {}),
         'FPGA': config.get('FPGA', {}),
     }
+    # Remove top-level LayerName key so only HLSConfig contains it
+    if 'LayerName' in config:
+        del config['LayerName']
     # Remove SkipOptimizers if Optimizers is present (hls4ml expects only one)
     if 'Optimizers' in config['HLSConfig'] and 'SkipOptimizers' in config['HLSConfig']:
         del config['HLSConfig']['SkipOptimizers']
+
+    # Let HLS4ML use default IOType handling
 
     try:
         # Convert model to HLS4ML (hls4ml 1.1.0 expects only config)
