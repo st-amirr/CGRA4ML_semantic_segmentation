@@ -26,6 +26,7 @@ Requirements:
 
 Example:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 build_fpga_model.py --model_path ./models/qat_model_clean_for_compatible.h5 --output_dir ./fpga_models/optimized_qat --strategy Latency --reuse_factor 2 --validate
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 build_fpga_model.py --model_path ./models/qat_model_clean_for_compatible.h5 --output_dir ./fpga_models/optimized_qat --strategy Latency --reuse_factor 2 --validate --synthesize
 """
 
 import os
@@ -319,14 +320,22 @@ def create_hls4ml_config(args):
                 "Precision": "ap_fixed<32,16>",
                 "Strategy": "Resource",  # Use Resource strategy for upsampling
                 "Interpolation": "nearest",  # Use nearest neighbor instead of bilinear
+                "Implementation": "LUT",  # Explicitly use LUT implementation
             },
         },
         "Optimizers": {
             "eliminate_linear_activation": True,
             "fuse_batch_norm_quantized_tanh": True,
             "fuse_consecutive_batch_norm": True,
+            # LUT-optimized optimizers
+            "optimize_bram_usage": False,  # Disable BRAM optimization to favor LUTs
+            "prefer_lut_over_bram": True,  # Explicitly prefer LUT over BRAM
         },
-        "LayerConfig": {},
+        "LayerConfig": {
+            # LUT-optimized layer config
+            "PreferLUT": True,
+            "LUTOptimization": True,
+        },
     }
 
     # Add FPGA configuration
