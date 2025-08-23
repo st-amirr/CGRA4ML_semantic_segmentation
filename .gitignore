@@ -8,6 +8,8 @@ fpga_models/**
 fpga_models/**/*
 models/** 
 models/** /*
+hls4ml_env/** 
+hls4ml_env/** /*
 old/** 
 old/** /*
 __pycache__/*
