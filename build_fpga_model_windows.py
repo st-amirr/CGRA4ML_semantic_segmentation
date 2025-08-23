@@ -411,18 +411,18 @@ def create_hls4ml_config(args):
             "fuse_consecutive_batch_norm": True,
             "optimize_bram_usage": False,
             "prefer_lut_over_bram": True,
+            "array_partition": False,  # Disable array partitioning to avoid unsupported command
         },
         "LayerConfig": {
             "PreferLUT": True,
             "LUTOptimization": True,
+            "MaximumSize": None,  # Disable maximum_size to avoid unsupported command
         },
     }
 
-    # Add FPGA configuration
-    config["FPGA"] = {
-        "Part": args.part,
-        "ClockPeriod": args.clock_period,
-    }
+    # Add FPGA configuration - these should be at the top level for HLS4ML
+    config["Part"] = args.part
+    config["ClockPeriod"] = args.clock_period
 
     print("HLS4ML configuration created")
     if args.verbose:
