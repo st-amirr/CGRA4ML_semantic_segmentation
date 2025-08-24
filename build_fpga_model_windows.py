@@ -382,12 +382,12 @@ def create_hls4ml_config(args):
             "DepthwiseConv2D": {
                 "Precision": "ap_fixed<32,8>",
                 "ReuseFactor": args.reuse_factor,
-                "Strategy": args.strategy,
+                "Strategy": "Resource",  # Use Resource to avoid pragma conflicts
             },
             "QDepthwiseConv2D": {
                 "Precision": "ap_fixed<32,8>",
                 "ReuseFactor": args.reuse_factor,
-                "Strategy": args.strategy,
+                "Strategy": "Resource",  # Use Resource to avoid pragma conflicts
             },
             "BatchNormalization": {
                 "Precision": "ap_fixed<16,4>",
@@ -414,6 +414,7 @@ def create_hls4ml_config(args):
             "Softmax": {
                 "Precision": "ap_fixed<32,16>",
                 "Strategy": "Resource",
+                "Axis": -1,  # Apply softmax along the last axis (classes)
             },
             "UpSampling2D": {
                 "Precision": "ap_fixed<32,16>",
@@ -434,6 +435,18 @@ def create_hls4ml_config(args):
             "PreferLUT": True,
             "LUTOptimization": True,
             "MaximumSize": None,  # Disable maximum_size to avoid unsupported command
+        },
+        # Add specific layer configurations to control output
+        "LayerName": {
+            # Configure the final output layer to reduce log size
+            "softmax": {
+                "Strategy": "Resource",
+                "Axis": -1,
+            },
+            "dense": {
+                "Strategy": "Resource",
+                "Implementation": "Resource",
+            },
         },
     }
 
@@ -499,7 +512,7 @@ def convert_to_hls4ml(model, config, output_dir):
             hls_model.write()
             print("HLS project files written successfully")
             
-            # Post-process generated TCL files to fix compatibility issues
+            # Fix TCL files for compatibility
             fix_generated_tcl_files(output_dir)
             
         except Exception as e:
@@ -520,7 +533,7 @@ def fix_generated_tcl_files(output_dir):
     Args:
         output_dir: Output directory containing the HLS project
     """
-    print("Post-processing generated TCL files for compatibility...")
+    print("Fixing generated TCL files for compatibility...")
     
     # Fix build_prj.tcl
     build_prj_path = os.path.join(output_dir, "build_prj.tcl")
@@ -544,30 +557,95 @@ def fix_generated_tcl_files(output_dir):
         except Exception as e:
             print(f"Warning: Could not fix build_prj.tcl: {e}")
     
-    # Fix project.tcl if needed
-    project_tcl_path = os.path.join(output_dir, "project.tcl")
-    if os.path.exists(project_tcl_path):
+    # Fix testbench to reduce output logging
+    fix_testbench_output(output_dir)
+    
+    print("TCL file fixes completed")
+
+
+def fix_testbench_output(output_dir):
+    """
+    Modify the testbench to reduce output logging and only output final segmentation
+    
+    Args:
+        output_dir: Output directory containing the HLS project
+    """
+    print("Fixing testbench output to reduce log size...")
+    
+    # Fix myproject_test.cpp
+    test_file = os.path.join(output_dir, "myproject_test.cpp")
+    if os.path.exists(test_file):
         try:
-            with open(project_tcl_path, 'r') as f:
+            with open(test_file, 'r') as f:
                 content = f.read()
             
-            # Ensure maximum_size is set to a reasonable value
-            if 'set maximum_size 4096' in content:
-                print("project.tcl maximum_size already set correctly")
-            else:
-                # Add maximum_size if not present
+            # Replace the output logging to only show final segmentation
+            # Find and replace the output section
+            if 'std::cout << "Predictions:" << std::endl;' in content:
+                # Replace detailed output with summary
                 content = content.replace(
-                    'set version "1.0.0"',
-                    'set version "1.0.0"\nvariable maximum_size\nset maximum_size 4096'
+                    'std::cout << "Predictions:" << std::endl;',
+                    'std::cout << "Segmentation output shape: " << predictions.size() << std::endl;'
                 )
-                with open(project_tcl_path, 'w') as f:
-                    f.write(content)
-                print("Fixed project.tcl - added maximum_size variable")
                 
+                # Remove or comment out detailed prediction printing
+                lines = content.split('\n')
+                new_lines = []
+                skip_prediction_printing = False
+                
+                for line in lines:
+                    if 'for (int i = 0; i <' in line and 'predictions.size()' in line:
+                        skip_prediction_printing = True
+                        new_lines.append('    // Detailed prediction printing disabled to reduce log size')
+                        continue
+                    
+                    if skip_prediction_printing and '}' in line and line.strip() == '}':
+                        skip_prediction_printing = False
+                        new_lines.append('    // End of prediction printing')
+                        continue
+                    
+                    if not skip_prediction_printing:
+                        new_lines.append(line)
+                
+                content = '\n'.join(new_lines)
+            
+            # Write the fixed content back
+            with open(test_file, 'w') as f:
+                f.write(content)
+            
+            print("Fixed myproject_test.cpp - reduced output logging")
+            
         except Exception as e:
-            print(f"Warning: Could not fix project.tcl: {e}")
+            print(f"Warning: Could not fix testbench: {e}")
     
-    print("TCL file post-processing completed")
+    # Also fix myproject_tb.cpp if it exists
+    tb_file = os.path.join(output_dir, "myproject_tb.cpp")
+    if os.path.exists(tb_file):
+        try:
+            with open(tb_file, 'r') as f:
+                content = f.read()
+            
+            # Add output control to reduce logging
+            if 'std::cout << "Predictions:" << std::endl;' in content:
+                content = content.replace(
+                    'std::cout << "Predictions:" << std::endl;',
+                    'std::cout << "Segmentation completed. Output size: " << predictions.size() << std::endl;'
+                )
+                
+                # Comment out detailed output
+                content = content.replace(
+                    'std::cout << predictions[i] << " ";',
+                    '// std::cout << predictions[i] << " ";  // Disabled to reduce log size'
+                )
+                
+            
+            with open(tb_file, 'w') as f:
+                f.write(content)
+            
+            print("Fixed myproject_tb.cpp - reduced output logging")
+            
+        except Exception as e:
+            print(f"Warning: Could not fix tb file: {e}")
 
 
 def run_synthesis(output_dir, args):
