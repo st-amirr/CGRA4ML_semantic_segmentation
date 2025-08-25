@@ -427,14 +427,15 @@ def create_hls4ml_config(args):
             "eliminate_linear_activation": True,
             "fuse_batch_norm_quantized_tanh": True,
             "fuse_consecutive_batch_norm": True,
-            "optimize_bram_usage": False,
+            "optimize_bram_usage": True,  # Enable BRAM optimization
             "prefer_lut_over_bram": True,
-            "array_partition": False,  # Disable array partitioning to avoid unsupported command
+            "array_partition": True,  # Enable array partitioning to reduce memory pressure
         },
         "LayerConfig": {
             "PreferLUT": True,
             "LUTOptimization": True,
             "MaximumSize": None,  # Disable maximum_size to avoid unsupported command
+            "OptimizeMemoryUsage": True,  # Enable memory usage optimization
         },
         # Add specific layer configurations to control output
         "LayerName": {
