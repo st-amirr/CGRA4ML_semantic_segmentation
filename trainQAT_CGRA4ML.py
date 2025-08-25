@@ -108,6 +108,27 @@ INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
 NUM_CLASSES = 20
 
+# Model configuration for CGRA4ML-optimized LMIINet
+# This configuration is used throughout the model architecture to ensure consistency
+# and match the original LMIINet parameter count (~2.7M parameters)
+MODEL_CONFIG = {
+    # MobileNetV2 channels (fixed to match DeepLabV3+ MobileNetV2 ~2.7M params)
+    'mv2_init': 16,        # Initial stem channels
+    'mv2_c1':   16,        # Stage 1 channels (1/4 resolution)
+    'mv2_c2':   24,        # Stage 2 channels (1/8 resolution)
+    'mv2_c3':   32,        # Stage 3 channels (1/16 resolution)
+    'mv2_c4':   64,        # Stage 4 channels (1/32 resolution)
+    'mv2_c5':   96,        # Additional stage channels (if needed)
+    'mv2_c6':   160,       # Additional stage channels (if needed)
+    'mv2_c7':   320,       # Additional stage channels (if needed)
+    # ASPP and decoder configuration
+    'aspp_filters':    128, # Global context MLP filters
+    'low_level_proj':  32,  # Low-level feature projection
+    'decoder_filters': 128, # Decoder refinement filters
+    # Use dilated convolutions in decoder refinement blocks
+    'use_dilated_conv': True,
+}
+
 # Data paths - Docker mounted paths
 TRAIN_IMAGES_DIR = "/data/leftImg8bit/train"
 TRAIN_MASKS_DIR = "/data/gtFine/train"
@@ -326,22 +347,22 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
     # Global average pooling
     x_pooled = GlobalAveragePooling2D(name=f'{name_prefix}_gap')(x)
     
-    # Simple MLP for global context
+        # Simple MLP for global context
     if use_quantization:
         mlp_config = get_cgra4ml_quantization_config(f'{name_prefix}_mlp', 'Dense')
         
-        x_mlp = QDense(channels // 4, use_bias=False,
-                      kernel_quantizer=quantized_bits(**mlp_config),
-                      bias_quantizer=quantized_bits(**mlp_config),
-                      name=f'{name_prefix}_mlp1')(x_pooled)
+        x_mlp = QDense(MODEL_CONFIG['aspp_filters'], use_bias=False,
+                       kernel_quantizer=quantized_bits(**mlp_config),
+                       bias_quantizer=quantized_bits(**mlp_config),
+                       name=f'{name_prefix}_mlp1')(x_pooled)
         x_mlp = QActivation(quantized_relu(**quantized_relu_config), name=f'{name_prefix}_act1')(x_mlp)
         x_mlp = QDense(channels, use_bias=False,
-                      kernel_quantizer=quantized_bits(**mlp_config),
-                      bias_quantizer=quantized_bits(**mlp_config),
-                      name=f'{name_prefix}_mlp2')(x_mlp)
+                       kernel_quantizer=quantized_bits(**mlp_config),
+                       bias_quantizer=quantized_bits(**mlp_config),
+                       name=f'{name_prefix}_mlp2')(x_mlp)
         x_mlp = QActivation(quantized_relu(**quantized_relu_config), name=f'{name_prefix}_act2')(x_mlp)
     else:
-        x_mlp = Dense(channels // 4, use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
+        x_mlp = Dense(MODEL_CONFIG['aspp_filters'], use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
         x_mlp = Activation('relu', name=f'{name_prefix}_act1')(x_mlp)
         x_mlp = Dense(channels, use_bias=False, name=f'{name_prefix}_mlp2')(x_mlp)
         x_mlp = Activation('relu', name=f'{name_prefix}_act2')(x_mlp)
@@ -363,90 +384,105 @@ def cgra4ml_encoder(inputs, use_quantization=False):
     CGRA4ML-optimized LMIINet encoder
     Simplified for better CGRA4ML mapping with efficient skip connections
     """
-    # Initial stem
+        # Initial stem
     if use_quantization:
         stem_config = get_cgra4ml_quantization_config('stem', 'Conv2D')
-        x = QConv2D(32, kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=quantized_bits(**stem_config),
-                   bias_quantizer=quantized_bits(**stem_config),
-                   name='stem')(inputs)
+        x = QConv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,
+                    kernel_quantizer=quantized_bits(**stem_config),
+                    bias_quantizer=quantized_bits(**stem_config),
+                    name='stem')(inputs)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                               beta_quantizer=quantized_bits(**stem_config),
-                               mean_quantizer=quantized_bits(**stem_config),
-                               variance_quantizer=quantized_bits(**stem_config),
-                               name='stem_bn')(x)
+                                beta_quantizer=quantized_bits(**stem_config),
+                                mean_quantizer=quantized_bits(**stem_config),
+                                variance_quantizer=quantized_bits(**stem_config),
+                                name='stem_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stem_act')(x)
     else:
-        x = Conv2D(32, kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
+        x = Conv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
         x = BatchNormalization(name='stem_bn')(x)
         x = Activation('relu', name='stem_act')(x)
     
-    # Stage 1: 1/4 resolution
-    x = cgra4ml_lfib_module(x, 64, use_quantization, 'stage1_lfib1', dropout_rate=0.05)
-    x = cgra4ml_lfib_module(x, 64, use_quantization, 'stage1_lfib2', dropout_rate=0.05)
+    # Stage 1: 1/4 resolution (additional stride 2)
+    if use_quantization:
+        x = QConv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,
+                    kernel_quantizer=quantized_bits(**stem_config),
+                    bias_quantizer=quantized_bits(**stem_config),
+                    name='stage1_downsample')(x)
+        x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
+                                beta_quantizer=quantized_bits(**stem_config),
+                                mean_quantizer=quantized_bits(**stem_config),
+                                variance_quantizer=quantized_bits(**stem_config),
+                                name='stage1_downsample_bn')(x)
+        x = QActivation(quantized_relu(**quantized_relu_config), name='stage1_downsample_act')(x)
+    else:
+        x = Conv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
+        x = BatchNormalization(name='stage1_downsample_bn')(x)
+        x = Activation('relu', name='stage1_downsample_act')(x)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib1', dropout_rate=0.05)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib2', dropout_rate=0.05)
     x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage1_global', dropout_rate=0.05)
     stage1_out = x
     
     # Stage 2: 1/8 resolution
     if use_quantization:
-        x = QConv2D(128, kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=quantized_bits(**stem_config),
-                   bias_quantizer=quantized_bits(**stem_config),
-                   name='stage2_downsample')(x)
+        x = QConv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,
+                    kernel_quantizer=quantized_bits(**stem_config),
+                    bias_quantizer=quantized_bits(**stem_config),
+                    name='stage2_downsample')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                               beta_quantizer=quantized_bits(**stem_config),
-                               mean_quantizer=quantized_bits(**stem_config),
-                               variance_quantizer=quantized_bits(**stem_config),
-                               name='stage2_downsample_bn')(x)
+                                beta_quantizer=quantized_bits(**stem_config),
+                                mean_quantizer=quantized_bits(**stem_config),
+                                variance_quantizer=quantized_bits(**stem_config),
+                                name='stage2_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage2_downsample_act')(x)
     else:
-        x = Conv2D(128, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
+        x = Conv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
         x = BatchNormalization(name='stage2_downsample_bn')(x)
         x = Activation('relu', name='stage2_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, 128, use_quantization, 'stage2_lfib1', dropout_rate=0.1)
-    x = cgra4ml_lfib_module(x, 128, use_quantization, 'stage2_lfib2', dropout_rate=0.1)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib1', dropout_rate=0.1)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib2', dropout_rate=0.1)
     x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage2_global', dropout_rate=0.1)
     stage2_out = x
     
     # Stage 3: 1/16 resolution
     if use_quantization:
-        x = QConv2D(256, kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=quantized_bits(**stem_config),
-                   bias_quantizer=quantized_bits(**stem_config),
-                   name='stage3_downsample')(x)
+        x = QConv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,
+                    kernel_quantizer=quantized_bits(**stem_config),
+                    bias_quantizer=quantized_bits(**stem_config),
+                    name='stage3_downsample')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                               beta_quantizer=quantized_bits(**stem_config),
-                               mean_quantizer=quantized_bits(**stem_config),
-                               variance_quantizer=quantized_bits(**stem_config),
-                               name='stage3_downsample_bn')(x)
+                                beta_quantizer=quantized_bits(**stem_config),
+                                mean_quantizer=quantized_bits(**stem_config),
+                                variance_quantizer=quantized_bits(**stem_config),
+                                name='stage3_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage3_downsample_act')(x)
     else:
-        x = Conv2D(256, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
+        x = Conv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
         x = BatchNormalization(name='stage3_downsample_bn')(x)
         x = Activation('relu', name='stage3_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, 256, use_quantization, 'stage3_lfib1', dropout_rate=0.15)
-    x = cgra4ml_lfib_module(x, 256, use_quantization, 'stage3_lfib2', dropout_rate=0.15)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib1', dropout_rate=0.15)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib2', dropout_rate=0.15)
     x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global', dropout_rate=0.15)
     stage3_out = x
     
     # Stage 4: 1/32 resolution
     if use_quantization:
-        x = QConv2D(512, kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=quantized_bits(**stem_config),
-                   bias_quantizer=quantized_bits(**stem_config),
-                   name='stage4_downsample')(x)
+        x = QConv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,
+                    kernel_quantizer=quantized_bits(**stem_config),
+                    bias_quantizer=quantized_bits(**stem_config),
+                    name='stage4_downsample')(x)
         x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                               beta_quantizer=quantized_bits(**stem_config),
-                               mean_quantizer=quantized_bits(**stem_config),
-                               variance_quantizer=quantized_bits(**stem_config),
-                               name='stage4_downsample_bn')(x)
+                                beta_quantizer=quantized_bits(**stem_config),
+                                mean_quantizer=quantized_bits(**stem_config),
+                                variance_quantizer=quantized_bits(**stem_config),
+                                name='stage4_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage4_downsample_act')(x)
     else:
-        x = Conv2D(512, kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
+        x = Conv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
         x = BatchNormalization(name='stage4_downsample_bn')(x)
         x = Activation('relu', name='stage4_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, 512, use_quantization, 'stage4_lfib1', dropout_rate=0.2)
-    x = cgra4ml_lfib_module(x, 512, use_quantization, 'stage4_lfib2', dropout_rate=0.2)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib1', dropout_rate=0.2)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib2', dropout_rate=0.2)
     x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global', dropout_rate=0.2)
     stage4_out = x
     
@@ -463,17 +499,17 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
     # Upsample to stage3 (1/16) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up1')(x)
     x = Concatenate(name='concat1')([x, stage3_out])
-    x = cgra4ml_lfib_module(x, 256, use_quantization, 'dec1_lfib', dropout_rate=0.15)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec1_lfib', dropout_rate=0.15)
 
     # Upsample to stage2 (1/8) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up2')(x)
     x = Concatenate(name='concat2')([x, stage2_out])
-    x = cgra4ml_lfib_module(x, 128, use_quantization, 'dec2_lfib', dropout_rate=0.1)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec2_lfib', dropout_rate=0.1)
 
     # Upsample to stage1 (1/4) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up3')(x)
     x = Concatenate(name='concat3')([x, stage1_out])
-    x = cgra4ml_lfib_module(x, 64, use_quantization, 'dec3_lfib', dropout_rate=0.05)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['low_level_proj'], use_quantization, 'dec3_lfib', dropout_rate=0.05)
 
     # Final upsampling to full resolution (1/4 -> 1/1)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='up_final')(x)
@@ -542,15 +578,60 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
 
         print(f"Found {len(self.image_paths)} images")
 
-        # Create balanced augmentation pipeline
+        # Create balanced augmentation pipeline with reduced probabilities
         if self.augment:
             self.transform = A.Compose(
                 [
+                    # Geometric augmentations - more aggressive for robustness
+                    A.RandomCrop(
+                        width=self.target_width, height=self.target_height, p=0.1
+                    ),
                     A.HorizontalFlip(p=0.2),
-                    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
-                    A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.3),
+                    A.Rotate(limit=5, p=0.2, border_mode=cv2.BORDER_CONSTANT),
+                    A.ShiftScaleRotate(
+                        shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.1
+                    ),
+                    # Color and contrast augmentations - enhanced for lighting variations
+                    A.RandomBrightnessContrast(
+                        brightness_limit=0.4, contrast_limit=0.4, p=0.3
+                    ),
+                    A.ColorJitter(
+                        brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.3
+                    ),
+                    A.HueSaturationValue(
+                        hue_shift_limit=30,
+                        sat_shift_limit=40,
+                        val_shift_limit=30,
+                        p=0.3,
+                    ),
+                    A.RandomGamma(gamma_limit=(80, 120), p=0.2),
+                    # Noise and blur augmentations
                     A.GaussNoise(var_limit=10.0, p=0.2),
-                    A.GaussianBlur(blur_limit=(3, 5), p=0.15),
+                    A.GaussianBlur(blur_limit=(3, 7), p=0.15),
+                    A.MotionBlur(blur_limit=4, p=0.15),
+                    # Weather and lighting effects
+                    A.RandomRain(
+                        drop_length=20,
+                        drop_width=1,
+                        drop_color=(200, 200, 200),
+                        blur_value=3,
+                        brightness_coefficient=0.7,
+                        rain_type="drizzle",
+                        p=0.1,
+                    ),
+                    A.RandomShadow(
+                        shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.1
+                    ),
+                    # Occlusion and masking
+                    A.CoarseDropout(
+                        max_holes=8,
+                        max_height=16,
+                        max_width=16,
+                        min_holes=1,
+                        min_height=4,
+                        min_width=4,
+                        p=0.15,
+                    ),
                 ]
             )
         else:
@@ -566,105 +647,149 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             np.random.shuffle(self.image_paths)
 
     def load_and_preprocess_image(self, image_path):
-        """Load and preprocess image"""
+        """Load and preprocess a single image with robust Cityscapes handling"""
         try:
-            # Load image
-            img = load_img(image_path, target_size=(self.target_height, self.target_width))
-            img_array = np.array(img) / 255.0
-            
-            # Load corresponding mask
+            # Load image using cv2 for better control
+            image = cv2.imread(str(image_path))
+            if image is None:
+                raise ValueError(f"Could not load image: {image_path}")
+
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            # Load corresponding mask with robust Cityscapes handling
             mask_path = self._get_mask_path(image_path)
-            if mask_path.exists():
-                mask = load_img(mask_path, target_size=(self.target_height, self.target_width), color_mode='grayscale')
-                mask_array = np.array(mask)
-                
-                # Convert to categorical (0-19 for 20 classes)
-                mask_categorical = np.zeros((self.target_height, self.target_width, NUM_CLASSES))
-                for i in range(NUM_CLASSES):
-                    mask_categorical[:, :, i] = (mask_array == i).astype(np.float32)
-                
-                return img_array, mask_categorical
-            else:
+            if not mask_path.exists():
                 print(f"Mask not found: {mask_path}")
                 return None, None
-                
+
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                raise ValueError(f"Could not load mask: {mask_path}")
+
+            # Handle different mask formats
+            if "_labelTrainIds.png" in str(mask_path):
+                # Already in correct format (0..18 with 255 ignore)
+                pass
+            else:
+                # Map labelIds (34) to our 20-class scheme: 19 trainIds + void=19
+                lid_to_tid = {
+                    7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5, 18: 5, 19: 6, 20: 7,
+                    21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14, 28: 15,
+                    31: 16, 32: 17, 33: 18, 29: 13, 30: 13,
+                }
+                mapped = np.full_like(mask, 19, dtype=np.uint8)
+                for lid, tid in lid_to_tid.items():
+                    mapped[mask == lid] = tid
+                mask = mapped
+
+            # Resize image and mask
+            image = cv2.resize(
+                image,
+                (self.target_width, self.target_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+            mask = cv2.resize(
+                mask,
+                (self.target_width, self.target_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+            # Apply augmentations
+            if self.transform:
+                augmented = self.transform(image=image, mask=mask)
+                image = augmented["image"]
+                mask = augmented["mask"]
+
+            # Normalize image
+            image = image.astype(np.float32) / 255.0
+
+            # One-hot: map 255 (ignore) to void index 19
+            if mask.dtype != np.uint8:
+                mask = mask.astype(np.uint8)
+            mask_safe = mask.copy()
+            mask_safe[mask_safe == 255] = 19
+            mask = tf.keras.utils.to_categorical(mask_safe, num_classes=NUM_CLASSES)
+
+            return image, mask
+
         except Exception as e:
             print(f"Error loading {image_path}: {e}")
-            return None, None
+            # Return dummy data
+            dummy_image = np.zeros(
+                (self.target_height, self.target_width, 3), dtype=np.float32
+            )
+            dummy_mask = np.zeros(
+                (self.target_height, self.target_width, NUM_CLASSES), dtype=np.float32
+            )
+            dummy_mask[:, :, 0] = 1  # Set background class
+            return dummy_image, dummy_mask
 
     def _get_mask_path(self, image_path):
-        """Get corresponding mask path"""
-        # Convert image path to mask path
-        relative_path = image_path.relative_to(self.image_dir)
-        mask_path = self.mask_dir / relative_path.parent / f"{relative_path.stem}_gtFine_labelIds.png"
-        return mask_path
+        """Get corresponding mask path with robust Cityscapes handling"""
+        # 1) Prefer *_labelTrainIds.png (already 0..18 with 255 ignore)
+        mask_name_tids = image_path.name.replace(
+            "_leftImg8bit.png", "_gtFine_labelTrainIds.png"
+        )
+        mask_path_tids = self.mask_dir / image_path.parent.name / mask_name_tids
+
+        if mask_path_tids.exists():
+            return mask_path_tids
+        else:
+            # 2) Fallback to *_labelIds.png (34-class)
+            mask_name_lids = image_path.name.replace(
+                "_leftImg8bit.png", "_gtFine_labelIds.png"
+            )
+            mask_path_lids = self.mask_dir / image_path.parent.name / mask_name_lids
+            return mask_path_lids
 
     def __getitem__(self, index):
-        """Get batch of data"""
-        batch_paths = self.image_paths[index * self.batch_size:(index + 1) * self.batch_size]
-        
+        """Generate one batch of data"""
+        batch_paths = self.image_paths[
+            index * self.batch_size : (index + 1) * self.batch_size
+        ]
+
         batch_images = []
         batch_masks = []
-        
-        for image_path in batch_paths:
-            img, mask = self.load_and_preprocess_image(image_path)
-            if img is not None and mask is not None:
-                batch_images.append(img)
-                batch_masks.append(mask)
-        
-        if not batch_images:
-            # Return dummy data if no valid images
-            dummy_img = np.zeros((self.target_height, self.target_width, 3))
-            dummy_mask = np.zeros((self.target_height, self.target_width, NUM_CLASSES))
-            dummy_mask[:, :, 0] = 1  # Set to background class
-            return np.array([dummy_img]), np.array([dummy_mask])
-        
-        batch_images = np.array(batch_images)
-        batch_masks = np.array(batch_masks)
-        
-        # Apply augmentation if enabled
-        if self.transform:
-            augmented_images = []
-            augmented_masks = []
-            
-            for img, mask in zip(batch_images, batch_masks):
-                # Convert mask back to single channel for augmentation
-                mask_single = np.argmax(mask, axis=-1).astype(np.uint8)
-                
-                # Apply augmentation
-                augmented = self.transform(image=img, mask=mask_single)
-                aug_img = augmented['image']
-                aug_mask = augmented['mask']
-                
-                # Convert mask back to categorical
-                aug_mask_categorical = np.zeros((self.target_height, self.target_width, NUM_CLASSES))
-                for i in range(NUM_CLASSES):
-                    aug_mask_categorical[:, :, i] = (aug_mask == i).astype(np.float32)
-                
-                augmented_images.append(aug_img)
-                augmented_masks.append(aug_mask_categorical)
-            
-            batch_images = np.array(augmented_images)
-            batch_masks = np.array(augmented_masks)
-        
-        return batch_images, batch_masks
 
-def combined_loss(y_true, y_pred):
-    """Combined loss function for semantic segmentation"""
-    # Categorical crossentropy
-    ce_loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+        for path in batch_paths:
+            image, mask = self.load_and_preprocess_image(path)
+            if image is not None and mask is not None:
+                batch_images.append(image)
+                batch_masks.append(mask)
+
+        return np.array(batch_images), np.array(batch_masks)
+
+def dice_loss(y_true, y_pred, smooth=1e-7):
+    """
+    Dice loss for semantic segmentation - measures overlap between predicted and ground truth masks
+    """
+    # Compute per-class Dice over classes 0..18 (exclude void=19), unweighted
+    y_true_19 = y_true[..., :19]
+    y_pred_19 = y_pred[..., :19]
+    y_true_clipped = K.clip(y_true_19, 0.0, 1.0)
+    y_pred_clipped = K.clip(y_pred_19, 0.0, 1.0)
+    intersection = K.sum(y_true_clipped * y_pred_clipped, axis=[0, 1, 2])
+    sums = K.sum(y_true_clipped, axis=[0, 1, 2]) + K.sum(y_pred_clipped, axis=[0, 1, 2])
+    dice_per_class = (2.0 * intersection + smooth) / (sums + smooth)
+    return K.mean(1.0 - dice_per_class)
+
+def mean_iou(y_true, y_pred):
+    """
+    Mean IoU metric for semantic segmentation - ignores void class (index 19)
+    """
+    # Convert to class predictions
+    y_pred = tf.argmax(y_pred, axis=-1)
+    y_true = tf.argmax(y_true, axis=-1)
+
+    # Calculate IoU for each class
+    ious = []
+    for class_id in range(NUM_CLASSES - 1):  # exclude void=19
+        intersection = tf.reduce_sum(tf.cast(tf.logical_and(y_true == class_id, y_pred == class_id), tf.float32))
+        union = tf.reduce_sum(tf.cast(tf.logical_or(y_true == class_id, y_pred == class_id), tf.float32))
+        iou = tf.cond(union > 0, lambda: intersection / union, lambda: 0.0)
+        ious.append(iou)
     
-    # Dice loss
-    smooth = 1e-6
-    y_true_f = tf.keras.backend.flatten(y_true)
-    y_pred_f = tf.keras.backend.flatten(y_pred)
-    intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
-    dice_coeff = (2. * intersection + smooth) / (tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) + smooth)
-    dice_loss = 1 - dice_coeff
-    
-    # Combined loss
-    total_loss = ce_loss + dice_loss
-    return total_loss
+    return tf.reduce_mean(ious)
 
 def create_callbacks(model_name):
     """Create training callbacks"""
@@ -767,8 +892,12 @@ def main():
     
     model.compile(
         optimizer=optimizer,
-        loss=combined_loss,
-        metrics=['accuracy', MeanIoU(num_classes=NUM_CLASSES, name='mean_iou')]
+        loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        metrics=[
+            "accuracy",
+            dice_loss,
+            mean_iou,
+        ]
     )
     
     # Print model summary
