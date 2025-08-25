@@ -1,5 +1,27 @@
-HLS4ML Training Pipeline Usage Guide - UPDATED January 2025
+HLS4ML & CGRA4ML Training Pipeline Usage Guide - UPDATED January 2025
 =====================================================================
+
+## 🎯 Current Project Status
+
+**✅ PHASE 1 COMPLETED**: Float32 baseline training successfully completed (80 epochs)  
+**✅ QUANTIZATION OPTIMIZED**: Data-driven analysis completed with revolutionary precision improvements  
+**✅ MODEL LOADING IMPROVED**: Keras best practices implemented for robust training continuation
+**✅ CGRA4ML IMPLEMENTATION**: Complete CGRA4ML implementation added for semantic segmentation
+**🔄 READY FOR PHASE 2**: Optimized QAT configuration ready for implementation
+
+## 🚀 Framework Selection
+
+### HLS4ML (Original Implementation)
+- **Pros**: Mature framework, good documentation, wide community support
+- **Cons**: Limited skip connection support, dataflow issues with complex architectures
+- **Best for**: Simple models, initial prototyping
+
+### CGRA4ML (Recommended for Semantic Segmentation) ⭐
+- **Pros**: Optimized for skip connections, better memory management, single reconfigurable engine
+- **Cons**: Newer framework, steeper learning curve
+- **Best for**: Complex semantic segmentation models, production deployment
+
+**Recommendation**: Use CGRA4ML for LMIINet due to its superior skip connection handling!
 
 ## 🎯 Current Project Status
 
@@ -11,6 +33,34 @@ HLS4ML Training Pipeline Usage Guide - UPDATED January 2025
 ## 🚀 Quick Start
 
 You now have a complete, **proven training pipeline** with optimized QAT configuration and **robust model loading** based on Keras best practices. Here's how to use it:
+
+### 🎯 Framework Selection
+
+**For LMIINet Semantic Segmentation, we recommend CGRA4ML** due to its superior skip connection handling:
+
+#### Option 1: CGRA4ML (Recommended) ⭐
+```bash
+# Setup CGRA4ML environment
+setup_cgra4ml.bat
+
+# Build LMIINet with CGRA4ML
+python build_cgra4ml_model.py \
+    --model_path ./models/qat_model_clean_for_compatible.h5 \
+    --output_dir ./cgra4ml_models \
+    --skip_connection_strategy memory_buffered \
+    --validate \
+    --synthesize
+```
+
+#### Option 2: HLS4ML (Original)
+```bash
+# Build LMIINet with HLS4ML
+python build_fpga_model_windows.py \
+    --model_path ./models/qat_model_clean_for_compatible.h5 \
+    --output_dir ./fpga_models \
+    --validate \
+    --synthesize
+```
 
 ### Prerequisites
 1. Docker Desktop running with GPU support
