@@ -43,8 +43,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=1 --batch_size=1 --use_dropout=True --subset_ratio=0.1 --load_model=./models/qat_model_checkpoint_epoch_60.keras
-
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=1 --batch_size=1 --use_dropout=True --subset_ratio=0.1
 """
 
 import os
@@ -206,14 +205,14 @@ def get_cgra4ml_quantization_config(layer_name, layer_type):
     elif 'stem' in layer_name.lower():
         return create_quantized_bits_config(32, 6, True)  # 32-bit, 6 int bits for critical features
     
-    # BatchNorm moving stats - CRITICAL for stability, use 32-bit
-    elif ('bn' in layer_name.lower() or 'batch' in layer_name.lower()) and ('moving_mean' in layer_name.lower() or 'moving_variance' in layer_name.lower()):
-        # Moving stats are critical for BatchNorm stability
-        return create_quantized_bits_config(32, 8, True)  # 32-bit, 8 int bits for stability
+    # # BatchNorm moving stats - CRITICAL for stability, use 32-bit
+    # elif ('bn' in layer_name.lower() or 'batch' in layer_name.lower()) and ('moving_mean' in layer_name.lower() or 'moving_variance' in layer_name.lower()):
+    #     # Moving stats are critical for BatchNorm stability
+    #     return create_quantized_bits_config(32, 8, True)  # 32-bit, 8 int bits for stability
     
-    # BatchNorm gamma/beta - IMPORTANT for stability, use 16-bit
-    elif 'bn' in layer_name.lower() or 'batch' in layer_name.lower():
-        return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for stability
+    # # BatchNorm gamma/beta - IMPORTANT for stability, use 16-bit
+    # elif 'bn' in layer_name.lower() or 'batch' in layer_name.lower():
+    #     return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for stability
     
     # Early layers (stage1) - IMPORTANT for feature extraction, use 16-bit
     elif 'stage1' in layer_name.lower():
@@ -283,11 +282,7 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
                     kernel_quantizer=quantized_bits(**conv_config),
                     bias_quantizer=quantized_bits(**conv_config),
                     name=f'{name_prefix}_conv1')(x)
-        x1 = QBatchNormalization(gamma_quantizer=quantized_bits(**bn_config),
-                               beta_quantizer=quantized_bits(**bn_config),
-                               mean_quantizer=quantized_bits(**bn_config),
-                               variance_quantizer=quantized_bits(**bn_config),
-                               name=f'{name_prefix}_bn1')(x1)
+        x1 = BatchNormalization(name=f'{name_prefix}_bn1')(x1)
         x1 = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act1')(x1)
         
         # Branch 2: Dilated convolution for context
@@ -304,11 +299,7 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
                        kernel_quantizer=quantized_bits(**conv_config),
                        bias_quantizer=quantized_bits(**conv_config),
                        name=f'{name_prefix}_final')(x_concat)
-        x_out = QBatchNormalization(gamma_quantizer=quantized_bits(**bn_config),
-                                  beta_quantizer=quantized_bits(**bn_config),
-                                  mean_quantizer=quantized_bits(**bn_config),
-                                  variance_quantizer=quantized_bits(**bn_config),
-                                  name=f'{name_prefix}_bn_final')(x_out)
+        x_out = BatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
         x_out = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act_final')(x_out)
         
     else:
@@ -391,11 +382,7 @@ def cgra4ml_encoder(inputs, use_quantization=False):
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stem')(inputs)
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                                beta_quantizer=quantized_bits(**stem_config),
-                                mean_quantizer=quantized_bits(**stem_config),
-                                variance_quantizer=quantized_bits(**stem_config),
-                                name='stem_bn')(x)
+        x = BatchNormalization(name='stem_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stem_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
@@ -408,11 +395,7 @@ def cgra4ml_encoder(inputs, use_quantization=False):
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage1_downsample')(x)
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                                beta_quantizer=quantized_bits(**stem_config),
-                                mean_quantizer=quantized_bits(**stem_config),
-                                variance_quantizer=quantized_bits(**stem_config),
-                                name='stage1_downsample_bn')(x)
+        x = BatchNormalization(name='stage1_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage1_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
@@ -429,11 +412,7 @@ def cgra4ml_encoder(inputs, use_quantization=False):
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage2_downsample')(x)
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                                beta_quantizer=quantized_bits(**stem_config),
-                                mean_quantizer=quantized_bits(**stem_config),
-                                variance_quantizer=quantized_bits(**stem_config),
-                                name='stage2_downsample_bn')(x)
+        x = BatchNormalization(name='stage2_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage2_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
@@ -450,11 +429,7 @@ def cgra4ml_encoder(inputs, use_quantization=False):
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage3_downsample')(x)
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                                beta_quantizer=quantized_bits(**stem_config),
-                                mean_quantizer=quantized_bits(**stem_config),
-                                variance_quantizer=quantized_bits(**stem_config),
-                                name='stage3_downsample_bn')(x)
+        x = BatchNormalization(name='stage3_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage3_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
@@ -471,11 +446,7 @@ def cgra4ml_encoder(inputs, use_quantization=False):
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage4_downsample')(x)
-        x = QBatchNormalization(gamma_quantizer=quantized_bits(**stem_config),
-                                beta_quantizer=quantized_bits(**stem_config),
-                                mean_quantizer=quantized_bits(**stem_config),
-                                variance_quantizer=quantized_bits(**stem_config),
-                                name='stage4_downsample_bn')(x)
+        x = BatchNormalization(name='stage4_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage4_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
@@ -979,15 +950,7 @@ def create_callbacks(model_name, val_generator):
         verbose=1
     )
     callbacks.append(checkpoint_callback)
-    
-    # Early stopping
-    early_stopping = EarlyStopping(
-        monitor='val_loss',
-        patience=20,
-        restore_best_weights=True,
-        verbose=1
-    )
-    callbacks.append(early_stopping)
+
     
     # Learning rate reduction
     lr_reducer = ReduceLROnPlateau(
@@ -1114,6 +1077,20 @@ def main():
     # Save final model (architecture + weights) at the end of training
     final_model_path = os.path.join(MODELS_DIR, f"{model_name}_final.keras")
     
+    print(f"\nSaving final model to: {final_model_path}")
+    try:
+        # Save full model (architecture + weights) for CGRA4ML compatibility
+        model.save(final_model_path, save_format='keras')
+        print("Full model saved successfully!")
+                
+    except Exception as e:
+        print(f"Warning: Could not save full model: {e}")
+        print("Saving weights only as fallback...")
+        try:
+            model.save_weights(final_model_path.replace('.keras', '_weights.h5'))
+            print("Weights saved successfully!")
+        except Exception as e2:
+            print(f"Error saving weights: {e2}")
 
     print("\nTraining completed successfully!")
     print("=" * 60)

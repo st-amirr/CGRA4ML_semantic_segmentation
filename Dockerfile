@@ -1,5 +1,5 @@
-# Use official TensorFlow image with CUDA support
-FROM tensorflow/tensorflow:2.14.0-gpu
+# Use official TensorFlow image with CUDA support - closest to local version
+FROM tensorflow/tensorflow:2.19.0-gpu
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -32,10 +32,6 @@ RUN pip install scikit-learn==1.3.2 --only-binary=scikit-learn --no-cache-dir
 # Install additional dependencies
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-
-# Install HLS4ML separately to avoid dependency conflicts
-RUN pip install hls4ml[profiling] --no-deps
-RUN pip install pydantic>=2.0.0
 
 # Set working directory
 WORKDIR /workspace

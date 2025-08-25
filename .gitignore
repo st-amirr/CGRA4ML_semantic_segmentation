@@ -21,5 +21,8 @@ models/*.h5
 models/*.keras
 *.h5
 *.keras
-cgra4ml
-cgra4ml
+/cgra4ml
+cgra4ml/**/*
+
+
+
