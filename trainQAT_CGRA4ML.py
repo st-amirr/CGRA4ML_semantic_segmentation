@@ -69,7 +69,7 @@ from tensorflow.keras.layers import (
 )
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 from qkeras.utils import model_save_quantized_weights
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
 from tensorflow.keras.metrics import MeanIoU
 import albumentations as A
 from PIL import Image
@@ -791,17 +791,190 @@ def mean_iou(y_true, y_pred):
     
     return tf.reduce_mean(ious)
 
-def create_callbacks(model_name):
+# Custom callbacks for better training monitoring
+# class MemoryCleanupCallback(tf.keras.callbacks.Callback):
+#     def on_epoch_end(self, epoch, logs=None):
+#         """Clean up memory at the end of each epoch"""
+#         gc.collect()
+#         # Log memory usage
+#         process = psutil.Process()
+#         memory_usage = process.memory_info().rss / 1024 / 1024  # Convert to MB
+#         print(f"\nMemory usage after epoch {epoch}: {memory_usage:.2f} MB")
+
+class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
+    def __init__(self, val_generator, save_dir, num_samples=4, save_frequency=5):
+        super().__init__()
+        self.val_generator = val_generator
+        self.save_dir = save_dir
+        self.num_samples = num_samples
+        self.save_frequency = save_frequency  # Save every N epochs
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Palette for official 19 trainIds (0..18); add 20th color for 'void'=19
+        self.trainids_colors = [
+            [128, 64, 128],   # 0: road
+            [244, 35, 232],   # 1: sidewalk
+            [70, 70, 70],     # 2: building
+            [102, 102, 156],  # 3: wall
+            [190, 153, 153],  # 4: fence
+            [153, 153, 153],  # 5: pole
+            [250, 170, 30],   # 6: traffic light
+            [220, 220, 0],    # 7: traffic sign
+            [107, 142, 35],   # 8: vegetation
+            [152, 251, 152],  # 9: terrain
+            [70, 130, 180],   # 10: sky
+            [220, 20, 60],    # 11: person
+            [255, 0, 0],      # 12: rider
+            [0, 0, 142],      # 13: car
+            [0, 0, 70],       # 14: truck
+            [0, 60, 100],     # 15: bus
+            [0, 80, 100],     # 16: train
+            [0, 0, 230],      # 17: motorcycle
+            [119, 11, 32],    # 18: bicycle
+            [0, 0, 0],        # 19: void
+        ]
+        self.ignore_color = [0, 0, 0]
+    
+    def colorize_mask(self, mask):
+        """Convert trainIds mask (0..18, 255 ignore) to RGB colors"""
+        h, w = mask.shape
+        colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
+        train_ids = mask.astype(np.uint8)
+        unique_ids = np.unique(train_ids)
+        for tid in unique_ids:
+            if tid == 255:
+                colored_mask[train_ids == tid] = self.ignore_color
+            elif 0 <= tid < len(self.trainids_colors):
+                colored_mask[train_ids == tid] = self.trainids_colors[tid]
+        return colored_mask
+    
+    def on_epoch_end(self, epoch, logs=None):
+        # Save every epoch for the first 5 epochs, then follow save_frequency
+        if (epoch + 1) <= 5 or ((epoch + 1) % self.save_frequency == 0):
+            try:
+                saved = 0
+                batch_idx = 0
+                max_batches = min(8, len(self.val_generator))  # Allow 4 batches with optimizations
+                
+                # Temporarily disable XLA for prediction to avoid compilation issues
+                try:
+                    # Disable JIT compilation for prediction
+                    tf.config.experimental.disable_jit()
+                except:
+                    pass  # JIT might already be disabled
+                
+                while saved < self.num_samples and batch_idx < max_batches:
+                    try:
+                        # Fetch a small validation batch
+                        batch = self.val_generator[batch_idx]
+                        if len(batch) == 3:
+                            batch_images, batch_masks, batch_weights = batch
+                        else:
+                            batch_images, batch_masks = batch
+                            batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
+                        
+                        # Use a smaller batch size for prediction to avoid memory issues
+                        if batch_images.shape[0] > 2:
+                            batch_images = batch_images[:2]
+                            batch_masks = batch_masks[:2]
+                            batch_weights = batch_weights[:2] if batch_weights is not None else None
+                        
+                        # Use eager execution for prediction to avoid XLA compilation
+                        with tf.device('/CPU:0'):  # Force CPU execution for prediction
+                            predictions = self.model(batch_images, training=False)
+                            predictions = predictions.numpy()
+
+                        take = min(self.num_samples - saved, batch_images.shape[0])
+                        for i in range(take):
+                            try:
+                                sample_dir = os.path.join(self.save_dir, f'sample_{saved + 1}')
+                                os.makedirs(sample_dir, exist_ok=True)
+
+                                original_img = (batch_images[i] * 255).astype(np.uint8)
+
+                                gt_mask = np.argmax(batch_masks[i], axis=-1)
+                                # Reapply ignore (255) where sample weights are 0
+                                if batch_weights is not None:
+                                    ignore_mask = batch_weights[i] < 0.5
+                                    gt_mask_vis = gt_mask.copy()
+                                    gt_mask_vis[ignore_mask] = 255
+                                else:
+                                    gt_mask_vis = gt_mask
+                                gt_colored = self.colorize_mask(gt_mask_vis)
+
+                                pred_mask = np.argmax(predictions[i], axis=-1)
+                                pred_colored = self.colorize_mask(pred_mask)
+
+                                combined = np.hstack([original_img, gt_colored, pred_colored])
+
+                                save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
+                                success = cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+                                
+                                if success:
+                                    saved += 1
+                                else:
+                                    print(f"⚠️  Failed to save image: {save_path}")
+                                    
+                            except Exception as img_error:
+                                print(f"⚠️  Error processing image {i}: {img_error}")
+                                continue
+
+                    except Exception as batch_error:
+                        print(f"⚠️  Error processing batch {batch_idx}: {batch_error}")
+                        batch_idx += 1
+                        continue
+
+                    batch_idx += 1
+
+                if saved > 0:
+                    print(f"\n📸 Saved {saved} validation visualizations for epoch {epoch+1} in {self.save_dir}")
+                else:
+                    print(f"\n⚠️  No validation samples available to visualize at epoch {epoch+1}")
+
+            except Exception as e:
+                print(f"⚠️  Could not save prediction visualizations: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                # Restore XLA settings
+                try:
+                    # Re-enable JIT compilation for training
+                    tf.config.experimental.enable_jit()
+                except:
+                    pass  # Ignore errors in cleanup
+
+class DetailedMetricsCallback(tf.keras.callbacks.Callback):
+    def __init__(self, val_generator, num_classes=NUM_CLASSES, save_frequency=5):
+        super().__init__()
+        self.val_generator = val_generator
+        self.num_classes = num_classes
+        self.save_frequency = save_frequency
+
+    def on_epoch_end(self, epoch, logs=None):
+        try:
+            # Learning rate tracking (this is still useful since it's not automatically logged)
+            if logs is not None and hasattr(self.model.optimizer, 'learning_rate'):
+                current_lr = float(self.model.optimizer.learning_rate)
+                logs['learning_rate'] = current_lr
+                
+        except Exception as e:
+            print(f"⚠️  Error in DetailedMetricsCallback: {e}")
+
+def create_callbacks(model_name, val_generator):
     """Create training callbacks"""
     callbacks = []
     
-    # Model checkpoint
+    # Create visualization directory
+    viz_dir = os.path.join(MODELS_DIR, 'visualizations')
+    os.makedirs(viz_dir, exist_ok=True)
+    
+    # Model checkpoint - save weights only (like original trainQAT.py)
     checkpoint_path = os.path.join(MODELS_DIR, f"{model_name}_checkpoint_epoch_{{epoch:02d}}.keras")
     checkpoint_callback = ModelCheckpoint(
         filepath=checkpoint_path,
         monitor='val_loss',
         save_best_only=True,
-        save_weights_only=False,
+        save_weights_only=True,  # Save weights only to avoid Keras format issues
         mode='min',
         verbose=1
     )
@@ -826,16 +999,37 @@ def create_callbacks(model_name):
     )
     callbacks.append(lr_reducer)
     
+    # Prediction visualization callback
+    viz_callback = PredictionVisualizationCallback(
+        val_generator=val_generator,
+        save_dir=viz_dir,
+        num_samples=4,
+        save_frequency=5
+    )
+    callbacks.append(viz_callback)
+    
+    # Detailed metrics callback
+    metrics_callback = DetailedMetricsCallback(
+        val_generator=val_generator,
+        save_frequency=1
+    )
+    callbacks.append(metrics_callback)
+    
     # TensorBoard
     tensorboard_callback = TensorBoard(
         log_dir=TB_LOGS_DIR,
         histogram_freq=1,
         write_graph=True,
-        write_images=True,
-        update_freq='epoch'
+        write_images=False,
+        update_freq='epoch',
+        profile_batch=0
     )
     callbacks.append(tensorboard_callback)
     
+    # Memory cleanup callback
+    # memory_callback = MemoryCleanupCallback()
+    # callbacks.append(memory_callback)
+        
     return callbacks
 
 def main():
@@ -905,7 +1099,7 @@ def main():
     
     # Create callbacks
     model_name = "cgra4ml_lmiinet_qat" if TRAIN_QAT else "cgra4ml_lmiinet_baseline"
-    callbacks = create_callbacks(model_name)
+    callbacks = create_callbacks(model_name, val_generator)
     
     # Train model
     print("\nStarting training...")
@@ -917,17 +1111,10 @@ def main():
         verbose=1
     )
     
-    # Save final model
+    # Save final model (architecture + weights) at the end of training
     final_model_path = os.path.join(MODELS_DIR, f"{model_name}_final.keras")
-    model.save(final_model_path)
-    print(f"\nFinal model saved to: {final_model_path}")
     
-    # Save quantized weights if using QAT
-    if TRAIN_QAT:
-        quantized_weights_path = os.path.join(MODELS_DIR, f"{model_name}_quantized_weights.h5")
-        model_save_quantized_weights(model, quantized_weights_path)
-        print(f"Quantized weights saved to: {quantized_weights_path}")
-    
+
     print("\nTraining completed successfully!")
     print("=" * 60)
 
