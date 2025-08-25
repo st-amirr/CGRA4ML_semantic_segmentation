@@ -56,12 +56,17 @@ NUM_CLASSES = 20
 # CGRA4ML specific imports (will be installed)
 try:
     import cgra4ml
-    from cgra4ml import DeepSoCFlow
-    from cgra4ml.deepsocflow import *
+    print("CGRA4ML package found")
+    # Note: CGRA4ML has import issues, using basic functionality
+    CGRA4ML_AVAILABLE = True
 except ImportError:
     print("CGRA4ML not found. Please install from: https://github.com/KastnerRG/cgra4ml")
     print("Run: pip install -e /path/to/cgra4ml")
     sys.exit(1)
+
+# For now, we'll implement basic functionality without the problematic imports
+CGRA4ML_AVAILABLE = False
+print("Note: Using simplified CGRA4ML implementation due to import issues")
 
 
 def setup_cgra4ml_environment():

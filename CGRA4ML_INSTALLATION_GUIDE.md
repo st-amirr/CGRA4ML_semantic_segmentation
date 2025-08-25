@@ -246,3 +246,4 @@ If you encounter issues:
 | pyenv | 3.11.5 | Version management | Setup complexity |
 | Manual Override | Any | Quick | Compatibility issues |
 | Docker | 3.11.5 | Reproducible | Resource overhead |
+
