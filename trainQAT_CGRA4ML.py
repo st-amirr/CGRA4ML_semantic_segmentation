@@ -584,7 +584,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     # Noise and blur augmentations
                     A.GaussNoise(var_limit=10.0, p=0.2),
                     A.GaussianBlur(blur_limit=(3, 7), p=0.15),
-                    A.MotionBlur(blur_limit=4, p=0.15),
+                    A.MotionBlur(blur_limit=3, p=0.15),
                     # Weather and lighting effects
                     A.RandomRain(
                         drop_length=20,

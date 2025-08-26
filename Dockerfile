@@ -1,7 +1,5 @@
-# Use official TensorFlow image with CUDA support - closest to local version
 FROM tensorflow/tensorflow:2.19.0-gpu
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_VISIBLE_DEVICES=0
 
@@ -23,13 +21,6 @@ RUN apt-get update && apt-get install -y \
 # Upgrade pip
 RUN python -m pip install --upgrade pip
 
-# Install numpy first (required for other packages)
-RUN pip install numpy>=1.24.0
-
-# Install scikit-learn with specific version and pre-compiled wheels
-RUN pip install scikit-learn==1.3.2 --only-binary=scikit-learn --no-cache-dir
-
-# Install additional dependencies
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
@@ -42,12 +33,8 @@ COPY . .
 # Create directories for data and models
 RUN mkdir -p /data /app/models
 
-# Set environment variables for TensorFlow
-ENV TF_FORCE_GPU_ALLOW_GROWTH=true
-ENV TF_CPP_MIN_LOG_LEVEL=2
-
 # Expose port for TensorBoard (optional)
 EXPOSE 6006
 
 # Default command
-CMD ["tail", "-f", "/dev/null"] 
+CMD ["tail", "-f", "/dev/null"]
