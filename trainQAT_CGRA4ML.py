@@ -183,6 +183,9 @@ def safe_configure_tensorflow(debug_mode=False):
     except Exception as e:
         print(f"XLA config skipped: {e}")
 
+    # Enable eager execution for QKeras compatibility
+    tf.config.run_functions_eagerly(True)
+    
     print(f"Eager execution enabled: {tf.executing_eagerly()}")
     try:
         tf.debugging.set_log_device_placement(debug_mode)
@@ -255,7 +258,7 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
         'integer': integer_bits,
         'symmetric': symmetric,
         # Removed 'alpha': 'auto_po2' to prevent unsupported quantizers
-        'use_stochastic_rounding': True
+        'use_stochastic_rounding': False  # Disable to avoid learning_phase() issue
     }
 
 # Quantization configurations for CGRA4ML
@@ -263,7 +266,7 @@ def create_quantized_bits_config(bits, integer_bits, symmetric=True):
 quantized_relu_config = {
     'bits': 16,
     'integer': 6,
-    'use_stochastic_rounding': True
+    'use_stochastic_rounding': False  # Disable to avoid learning_phase() issue
 }
 
 def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_rate=0.1):
@@ -532,7 +535,9 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         target_width=1024,
         shuffle=True,
         augment=True,
+        **kwargs
     ):
+        super().__init__(**kwargs)  # Call parent constructor to fix PyDataset warning
         self.image_dir = Path(image_dir)
         self.mask_dir = Path(mask_dir)
         self.batch_size = batch_size
@@ -734,6 +739,10 @@ def dice_loss(y_true, y_pred, smooth=1e-7):
     """
     Dice loss for semantic segmentation - measures overlap between predicted and ground truth masks
     """
+    # Ensure consistent tensor types for mixed precision compatibility
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    
     # Compute per-class Dice over classes 0..18 (exclude void=19), unweighted
     y_true_19 = y_true[..., :19]
     y_pred_19 = y_pred[..., :19]
@@ -940,7 +949,7 @@ def create_callbacks(model_name, val_generator):
     os.makedirs(viz_dir, exist_ok=True)
     
     # Model checkpoint - save weights only (like original trainQAT.py)
-    checkpoint_path = os.path.join(MODELS_DIR, f"{model_name}_checkpoint_epoch_{{epoch:02d}}.keras")
+    checkpoint_path = os.path.join(MODELS_DIR, f"{model_name}_checkpoint_epoch_{{epoch:02d}}.weights.h5")
     checkpoint_callback = ModelCheckpoint(
         filepath=checkpoint_path,
         monitor='val_loss',
@@ -1041,7 +1050,20 @@ def main():
     # Load existing model if specified
     if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
         print(f"Loading existing model from: {LOAD_MODEL_PATH}")
-        model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
+        try:
+            # Try to load as full model first
+            model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
+            print("Loaded full model successfully!")
+        except Exception as e:
+            print(f"Could not load as full model: {e}")
+            # Try to load as weights-only checkpoint
+            if LOAD_MODEL_PATH.endswith('.weights.h5'):
+                print("Attempting to load weights-only checkpoint...")
+                model.load_weights(LOAD_MODEL_PATH)
+                print("Loaded weights successfully!")
+            else:
+                print(f"Unsupported model format: {LOAD_MODEL_PATH}")
+                print("Continuing with fresh model...")
     
     # Compile model
     print("\nCompiling model...")
