@@ -2,7 +2,8 @@
 # =====================================================
 
 # Core ML Framework
-tensorflow>=2.8.0
+tensorflow>=2.14
+tf-keras==2.14.1
 numpy>=1.21.0
 
 # Quantization Support

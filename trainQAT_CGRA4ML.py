@@ -184,7 +184,7 @@ def safe_configure_tensorflow(debug_mode=False):
         print(f"XLA config skipped: {e}")
 
     # Enable eager execution for QKeras compatibility
-    tf.config.run_functions_eagerly(True)
+    # tf.config.run_functions_eagerly(True)
     
     print(f"Eager execution enabled: {tf.executing_eagerly()}")
     try:
@@ -208,14 +208,14 @@ def get_cgra4ml_quantization_config(layer_name, layer_type):
     elif 'stem' in layer_name.lower():
         return create_quantized_bits_config(32, 6, True)  # 32-bit, 6 int bits for critical features
     
-    # # BatchNorm moving stats - CRITICAL for stability, use 32-bit
-    # elif ('bn' in layer_name.lower() or 'batch' in layer_name.lower()) and ('moving_mean' in layer_name.lower() or 'moving_variance' in layer_name.lower()):
-    #     # Moving stats are critical for BatchNorm stability
-    #     return create_quantized_bits_config(32, 8, True)  # 32-bit, 8 int bits for stability
+    # BatchNorm moving stats - CRITICAL for stability, use 32-bit
+    elif ('bn' in layer_name.lower() or 'batch' in layer_name.lower()) and ('moving_mean' in layer_name.lower() or 'moving_variance' in layer_name.lower()):
+        # Moving stats are critical for BatchNorm stability
+        return create_quantized_bits_config(32, 8, True)  # 32-bit, 8 int bits for stability
     
-    # # BatchNorm gamma/beta - IMPORTANT for stability, use 16-bit
-    # elif 'bn' in layer_name.lower() or 'batch' in layer_name.lower():
-    #     return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for stability
+    # BatchNorm gamma/beta - IMPORTANT for stability, use 16-bit
+    elif 'bn' in layer_name.lower() or 'batch' in layer_name.lower():
+        return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for stability
     
     # Early layers (stage1) - IMPORTANT for feature extraction, use 16-bit
     elif 'stage1' in layer_name.lower():
@@ -285,7 +285,12 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
                     kernel_quantizer=quantized_bits(**conv_config),
                     bias_quantizer=quantized_bits(**conv_config),
                     name=f'{name_prefix}_conv1')(x)
-        x1 = BatchNormalization(name=f'{name_prefix}_bn1')(x1)
+        x1 = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**bn_config),
+            beta_quantizer=quantized_bits(**bn_config),
+            mean_quantizer=quantized_bits(**bn_config),
+            variance_quantizer=quantized_bits(**bn_config),
+            name=f'{name_prefix}_bn1')(x1)
         x1 = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act1')(x1)
         
         # Branch 2: Dilated convolution for context
@@ -302,7 +307,12 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
                        kernel_quantizer=quantized_bits(**conv_config),
                        bias_quantizer=quantized_bits(**conv_config),
                        name=f'{name_prefix}_final')(x_concat)
-        x_out = BatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
+        x_out = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**bn_config),
+            beta_quantizer=quantized_bits(**bn_config),
+            mean_quantizer=quantized_bits(**bn_config),
+            variance_quantizer=quantized_bits(**bn_config),
+            name=f'{name_prefix}_bn_final')(x_out)
         x_out = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act_final')(x_out)
         
     else:
@@ -381,11 +391,17 @@ def cgra4ml_encoder(inputs, use_quantization=False):
         # Initial stem
     if use_quantization:
         stem_config = get_cgra4ml_quantization_config('stem', 'Conv2D')
+        bn_config = get_cgra4ml_quantization_config('stem_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stem')(inputs)
-        x = BatchNormalization(name='stem_bn')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**bn_config),
+            beta_quantizer=quantized_bits(**bn_config),
+            mean_quantizer=quantized_bits(**bn_config),
+            variance_quantizer=quantized_bits(**bn_config),
+            name='stem_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stem_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
@@ -394,11 +410,17 @@ def cgra4ml_encoder(inputs, use_quantization=False):
     
     # Stage 1: 1/4 resolution (additional stride 2)
     if use_quantization:
+        bn_config = get_cgra4ml_quantization_config('stage1_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage1_downsample')(x)
-        x = BatchNormalization(name='stage1_downsample_bn')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**bn_config),
+            beta_quantizer=quantized_bits(**bn_config),
+            mean_quantizer=quantized_bits(**bn_config),
+            variance_quantizer=quantized_bits(**bn_config),
+            name='stage1_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage1_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
@@ -411,11 +433,17 @@ def cgra4ml_encoder(inputs, use_quantization=False):
     
     # Stage 2: 1/8 resolution
     if use_quantization:
+        bn_config = get_cgra4ml_quantization_config('stage2_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage2_downsample')(x)
-        x = BatchNormalization(name='stage2_downsample_bn')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**bn_config),
+            beta_quantizer=quantized_bits(**bn_config),
+            mean_quantizer=quantized_bits(**bn_config),
+            variance_quantizer=quantized_bits(**bn_config),
+            name='stage2_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage2_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
@@ -428,11 +456,17 @@ def cgra4ml_encoder(inputs, use_quantization=False):
     
     # Stage 3: 1/16 resolution
     if use_quantization:
+        bn_config = get_cgra4ml_quantization_config('stage3_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage3_downsample')(x)
-        x = BatchNormalization(name='stage3_downsample_bn')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**bn_config),
+            beta_quantizer=quantized_bits(**bn_config),
+            mean_quantizer=quantized_bits(**bn_config),
+            variance_quantizer=quantized_bits(**bn_config),
+            name='stage3_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage3_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
@@ -445,11 +479,17 @@ def cgra4ml_encoder(inputs, use_quantization=False):
     
     # Stage 4: 1/32 resolution
     if use_quantization:
+        bn_config = get_cgra4ml_quantization_config('stage4_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,
                     kernel_quantizer=quantized_bits(**stem_config),
                     bias_quantizer=quantized_bits(**stem_config),
                     name='stage4_downsample')(x)
-        x = BatchNormalization(name='stage4_downsample_bn')(x)
+        x = QBatchNormalization(
+            gamma_quantizer=quantized_bits(**bn_config),
+            beta_quantizer=quantized_bits(**bn_config),
+            mean_quantizer=quantized_bits(**bn_config),
+            variance_quantizer=quantized_bits(**bn_config),
+            name='stage4_downsample_bn')(x)
         x = QActivation(quantized_relu(**quantized_relu_config), name='stage4_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
