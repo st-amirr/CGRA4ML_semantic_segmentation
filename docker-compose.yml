@@ -1,15 +1,10 @@
+version: '3.8'
+
 services:
   hls4ml-training:
     build: .
     container_name: hls4ml-cityscapes
-    # Use new device reservation syntax for GPU
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - TF_FORCE_GPU_ALLOW_GROWTH=true
@@ -26,4 +21,11 @@ services:
       - "6006:6006"  # TensorBoard
     working_dir: /workspace
     command: tail -f /dev/null
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped 
