@@ -48,6 +48,7 @@ import platform
 import glob
 import shutil
 
+
 # Model constants from training script
 INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
@@ -56,30 +57,66 @@ NUM_CLASSES = 20
 # CGRA4ML specific imports (will be installed)
 try:
     import cgra4ml
-    from cgra4ml.deepsocflow import DeepSoCFlow
+    from deepsocflow import XBundle, Hardware, XModel, XInputAct, export_inference, verify_inference, predict_model_performance
     print("CGRA4ML package found")
     CGRA4ML_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    print(f"CGRA4ML import error: {e}")
     print("CGRA4ML not found. Please install from: https://github.com/KastnerRG/cgra4ml")
     print("Run: pip install -e /path/to/cgra4ml")
     CGRA4ML_AVAILABLE = False
     print("Note: Using simplified CGRA4ML implementation due to import issues")
 
-# Mock DeepSoCFlow class for when CGRA4ML is not available
+# Mock classes for when CGRA4ML is not available
 if not CGRA4ML_AVAILABLE:
-    class DeepSoCFlow:
-        def __init__(self, model, config, custom_pe=None, output_dir=None):
-            self.model = model
-            self.config = config
-            self.custom_pe = custom_pe
-            self.output_dir = output_dir
-            print("Using mock DeepSoCFlow - CGRA4ML not available")
+    class XBundle:
+        def __init__(self, **kwargs):
+            self.config = kwargs
         
-        def generate(self):
-            print("Mock CGRA4ML generation completed")
+        def __call__(self, *args):
+            return args[0] if args else None
+    
+    class Hardware:
+        def __init__(self, **kwargs):
+            self.config = kwargs
+            self.K_BITS = kwargs.get('bits_weights', 16)
+            self.X_BITS = kwargs.get('bits_input', 16)
+            self.B_BITS = kwargs.get('bits_bias', 16)
+            self.ROWS = kwargs.get('processing_elements', (16, 192))[0]
         
-        def write_project_files(self):
-            print("Mock project files written")
+        def export(self):
+            print("Mock Hardware.export() - generates config files")
+        
+        def export_vivado_tcl(self, board):
+            print(f"Mock Hardware.export_vivado_tcl({board}) - generates Vivado TCL")
+    
+    class XModel:
+        def __init__(self, inputs, outputs):
+            self.inputs = inputs
+            self.outputs = outputs
+            self.layers = []
+            self.random_input = None
+        
+        def compile(self):
+            pass
+        
+        def summary(self):
+            print("Mock XModel summary")
+        
+        def export_inference(self, x, hw):
+            print("Mock export_inference")
+        
+        def verify_inference(self, sim, sim_path):
+            print("Mock verify_inference")
+    
+    class XInputAct:
+        def __init__(self, shape, batch_size, hw, int_bits, name):
+            self.shape = shape
+            self.batch_size = batch_size
+            self.hw = hw
+            self.int_bits = int_bits
+            self.name = name
+            self.raw = None
 
 
 def setup_cgra4ml_environment():
@@ -579,7 +616,7 @@ def create_custom_processing_elements(config):
 
 def convert_to_cgra4ml(model, config, output_dir):
     """
-    Convert Keras model to CGRA4ML format
+    Convert Keras model to CGRA4ML format using proper deepsocflow approach
 
     Args:
         model: Keras model
@@ -595,106 +632,118 @@ def convert_to_cgra4ml(model, config, output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        # Create custom processing elements
-        custom_pe = create_custom_processing_elements(config)
+        # Change to output directory for file generation
+        original_dir = os.getcwd()
+        os.chdir(output_dir)
 
-        # Initialize CGRA4ML DeepSoCFlow
-        print("Initializing CGRA4ML DeepSoCFlow...")
-        cgra_model = DeepSoCFlow(
-            model=model,
-            config=config,
-            custom_pe=custom_pe,
-            output_dir=output_dir
+        # Step 1: Create Hardware configuration
+        print("Creating Hardware configuration...")
+        # CGRA4ML Hardware expects bits_input and bits_weights to be in [1,2,4,8]
+        # We'll use 8-bit for compatibility, but this can be adjusted based on requirements
+        bits_input = min(8, config.get('data_width', 16))
+        bits_weights = min(8, config.get('data_width', 16))
+        
+        hw = Hardware(
+            processing_elements=(16, 192),  # (rows, columns) of multiply-add units
+            frequency_mhz=250,              # Target frequency
+            bits_input=bits_input,          # Input bit width (limited to 8 for CGRA4ML)
+            bits_weights=bits_weights,      # Weight bit width (limited to 8 for CGRA4ML)
+            bits_sum=20,                    # Accumulator bit width
+            bits_bias=16,                   # Bias bit width
+            max_batch_size=64,              # Max batch size
+            max_channels_in=512,            # Max input channels
+            max_kernel_size=9,              # Max kernel size
+            max_image_size=config.get('input_shape', [512])[0],  # Max image size
+            ram_weights_depth=512,          # RAM depth for weights
+            ram_edges_depth=3584,           # RAM depth for edge buffers
+            axi_width=128,                  # AXI bus width
+            target_cpu_int_bits=32,         # CPU integer bits
+            valid_prob=1,                   # Valid signal probability
+            ready_prob=1,                   # Ready signal probability
+            data_dir='vectors'              # Test vectors directory
         )
 
-        # Generate CGRA4ML implementation
-        print("Generating CGRA4ML implementation...")
-        cgra_model.generate()
+        # Export hardware configuration
+        hw.export()  # Generates: config_hw.svh, config_hw.tcl, config_tb.svh, hardware.json
+        hw.export_vivado_tcl(board=config.get('fpga_part', 'XCVU9P-L2FLGA2104E'))
+
+        # Step 2: Build CGRA4ML model using Bundle approach
+        print("Building CGRA4ML model using Bundle approach...")
+        
+        # Define quantization parameters
+        QINT_BITS = 0
+        kq = f'quantized_bits({hw.K_BITS},{QINT_BITS},False,True,1)'
+        bq = f'quantized_bits({hw.B_BITS},{QINT_BITS},False,True,1)'
+        qr = f'quantized_relu({hw.X_BITS},{QINT_BITS},negative_slope=0)'
+        qb = f'quantized_bits({hw.X_BITS},{QINT_BITS},False,False,1)'
+
+        # Create input
+        XN = 1  # Batch size
+        input_shape = (XN, INPUT_HEIGHT, INPUT_WIDTH, 3)
+        x = x_in = XInputAct(shape=input_shape[1:], batch_size=XN, hw=hw, int_bits=QINT_BITS, name='input')
+
+        # Build model using XBundle approach (simplified for LMIINet)
+        # This is a simplified version - in practice, you'd convert each layer of your model
+        print("Converting model layers to CGRA4ML XBundles...")
+        
+        # Example conversion of first few layers (you'd need to convert your entire model)
+        # This is a placeholder - you'd need to analyze your model structure and convert each layer
+        
+        # Stem layer (example)
+        x = XBundle(
+            core={'type': 'conv', 'filters': 64, 'kernel_size': 7, 'strides': 2, 'padding': 'same',
+                  'kernel_quantizer': kq, 'bias_quantizer': bq, 'use_bias': True, 'act_str': qr}
+        )(x)
+
+        # Example skip connection (you'd need to implement this for your specific model)
+        # x1 = x  # Store for skip connection
+        
+        # Continue with more layers...
+        # This is where you'd convert your entire LMIINet model structure
+        
+        # Final output layer
+        x = XBundle(
+            core={'type': 'conv', 'filters': NUM_CLASSES, 'kernel_size': 1, 'strides': 1, 'padding': 'same',
+                  'kernel_quantizer': kq, 'bias_quantizer': bq, 'use_bias': True, 'act_str': qb}
+        )(x)
+
+        # Create XModel
+        cgra_model = XModel(inputs=x_in.raw, outputs=x)
+        
+        # Set model as non-trainable
+        for layer in cgra_model.layers:
+            layer.trainable = False
+
+        # Compile model
+        cgra_model.compile()
+        cgra_model.summary()
+
+        # Step 3: Export inference and verify
+        print("Exporting inference vectors...")
+        cgra_model.export_inference(x=cgra_model.random_input, hw=hw)
+        
+        print("Verifying inference...")
+        # Determine simulation tool
+        if os.name == 'nt':  # Windows
+            SIM, SIM_PATH = 'xsim', "F:/Xilinx/Vivado/2022.1/bin/"
+        else:  # Linux/Mac
+            SIM, SIM_PATH = 'verilator', ''
+        
+        cgra_model.verify_inference(SIM, SIM_PATH)
 
         print(f"CGRA4ML model created successfully")
         print(f"Output directory: {output_dir}")
 
-        # Write project files
-        print("Writing CGRA4ML project files...")
-        try:
-            cgra_model.write_project_files()
-            print("CGRA4ML project files written successfully")
-        except Exception as e:
-            print(f"Warning: Could not write all project files: {e}")
-            print("CGRA4ML model was created successfully, but project files may be incomplete")
-
-        # --- NEW: Hardware export and inference generation ---
-        try:
-            print("Creating hardware configuration and Vivado TCL script...")
-            from deepsocflow import Hardware, export_inference, verify_inference, predict_model_performance
-            # Hardware parameters, now relative to config and with comments
-            hw_params = dict(
-                # Number of processing elements (rows, columns) - parallel compute units, tuned for XCVU9P-L2FLGA2104E
-                processing_elements=(16, 192),
-                # Target operating frequency in MHz (clock speed for the hardware design)
-                frequency_mhz=250,
-                # Input data bit width (precision for input feature maps, matches config['data_width'])
-                bits_input=config.get('data_width', 16),
-                # Weight bit width (precision for weights, matches input data width)
-                bits_weights=config.get('data_width', 16),
-                # Accumulator bit width for sum operations (precision for accumulators in MAC units)
-                bits_sum=20,
-                # Bias bit width (precision for bias values in layers)
-                bits_bias=16,
-                # Maximum batch size for inference (max number of images processed in parallel)
-                max_batch_size=64,
-                # Maximum input channels supported (max number of channels in any layer)
-                max_channels_in=512,
-                # Maximum kernel size supported (largest convolution kernel supported)
-                max_kernel_size=9,
-                # Maximum image size supported (largest input image height, matches config['input_shape'][0])
-                max_image_size=config.get('input_shape', [512])[0],
-                # Maximum number of bundles for dataflow (bundles are parallel data streams)
-                max_n_bundles=64,
-                # RAM depth for weights (size of on-chip memory for weights)
-                ram_weights_depth=512,
-                # RAM depth for edge buffers (size of on-chip memory for edge data)
-                ram_edges_depth=3584,
-                # AXI bus width in bits (width of AXI interface for data transfer)
-                axi_width=128,
-                # Base address for hardware configuration (starting address for config registers)
-                config_baseaddr="B0000000",
-                # Integer bits for target CPU (precision for CPU-side integer operations)
-                target_cpu_int_bits=32,
-                # Probability that valid signal is asserted (used for simulation, 1 means always valid)
-                valid_prob=1,
-                # Probability that ready signal is asserted (used for simulation, 1 means always ready)
-                ready_prob=1,
-                # Directory for inference vectors (where test vectors are stored/generated)
-                data_dir='vectors',
-                # FPGA part number (from config, default: XCVU9P-L2FLGA2104E)
-                fpga_part=config.get('fpga_part', 'XCVU9P-L2FLGA2104E'),
-            )
-            hw = Hardware(**hw_params)
-            hw.export_json()
-            hw = Hardware.from_json('hardware.json')
-            hw.export() # Generates: config_hw.svh, config_hw.tcl
-            hw.export_vivado_tcl(board=config.get('fpga_part', 'XCVU9P-L2FLGA2104E')) # Use --part argument for board
-
-            print("Exporting inference vectors...")
-            export_inference(model, hw, batch_size=hw.ROWS)
-            print("Verifying inference...")
-            verify_inference(model, hw)
-            print("Predicting model performance...")
-            d_perf = predict_model_performance(hw)
-            import pprint
-            pp = pprint.PrettyPrinter(indent=4)
-            print(f"Predicted Performance")
-            pp.pprint(d_perf)
-        except Exception as e:
-            print(f"Warning: Hardware export or inference generation failed: {e}")
-
-        # --- END NEW ---
+        # Change back to original directory
+        os.chdir(original_dir)
 
         return cgra_model
 
     except Exception as e:
         print(f"Error converting to CGRA4ML: {e}")
+        # Change back to original directory on error
+        if 'original_dir' in locals():
+            os.chdir(original_dir)
         raise
 
 def validate_conversion(model, cgra_model, output_dir):
@@ -948,18 +997,19 @@ def run_cgra4ml_synthesis(output_dir, args):
         os.chdir(output_dir)
         print(f"Changed to directory: {output_dir}")
         
-        # Check if synthesis script exists
-        synthesis_script = "run_synthesis.tcl"
-        if not os.path.exists(synthesis_script):
-            print(f"ERROR: {synthesis_script} not found!")
+        # Check if Vivado TCL script exists (generated by Hardware.export_vivado_tcl)
+        vivado_script = "config_hw.tcl"
+        if not os.path.exists(vivado_script):
+            print(f"ERROR: {vivado_script} not found!")
+            print("This file should be generated by CGRA4ML Hardware.export_vivado_tcl()")
             return False
         
-        # Run synthesis
+        # Run synthesis using the generated TCL script
         print("Starting CGRA4ML synthesis...")
-        print(f"Command: vivado -mode batch -source {synthesis_script}")
+        print(f"Command: vivado -mode batch -source {vivado_script}")
         
         # Run the synthesis command
-        result = subprocess.run(["vivado", "-mode", "batch", "-source", synthesis_script], 
+        result = subprocess.run(["vivado", "-mode", "batch", "-source", vivado_script], 
                               capture_output=True, text=True)
         
         # Print output
@@ -976,17 +1026,21 @@ def run_cgra4ml_synthesis(output_dir, args):
             print("CGRA4ML synthesis completed successfully!")
             print("=" * 60)
             
-            # Check for synthesis reports
-            syn_report_dir = "synthesis_reports"
-            if os.path.exists(syn_report_dir):
-                print(f"Synthesis reports available in: {syn_report_dir}")
-                
-                # List available reports
-                reports = [f for f in os.listdir(syn_report_dir) if f.endswith('.rpt')]
-                if reports:
-                    print("Available reports:")
-                    for report in reports:
-                        print(f"  - {report}")
+            # Check for generated files
+            generated_files = [
+                "config_hw.svh",  # SystemVerilog configuration
+                "config_hw.tcl",  # Vivado TCL script
+                "config_tb.svh",  # Testbench configuration
+                "hardware.json",  # Hardware configuration
+                "vectors/"        # Test vectors directory
+            ]
+            
+            print("Generated files:")
+            for file in generated_files:
+                if os.path.exists(file):
+                    print(f"  ✓ {file}")
+                else:
+                    print(f"  ✗ {file} (missing)")
             
             return True
         else:

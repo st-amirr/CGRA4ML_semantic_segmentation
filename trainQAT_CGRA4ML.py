@@ -57,6 +57,7 @@ import sys
 import json
 import argparse
 import glob
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
@@ -952,8 +953,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                     print(f"\n⚠️  No validation samples available to visualize at epoch {epoch+1}")
 
             except Exception as e:
-                print(f"⚠️  Could not save prediction visualizations: {e}")
-                import traceback
+                print(f"⚠️  Could not save prediction visualizations: {e}")            
                 traceback.print_exc()
             finally:
                 # Restore XLA settings
