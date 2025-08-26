@@ -1136,20 +1136,18 @@ def main():
         verbose=1
     )
     
-    # Save final model (architecture + weights) at the end of training
-    final_model_path = os.path.join(MODELS_DIR, f"{model_name}_final.keras")
-    
+    # Save final model (architecture + weights) at the end of training in .h5 format
+    final_model_path = os.path.join(MODELS_DIR, f"{model_name}_final.h5")
     print(f"\nSaving final model to: {final_model_path}")
     try:
         # Save full model (architecture + weights) for CGRA4ML compatibility
-        model.save(final_model_path, save_format='keras')
+        model.save(final_model_path, save_format='h5')
         print("Full model saved successfully!")
-                
     except Exception as e:
         print(f"Warning: Could not save full model: {e}")
         print("Saving weights only as fallback...")
         try:
-            model.save_weights(final_model_path.replace('.keras', '_weights.h5'))
+            model.save_weights(final_model_path.replace('_final.h5', '_weights.h5'))
             print("Weights saved successfully!")
         except Exception as e2:
             print(f"Error saving weights: {e2}")

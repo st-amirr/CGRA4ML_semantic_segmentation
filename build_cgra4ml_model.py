@@ -117,7 +117,7 @@ def parse_arguments():
         "--model_path",
         type=str,
         required=True,
-        help="Path to trained QAT model (.h5 file)",
+        help="Path to trained QAT model (.h5 file only; .keras not supported)",
     )
     parser.add_argument(
         "--output_dir",
@@ -128,8 +128,8 @@ def parse_arguments():
     parser.add_argument(
         "--part", 
         type=str, 
-        default="xc7a200tfbg676-1", 
-        help="FPGA part number"
+        default="XCVU9P-L2FLGA2104E", 
+        help="FPGA part number (default: XCVU9P-L2FLGA2104E)"
     )
     parser.add_argument(
         "--clock_period", 
@@ -189,10 +189,13 @@ def load_qat_model(model_path):
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
+    if not model_path.endswith('.h5'):
+        raise ValueError(f"Model file must be in .h5 format. Provided: {model_path}")
+
     try:
         # Import QKeras components for loading quantized models
         from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
-        
+
         custom_objects = {
             "QActivation": QActivation,
             "QConv2D": QConv2D,
@@ -205,14 +208,14 @@ def load_qat_model(model_path):
 
         # Load the model
         model = tf.keras.models.load_model(model_path, compile=False, custom_objects=custom_objects)
-        
+
         print(f"Model loaded successfully: {model.name}")
         print(f"Model input shape: {model.input_shape}")
         print(f"Model output shape: {model.output_shape}")
-        
+
         # Verify model structure
         verify_model_structure(model)
-        
+
         return model
 
     except Exception as e:
@@ -269,8 +272,9 @@ def analyze_skip_connections(model):
     for layer in model.layers:
         layer_connections[layer.name] = []
         for node in layer._outbound_nodes:
-            for outbound_layer in node.outbound_layers:
-                layer_connections[layer.name].append(outbound_layer.name)
+            # Keras Node object has 'outbound_layer' (singular) in recent versions
+            if hasattr(node, 'outbound_layer') and node.outbound_layer is not None:
+                layer_connections[layer.name].append(node.outbound_layer.name)
     
     # Find skip connections (layers that connect to non-adjacent layers)
     for layer in model.layers:
@@ -593,7 +597,7 @@ def convert_to_cgra4ml(model, config, output_dir):
     try:
         # Create custom processing elements
         custom_pe = create_custom_processing_elements(config)
-        
+
         # Initialize CGRA4ML DeepSoCFlow
         print("Initializing CGRA4ML DeepSoCFlow...")
         cgra_model = DeepSoCFlow(
@@ -602,24 +606,91 @@ def convert_to_cgra4ml(model, config, output_dir):
             custom_pe=custom_pe,
             output_dir=output_dir
         )
-        
+
         # Generate CGRA4ML implementation
         print("Generating CGRA4ML implementation...")
         cgra_model.generate()
-        
+
         print(f"CGRA4ML model created successfully")
         print(f"Output directory: {output_dir}")
-        
+
         # Write project files
         print("Writing CGRA4ML project files...")
         try:
             cgra_model.write_project_files()
             print("CGRA4ML project files written successfully")
-            
         except Exception as e:
             print(f"Warning: Could not write all project files: {e}")
             print("CGRA4ML model was created successfully, but project files may be incomplete")
-        
+
+        # --- NEW: Hardware export and inference generation ---
+        try:
+            print("Creating hardware configuration and Vivado TCL script...")
+            from deepsocflow import Hardware, export_inference, verify_inference, predict_model_performance
+            # Hardware parameters, now relative to config and with comments
+            hw_params = dict(
+                # Number of processing elements (rows, columns) - parallel compute units, tuned for XCVU9P-L2FLGA2104E
+                processing_elements=(16, 192),
+                # Target operating frequency in MHz (clock speed for the hardware design)
+                frequency_mhz=250,
+                # Input data bit width (precision for input feature maps, matches config['data_width'])
+                bits_input=config.get('data_width', 16),
+                # Weight bit width (precision for weights, matches input data width)
+                bits_weights=config.get('data_width', 16),
+                # Accumulator bit width for sum operations (precision for accumulators in MAC units)
+                bits_sum=20,
+                # Bias bit width (precision for bias values in layers)
+                bits_bias=16,
+                # Maximum batch size for inference (max number of images processed in parallel)
+                max_batch_size=64,
+                # Maximum input channels supported (max number of channels in any layer)
+                max_channels_in=512,
+                # Maximum kernel size supported (largest convolution kernel supported)
+                max_kernel_size=9,
+                # Maximum image size supported (largest input image height, matches config['input_shape'][0])
+                max_image_size=config.get('input_shape', [512])[0],
+                # Maximum number of bundles for dataflow (bundles are parallel data streams)
+                max_n_bundles=64,
+                # RAM depth for weights (size of on-chip memory for weights)
+                ram_weights_depth=512,
+                # RAM depth for edge buffers (size of on-chip memory for edge data)
+                ram_edges_depth=3584,
+                # AXI bus width in bits (width of AXI interface for data transfer)
+                axi_width=128,
+                # Base address for hardware configuration (starting address for config registers)
+                config_baseaddr="B0000000",
+                # Integer bits for target CPU (precision for CPU-side integer operations)
+                target_cpu_int_bits=32,
+                # Probability that valid signal is asserted (used for simulation, 1 means always valid)
+                valid_prob=1,
+                # Probability that ready signal is asserted (used for simulation, 1 means always ready)
+                ready_prob=1,
+                # Directory for inference vectors (where test vectors are stored/generated)
+                data_dir='vectors',
+                # FPGA part number (from config, default: XCVU9P-L2FLGA2104E)
+                fpga_part=config.get('fpga_part', 'XCVU9P-L2FLGA2104E'),
+            )
+            hw = Hardware(**hw_params)
+            hw.export_json()
+            hw = Hardware.from_json('hardware.json')
+            hw.export() # Generates: config_hw.svh, config_hw.tcl
+            hw.export_vivado_tcl(board=config.get('fpga_part', 'XCVU9P-L2FLGA2104E')) # Use --part argument for board
+
+            print("Exporting inference vectors...")
+            export_inference(model, hw, batch_size=hw.ROWS)
+            print("Verifying inference...")
+            verify_inference(model, hw)
+            print("Predicting model performance...")
+            d_perf = predict_model_performance(hw)
+            import pprint
+            pp = pprint.PrettyPrinter(indent=4)
+            print(f"Predicted Performance")
+            pp.pprint(d_perf)
+        except Exception as e:
+            print(f"Warning: Hardware export or inference generation failed: {e}")
+
+        # --- END NEW ---
+
         return cgra_model
 
     except Exception as e:
