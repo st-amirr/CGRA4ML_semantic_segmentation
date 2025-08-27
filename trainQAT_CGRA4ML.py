@@ -39,11 +39,14 @@ CGRA4ML Compatibility:
 - Hardware-friendly activation functions
 - Streamlined dataflow for CGRA4ML processing elements
 
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
+
+
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=1 --batch_size=1 --use_dropout=True --subset_ratio=0.1
+ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=1 --batch_size=1 --use_dropout=True --subset_ratio=0.1
 """
 
 import os
@@ -123,10 +126,8 @@ MODEL_CONFIG = {
     'mv2_c7':   320,       # Additional stage channels (if needed)
     # ASPP and decoder configuration
     'aspp_filters':    128, # Global context MLP filters
-    'low_level_proj':  32,  # Low-level feature projection
-    'decoder_filters': 128, # Decoder refinement filters
-    # Use dilated convolutions in decoder refinement blocks
-    'use_dilated_conv': True,
+    'low_level_proj':  42,  # Low-level feature projection
+    'decoder_filters': 160, # Decoder refinement filters
 }
 
 # Data paths - Docker mounted paths
@@ -169,13 +170,13 @@ def safe_configure_tensorflow(debug_mode=False):
                     tf.config.experimental.set_memory_growth(gpu, True)
                 except RuntimeError:
                     pass
-                try:
-                    tf.config.set_logical_device_configuration(
-                        gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 13)],
-                    )
-                except RuntimeError:
-                    pass
+                # try:
+                #     tf.config.set_logical_device_configuration(
+                #         gpu,
+                #         [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 13)],
+                #     )
+                # except RuntimeError:
+                #     pass
     except Exception as e:
         print(f"GPU config skipped: {e}")
 

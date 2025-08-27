@@ -128,7 +128,7 @@ def setup_cgra4ml_environment():
     
     # Set CGRA4ML environment variables
     os.environ['CGRA4ML_BACKEND'] = 'Vivado'
-    os.environ['CGRA4ML_PART'] = 'xc7a200tfbg676-1'
+    os.environ['CGRA4ML_PART'] = 'xc7z020clg484-1'
     
     # Check for required tools
     required_tools = ['verilator', 'vivado']
@@ -737,7 +737,7 @@ def convert_to_cgra4ml(model, config, output_dir):
         hw.export()  # Generates: config_hw.svh, config_hw.tcl, config_tb.svh, hardware.json
         
         # Export Vivado TCL script
-        hw.export_vivado_tcl(board='zcu104')  # Keep ZCU104 board config
+        hw.export_vivado_tcl(board='kc705')  # Use KC705 TCL script
         
         # Export inference vectors using CGRA4ML's standard method
         try:
@@ -801,22 +801,6 @@ def convert_to_cgra4ml(model, config, output_dir):
         # Change back to original directory
         os.chdir(original_dir)
         print(f"Changed back to directory: {original_dir}")
-
-def verify_inference(model, sim, sim_path):
-    """
-    Verify inference for the CGRA4ML model
-    
-    Args:
-        model: CGRA4ML model
-        sim: Simulation tool ('verilator' or 'vivado')
-        sim_path: Path for simulation files
-    """
-    print(f"Verifying inference with {sim}...")
-    print(f"Simulation path: {sim_path}")
-    
-    # Basic verification - in a real implementation this would run actual simulation
-    print("Inference verification completed (basic check)")
-    return True
 
 def predict_model_performance(model, hw):
     """
