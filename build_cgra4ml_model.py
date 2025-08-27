@@ -164,10 +164,10 @@ def parse_arguments():
         help="Output directory for CGRA4ML model",
     )
     parser.add_argument(
-        "--part", 
-        type=str, 
-        default="xczu7ev-ffvc1156-2-e", 
-        help="FPGA part number (default: xczu7ev-ffvc1156-2-e)"
+        "--part",
+        type=str,
+        default="xc7z020clg484-1",
+        help="FPGA part number (default: xc7z020clg484-1)",
     )
     parser.add_argument(
         "--clock_period", 
@@ -730,7 +730,7 @@ def convert_to_cgra4ml(model, config, output_dir):
         
         # Step 4: Export inference vectors following CGRA4ML pattern
         print("Exporting inference vectors...")
-        part = config.get('part', 'xczu7ev-ffvc1156-2-e')
+        part = config.get('part')
         print(f"Using FPGA part: {part}")
         
         # Export hardware configuration files
@@ -1036,7 +1036,7 @@ def generate_performance_report(cgra_model, output_dir, args):
             "input_shape": [INPUT_HEIGHT, INPUT_WIDTH, 3],
             "output_shape": [INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES],
             "data_width": args.data_width,
-            "board": args.board,
+            "part": args.part,
             "clock_period": args.clock_period,
             "skip_connection_strategy": args.skip_connection_strategy,
             "generated_at": datetime.now().isoformat(),
@@ -1090,7 +1090,7 @@ def create_deployment_guide(output_dir, args):
 - **Framework**: CGRA4ML
 - **Input Shape**: {INPUT_HEIGHT}x{INPUT_WIDTH}x3
 - **Output Shape**: {INPUT_HEIGHT}x{INPUT_WIDTH}x{NUM_CLASSES}
-- **Board**: {args.board}
+- **FPGA Part**: {args.part}
 - **Clock Period**: {args.clock_period}ns
 - **Data Width**: {args.data_width} bits
 - **Skip Connection Strategy**: {args.skip_connection_strategy}
@@ -1245,7 +1245,7 @@ def main():
             print("4. Check synthesis reports in synthesis_reports/")
             print("5. Integrate with your Vivado project")
         else:
-            print("3. Run synthesis: vivado -mode batch -source run_synthesis.tcl")
+            print("3. Run synthesis: vivado -mode batch -source vivado_flow.tcl")
             print("4. Integrate with your Vivado project")
 
     except Exception as e:
