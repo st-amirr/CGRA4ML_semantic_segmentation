@@ -46,7 +46,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
- Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=80 --batch_size=4 --use_dropout=True --subset_ratio=0.9
+ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=80 --batch_size=4 --use_dropout=True --subset_ratio=0.9  --LR=5e-4
 """
 
 import os
@@ -110,6 +110,7 @@ DEBUG_MODE = args.debug
 INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
 NUM_CLASSES = 20
+NUM_WORKERS = 6  # Fixed number of workers for data loading
 
 # Model configuration for CGRA4ML-optimized LMIINet
 # This configuration is used throughout the model architecture to ensure consistency
@@ -188,7 +189,7 @@ def safe_configure_tensorflow(debug_mode=False):
     # Enable eager execution for QKeras compatibility
     # tf.config.run_functions_eagerly(True)
     
-    print(f"Eager execution enabled: {tf.executing_eagerly()}")
+    # print(f"Eager execution enabled: {tf.executing_eagerly()}")
     try:
         tf.debugging.set_log_device_placement(debug_mode)
     except Exception:
@@ -577,6 +578,8 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         target_width=1024,
         shuffle=True,
         augment=True,
+        num_workers=NUM_WORKERS,
+        prefetch_batches=8,
         **kwargs
     ):
         super().__init__(**kwargs)  # Call parent constructor to fix PyDataset warning
@@ -587,6 +590,8 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         self.target_width = target_width
         self.shuffle = shuffle
         self.augment = augment
+        self.num_workers = num_workers
+        self.prefetch_batches = prefetch_batches
 
         # Get all image paths
         self.image_paths = list(self.image_dir.glob("**/*.png"))
@@ -761,16 +766,22 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             return mask_path_lids
 
     def __getitem__(self, index):
-        """Generate one batch of data"""
+        """Generate one batch of data with parallel image loading and augmentation"""
         batch_paths = self.image_paths[
             index * self.batch_size : (index + 1) * self.batch_size
         ]
 
+        def process_path(path):
+            image, mask = self.load_and_preprocess_image(path)
+            return image, mask
+
         batch_images = []
         batch_masks = []
 
-        for path in batch_paths:
-            image, mask = self.load_and_preprocess_image(path)
+        # Use ThreadPoolExecutor for parallel loading/augmentation
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            results = list(executor.map(process_path, batch_paths))
+        for image, mask in results:
             if image is not None and mask is not None:
                 batch_images.append(image)
                 batch_masks.append(mask)
@@ -1067,9 +1078,11 @@ def main():
         target_height=INPUT_HEIGHT,
         target_width=INPUT_WIDTH,
         shuffle=True,
-        augment=True
+        augment=True,
+        num_workers=NUM_WORKERS,
+        prefetch_batches=8
     )
-    
+
     val_generator = CityscapesDataGenerator(
         VAL_IMAGES_DIR,
         VAL_MASKS_DIR,
@@ -1078,7 +1091,9 @@ def main():
         target_height=INPUT_HEIGHT,
         target_width=INPUT_WIDTH,
         shuffle=False,
-        augment=False
+        augment=False,
+        num_workers=NUM_WORKERS,
+        prefetch_batches=8
     )
     
     print(f"Training samples: {len(train_generator) * BATCH_SIZE}")

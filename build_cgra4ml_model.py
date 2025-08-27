@@ -30,7 +30,7 @@ Requirements:
 
 Example:
     python build_cgra4ml_model.py --model_path ./models/qat_model_clean_for_compatible.h5 --output_dir ./cgra4ml_models --validate
-    python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final.keras --output_dir ./cgra4ml_models --synthesize
+    python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final.h5 --output_dir ./cgra4ml_models --synthesize
 """
 
 import os
