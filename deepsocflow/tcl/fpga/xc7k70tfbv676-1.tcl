@@ -5,10 +5,10 @@ set PART xc7k70tfbv676-1
 set TOP axi_cgra4ml
 
 # Add RTL sources
-set MODEL_DIR ./cgra4ml_models\lmiinet_cgra4ml_1756307021
+set MODEL_DIR C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756308838
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/*.sv]
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/*.v]
-add_files "./cgra4ml_models/lmiinet_cgra4ml_1756306298/config_hw.svh"
+add_files "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756308838/config_hw.svh"
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/*.sv]
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/*.v]
 

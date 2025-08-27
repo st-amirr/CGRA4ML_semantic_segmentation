@@ -1167,9 +1167,39 @@ def main():
     # Create output directory with timestamp
     timestamp = int(time.time())
 
+
     output_dir = os.path.join(args.output_dir, f"lmiinet_cgra4ml_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
 
+    # Update the include path for config_hw.svh in defines.svh to the latest model directory
+    defines_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "rtl", "defines.svh")
+    config_hw_path = os.path.abspath(os.path.join(output_dir, "config_hw.svh")).replace('\\', '/')
+    if os.path.exists(defines_path):
+        with open(defines_path, "r") as f:
+            lines = f.readlines()
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("`include") and "config_hw.svh" in line:
+                new_lines.append(f'`include "{config_hw_path}"')
+            else:
+                new_lines.append(line)
+        with open(defines_path, "w") as f:
+            f.writelines(new_lines)
+
+    # Update the include path for config_hw.svh in defines.svh to the latest model directory
+    defines_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "rtl", "defines.svh")
+    config_hw_path = os.path.abspath(os.path.join(output_dir, "config_hw.svh")).replace('\\', '/')
+    if os.path.exists(defines_path):
+        with open(defines_path, "r") as f:
+            lines = f.readlines()
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("`include") and "config_hw.svh" in line:
+                new_lines.append(f'`include "{config_hw_path}"\n')
+            else:
+                new_lines.append(line)
+        with open(defines_path, "w") as f:
+            f.writelines(new_lines)
     # Automatically update TCL script with latest model directory
     tcl_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "tcl", "fpga", "xc7k70tfbv676-1.tcl")
     if os.path.exists(tcl_path):
@@ -1178,14 +1208,15 @@ def main():
         with open(tcl_path, "w") as f:
             for line in tcl_lines:
                 if line.strip().startswith("set MODEL_DIR"):
-                        # Always use forward slashes for Vivado TCL
-                        fixed_model_dir = output_dir.replace('\\', '/')
-                        f.write(f"set MODEL_DIR {fixed_model_dir}\n")
-                elif 'add_files "$MODEL_DIR/config_hw.svh"' in line:
-                    f.write(f'add_files "{output_dir}/config_hw.svh"\n')
+                    # Always use forward slashes for Vivado TCL
+                    fixed_model_dir = output_dir.replace('\\', '/')
+                    f.write(f"set MODEL_DIR {fixed_model_dir}\n")
+                elif 'add_files' in line and 'config_hw.svh' in line:
+                    # Replace any add_files line referencing config_hw.svh with absolute path
+                    abs_config_hw = os.path.abspath(os.path.join(output_dir, 'config_hw.svh')).replace('\\', '/')
+                    f.write(f'add_files "{abs_config_hw}"\n')
                 else:
                     f.write(line)
-
     print(f"Output directory: {output_dir}")
     print(f"Model path: {args.model_path}")
     print(f"FPGA Part: {args.part}")
