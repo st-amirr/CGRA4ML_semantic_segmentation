@@ -128,7 +128,7 @@ def setup_cgra4ml_environment():
     
     # Set CGRA4ML environment variables
     os.environ['CGRA4ML_BACKEND'] = 'Vivado'
-    os.environ['CGRA4ML_PART'] = 'xc7z020clg484-1'
+    os.environ['CGRA4ML_PART'] = 'xc7k70tfbv676-1'
     
     # Check for required tools
     required_tools = ['verilator', 'vivado']
@@ -166,8 +166,8 @@ def parse_arguments():
     parser.add_argument(
         "--part",
         type=str,
-        default="xc7z020clg484-1",
-        help="FPGA part number (default: xc7z020clg484-1)",
+        default="xc7k70tfbv676-1",
+        help="FPGA part number (default: xc7k70tfbv676-1)",
     )
     parser.add_argument(
         "--clock_period", 
@@ -737,7 +737,7 @@ def convert_to_cgra4ml(model, config, output_dir):
         hw.export()  # Generates: config_hw.svh, config_hw.tcl, config_tb.svh, hardware.json
         
         # Export Vivado TCL script
-        hw.export_vivado_tcl(board='kc705')  # Use KC705 TCL script
+        hw.export_vivado_tcl(board='xc7k70tfbv676-1')  # Use Kintex-7 TCL script
         
         # Export inference vectors using CGRA4ML's standard method
         try:
@@ -1166,8 +1166,25 @@ def main():
 
     # Create output directory with timestamp
     timestamp = int(time.time())
+
     output_dir = os.path.join(args.output_dir, f"lmiinet_cgra4ml_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
+
+    # Automatically update TCL script with latest model directory
+    tcl_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "tcl", "fpga", "xc7k70tfbv676-1.tcl")
+    if os.path.exists(tcl_path):
+        with open(tcl_path, "r") as f:
+            tcl_lines = f.readlines()
+        with open(tcl_path, "w") as f:
+            for line in tcl_lines:
+                if line.strip().startswith("set MODEL_DIR"):
+                        # Always use forward slashes for Vivado TCL
+                        fixed_model_dir = output_dir.replace('\\', '/')
+                        f.write(f"set MODEL_DIR {fixed_model_dir}\n")
+                elif 'add_files "$MODEL_DIR/config_hw.svh"' in line:
+                    f.write(f'add_files "{output_dir}/config_hw.svh"\n')
+                else:
+                    f.write(line)
 
     print(f"Output directory: {output_dir}")
     print(f"Model path: {args.model_path}")

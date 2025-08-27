@@ -25,5 +25,3 @@ models/*.keras
 cgra4ml/**/*
 cgra4ml_models/**
 cgra4ml_models/**/*
-deepsocflow/**
-deepsocflow/**/*
