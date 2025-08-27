@@ -46,7 +46,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
 
- Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=1 --batch_size=1 --use_dropout=True --subset_ratio=0.1
+ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=80 --batch_size=4 --use_dropout=True --subset_ratio=0.9
 """
 
 import os
@@ -1088,23 +1088,38 @@ def main():
     print("\nCreating CGRA4ML-optimized LMIINet model...")
     model = create_cgra4ml_segmentation_model(use_quantization=TRAIN_QAT)
     
-    # Load existing model if specified
+    # Load model weights from checkpoint if --load_model filename contains epoch
+    checkpoint_loaded = False
+    initial_epoch = 0
     if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-        print(f"Loading existing model from: {LOAD_MODEL_PATH}")
-        try:
-            # Try to load as full model first
-            model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
-            print("Loaded full model successfully!")
-        except Exception as e:
-            print(f"Could not load as full model: {e}")
-            # Try to load as weights-only checkpoint
-            if LOAD_MODEL_PATH.endswith('.weights.h5'):
-                print("Attempting to load weights-only checkpoint...")
+        import re
+        epoch_match = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
+        if epoch_match:
+            print(f"Detected epoch checkpoint in filename: {LOAD_MODEL_PATH}")
+            try:
                 model.load_weights(LOAD_MODEL_PATH)
-                print("Loaded weights successfully!")
-            else:
-                print(f"Unsupported model format: {LOAD_MODEL_PATH}")
-                print("Continuing with fresh model...")
+                loaded_epoch = int(epoch_match.group(1))
+                initial_epoch = loaded_epoch
+                print(f"Loaded weights from epoch {loaded_epoch} successfully! Will resume from epoch {loaded_epoch + 1}.")
+                checkpoint_loaded = True
+            except Exception as e:
+                print(f"Error loading weights from checkpoint: {e}")
+        else:
+            print(f"Loading existing model from: {LOAD_MODEL_PATH}")
+            try:
+                # Try to load as full model first
+                model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
+                print("Loaded full model successfully!")
+            except Exception as e:
+                print(f"Could not load as full model: {e}")
+                # Try to load as weights-only checkpoint
+                if LOAD_MODEL_PATH.endswith('.weights.h5'):
+                    print("Attempting to load weights-only checkpoint...")
+                    model.load_weights(LOAD_MODEL_PATH)
+                    print("Loaded weights successfully!")
+                else:
+                    print(f"Unsupported model format: {LOAD_MODEL_PATH}")
+                    print("Continuing with fresh model...")
     
     # Compile model
     print("\nCompiling model...")
@@ -1134,7 +1149,8 @@ def main():
         epochs=EPOCHS,
         validation_data=val_generator,
         callbacks=callbacks,
-        verbose=1
+        verbose=1,
+        initial_epoch=initial_epoch
     )
     
     # Save final model (architecture + weights) at the end of training in .h5 format
