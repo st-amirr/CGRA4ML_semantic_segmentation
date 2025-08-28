@@ -48,6 +48,7 @@ import platform
 import glob
 import shutil
 import traceback
+from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 
 
 # Model constants from training script
@@ -232,7 +233,6 @@ def load_qat_model(model_path):
 
     try:
         # Import QKeras components for loading quantized models
-        from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 
         custom_objects = {
             "QActivation": QActivation,

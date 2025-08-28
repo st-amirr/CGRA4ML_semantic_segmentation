@@ -44,7 +44,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_01.weights.h5 --trainQAT=False --epochs=70 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=4e-4
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=80 --batch_size=2 --use_dropout=True --subset_ratio=0.9  --LR=5e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_20.weights.h5 --trainQAT=True --epochs=80 --batch_size=2 --use_dropout=True --subset_ratio=0.9  --LR=5e-4
 """
 
 import os
@@ -87,14 +87,15 @@ import tensorflow.keras.backend as K
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='CGRA4ML Semantic Segmentation with QAT Toggle')
-    parser.add_argument('--trainQAT', type=bool, default=False, help='Train with QAT (True) or baseline (False)')
+    parser.add_argument('--trainQAT', type=str, default='True', help='Train with QAT (True) or baseline (False)')
     parser.add_argument('--epochs', type=int, default=140, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=3, help='Batch size for training')
-    parser.add_argument('--use_dropout', type=bool, default=True, help='Use dropout during training')
+    parser.add_argument('--use_dropout', type=str, default='True', help='Use dropout during training')
     parser.add_argument('--subset_ratio', type=float, default=0.9, help='Ratio of dataset to use (0.0-1.0)')
     parser.add_argument('--LR', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--load_model', type=str, default=None, help='Path to load existing model')
-    parser.add_argument('--debug', type=bool, default=False, help='Enable debug mode')
+    parser.add_argument('--debug', type=str, default='False', help='Enable debug mode')
+    parser.add_argument('--use_autokeras', type=str, default='False', help='Enable AutoKeras/KerasTuner search (True/False)')
     args = parser.parse_args()
 
 # Configuration constants
@@ -106,6 +107,7 @@ SUBSET_RATIO = args.subset_ratio
 LEARNING_RATE = args.LR
 LOAD_MODEL_PATH = args.load_model
 DEBUG_MODE = True if args.debug=='True' else False
+USE_AUTOKERAS = True if args.use_autokeras=='True' else False
 
 # Model constants
 INPUT_HEIGHT = 1024
@@ -130,6 +132,24 @@ MODEL_CONFIG = {
     'aspp_filters':    128, # Global context MLP filters
     'low_level_proj':  42,  # Low-level feature projection
     'decoder_filters': 160, # Decoder refinement filters
+}
+
+# Scaled-down configuration for KerasTuner hyperparameter search
+# Uses smaller channels to speed up search while maintaining architectural patterns
+TUNER_CONFIG = {
+    # Scaled-down MobileNetV2 channels for faster hyperparameter search
+    'mv2_init': 8,         # Initial stem channels (scaled down)
+    'mv2_c1':   8,         # Stage 1 channels (1/4 resolution)
+    'mv2_c2':   12,        # Stage 2 channels (1/8 resolution)
+    'mv2_c3':   16,        # Stage 3 channels (1/16 resolution)
+    'mv2_c4':   32,        # Stage 4 channels (1/32 resolution)
+    'mv2_c5':   48,        # Additional stage channels (if needed)
+    'mv2_c6':   80,        # Additional stage channels (if needed)
+    'mv2_c7':   160,       # Additional stage channels (if needed)
+    # ASPP and decoder configuration (scaled down)
+    'aspp_filters':    64,  # Global context MLP filters
+    'low_level_proj':  21,  # Low-level feature projection
+    'decoder_filters': 80,  # Decoder refinement filters
 }
 
 # Data paths - Docker mounted paths
@@ -204,48 +224,26 @@ safe_configure_tensorflow(DEBUG_MODE)
 # The tuner build function is defined below and used only when a search is requested.
 
 def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES):
-    """Build a quantized model with tunable bit-widths using QKeras layers.
+    """Build a scaled-down LMIINet model with tunable quantization bit-widths.
 
-    The function exposes two hyperparameters: w_bits and a_bits (weight and
-    activation quantization bitwidths). Returns the quantization configuration.
+    Uses the existing encoder/decoder functions with TUNER_CONFIG for faster hyperparameter search
+    while maintaining the same architectural patterns as the full model.
     """
-    # choose bitwidths with KerasTuner
+    # Choose bitwidths with KerasTuner
     w_bits = hp.Choice("w_bits", [2, 3, 4, 6, 8], default=8)
     a_bits = hp.Choice("a_bits", [2, 3, 4, 6, 8], default=8)
+    
+    print(f"Building model with w_bits={w_bits}, a_bits={a_bits}, input_shape={input_shape}")
 
-    def qbits(b):
-        return f"quantized_bits({b},0,1)"
+    # Create model using existing functions with scaled-down TUNER_CONFIG
+    model = create_cgra4ml_segmentation_model(
+        use_quantization=True,
+        w_bits=w_bits,
+        a_bits=a_bits,
+        config=TUNER_CONFIG
+    )
 
-    x_in = tf.keras.Input(shape=input_shape)
-
-    # Minimal example: a small conv stem and a classifier head. Replace with
-    # a call to your full LMIINet using the same pattern where quantizers are
-    # built from `qbits(w_bits)` and `qbits(a_bits)`.
-    # Keep stride=1 here so the tuner's model preserves input spatial resolution
-    x = QConv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=1, padding='same', use_bias=False,
-                kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='stem_q')(x_in)
-    x = QBatchNormalization(name='stem_q_bn')(x)
-    x = QActivation(qbits(a_bits), name='stem_q_act')(x)
-
-    # Small conv head to produce per-pixel segmentation (keep spatial dims)
-    x = QConv2D(32, kernel_size=3, padding='same', use_bias=False,
-                kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='head_conv1')(x)
-    x = QBatchNormalization(name='head_conv1_bn')(x)
-    x = QActivation(qbits(a_bits), name='head_conv1_act')(x)
-
-    x = QConv2D(32, kernel_size=3, padding='same', use_bias=False,
-                kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='head_conv2')(x)
-    x = QBatchNormalization(name='head_conv2_bn')(x)
-    x = QActivation(qbits(a_bits), name='head_conv2_act')(x)
-
-    # Final 1x1 conv to output per-pixel class probabilities
-    out = QConv2D(num_classes, kernel_size=1, padding='same', use_bias=True,
-                  kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='logits_q')(x)
-    out = Activation('softmax', name='softmax')(out)
-
-    model = tf.keras.Model(inputs=x_in, outputs=out, name='lmiinet_tunable')
-
-    # Compile model so KerasTuner can fit it during search
+    # Compile model
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     model.compile(optimizer=optimizer,
                   loss='categorical_crossentropy',
@@ -254,34 +252,6 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
     return model
 
 # Replace manual quantization config with AutoQKeras scheduler in main training loop
-
-def create_quantized_bits_config(bits, integer_bits, symmetric=True):
-    """
-    Create quantization configuration dictionary based on weight analysis.
-    
-    Args:
-        bits: Total number of bits (8, 16, or 32)
-        integer_bits: Number of integer bits
-        symmetric: Whether to use symmetric quantization
-    
-    Returns:
-        Dictionary with quantization configuration
-    """
-    return {
-        'bits': bits,
-        'integer': integer_bits,
-        'symmetric': symmetric,
-        # Removed 'alpha': 'auto_po2' to prevent unsupported quantizers
-        'use_stochastic_rounding': False  # Disable to avoid learning_phase() issue
-    }
-
-# Quantization configurations for CGRA4ML
-# Activations are important for feature propagation - use 16-bit for accuracy
-quantized_relu_config = {
-    'bits': 16,
-    'integer': 6,
-    'use_stochastic_rounding': False  # Disable to avoid learning_phase() issue
-}
 
 def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_rate=0.1, w_bits=None, a_bits=None):
     """
@@ -339,7 +309,7 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
     
     return x_out
 
-def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_context', dropout_rate=0.1, w_bits=None, a_bits=None):
+def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_context', dropout_rate=0.1, w_bits=None, a_bits=None, config=MODEL_CONFIG):
     """
     CGRA4ML-optimized global context block
     Simplified for better CGRA4ML mapping
@@ -353,7 +323,7 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
     if use_quantization:
         def qbits_w(b): return f"quantized_bits({b},0,1)"
         def qbits_a(b): return f"quantized_bits({b},0,1)"
-        x_mlp = QDense(MODEL_CONFIG['aspp_filters'], use_bias=False,
+        x_mlp = QDense(config['aspp_filters'], use_bias=False,
                         kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_mlp1')(x_pooled)
         x_mlp = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act1')(x_mlp)
         x_mlp = QDense(channels, use_bias=False,
@@ -361,7 +331,7 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
         x_mlp = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act2')(x_mlp)
 
     else:
-        x_mlp = Dense(MODEL_CONFIG['aspp_filters'], use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
+        x_mlp = Dense(config['aspp_filters'], use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
         x_mlp = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_mlp1_bn')(x_mlp)
         x_mlp = Activation('relu', name=f'{name_prefix}_act1')(x_mlp)
         x_mlp = Dense(channels, use_bias=False, name=f'{name_prefix}_mlp2')(x_mlp)
@@ -380,7 +350,7 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
     
     return x_out
 
-def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None):
+def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG):
     """
     CGRA4ML-optimized LMIINet encoder
     Simplified for better CGRA4ML mapping with efficient skip connections
@@ -389,78 +359,78 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None):
     if use_quantization:
         def qbits_w(b): return f"quantized_bits({b},0,1)"
         def qbits_a(b): return f"quantized_bits({b},0,1)"
-        x = QConv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,
+        x = QConv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,
                    kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stem')(inputs)
         x = QBatchNormalization(name='stem_bn')(x)
         x = QActivation(qbits_a(a_bits), name='stem_act')(x)
     else:
-        x = Conv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
+        x = Conv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stem_bn')(x)
         x = Activation('relu', name='stem_act')(x)
     
     # Stage 1: 1/4 resolution (additional stride 2)
     if use_quantization:
-        x = QConv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,
+        x = QConv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,
                    kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage1_downsample')(x)
         x = QBatchNormalization(name='stage1_downsample_bn')(x)
         x = QActivation(qbits_a(a_bits), name='stage1_downsample_act')(x)
     else:
-        x = Conv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
+        x = Conv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage1_downsample_bn')(x)
         x = Activation('relu', name='stage1_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib1', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib2', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage1_global', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c1'], use_quantization, 'stage1_lfib1', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c1'], use_quantization, 'stage1_lfib2', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage1_global', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits, config=config)
     stage1_out = x
     
     # Stage 2: 1/8 resolution
     if use_quantization:
-        x = QConv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,
+        x = QConv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,
                    kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage2_downsample')(x)
         x = QBatchNormalization(name='stage2_downsample_bn')(x)
         x = QActivation(qbits_a(a_bits), name='stage2_downsample_act')(x)
     else:
-        x = Conv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
+        x = Conv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage2_downsample_bn')(x)
         x = Activation('relu', name='stage2_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib1', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib2', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage2_global', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c2'], use_quantization, 'stage2_lfib1', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c2'], use_quantization, 'stage2_lfib2', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage2_global', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits, config=config)
     stage2_out = x
     
     # Stage 3: 1/16 resolution
     if use_quantization:
-        x = QConv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,
+        x = QConv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,
                    kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage3_downsample')(x)
         x = QBatchNormalization(name='stage3_downsample_bn')(x)
         x = QActivation(qbits_a(a_bits), name='stage3_downsample_act')(x)
     else:
-        x = Conv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
+        x = Conv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage3_downsample_bn')(x)
         x = Activation('relu', name='stage3_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib1', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib2', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c3'], use_quantization, 'stage3_lfib1', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c3'], use_quantization, 'stage3_lfib2', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits, config=config)
     stage3_out = x
     
     # Stage 4: 1/32 resolution
     if use_quantization:
-        x = QConv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,
+        x = QConv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,
                    kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage4_downsample')(x)
         x = QBatchNormalization(name='stage4_downsample_bn')(x)
         x = QActivation(qbits_a(a_bits), name='stage4_downsample_act')(x)
     else:
-        x = Conv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
+        x = Conv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage4_downsample_bn')(x)
         x = Activation('relu', name='stage4_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib1', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib2', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c4'], use_quantization, 'stage4_lfib1', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['mv2_c4'], use_quantization, 'stage4_lfib2', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits, config=config)
     stage4_out = x
     
     return stage1_out, stage2_out, stage3_out, stage4_out
 
-def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantization=False, w_bits=None, a_bits=None):
+def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG):
     """
     CGRA4ML-optimized LMIINet decoder
     Simplified skip connections for better CGRA4ML mapping
@@ -471,17 +441,17 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
     # Upsample to stage3 (1/16) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up1')(x)
     x = Concatenate(name='concat1')([x, stage3_out])
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec1_lfib', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['decoder_filters'], use_quantization, 'dec1_lfib', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
 
     # Upsample to stage2 (1/8) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up2')(x)
     x = Concatenate(name='concat2')([x, stage2_out])
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec2_lfib', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['decoder_filters'], use_quantization, 'dec2_lfib', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
 
     # Upsample to stage1 (1/4) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up3')(x)
     x = Concatenate(name='concat3')([x, stage1_out])
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['low_level_proj'], use_quantization, 'dec3_lfib', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, config['low_level_proj'], use_quantization, 'dec3_lfib', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
 
     # Final upsampling to full resolution (1/4 -> 1/1)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='up_final')(x)
@@ -497,7 +467,7 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
 
     return x
 
-def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None):
+def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG):
     """
     Create CGRA4ML-optimized LMIINet model
     """
@@ -508,12 +478,12 @@ def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bit
 
     # CGRA4ML-optimized encoder
     stage1_out, stage2_out, stage3_out, stage4_out = cgra4ml_encoder(
-        inputs, use_quantization, w_bits, a_bits
+        inputs, use_quantization, w_bits, a_bits, config
     )
 
     # CGRA4ML-optimized decoder
     outputs = cgra4ml_decoder(
-        stage1_out, stage2_out, stage3_out, stage4_out, use_quantization, w_bits, a_bits
+        stage1_out, stage2_out, stage3_out, stage4_out, use_quantization, w_bits, a_bits, config
     )
 
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIINet_CGRA4ML")
@@ -1010,20 +980,139 @@ def create_callbacks(model_name, val_generator):
         
     return callbacks
 
+def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG):
+    """Convert a trained float32 model to QAT model by replacing layers and transferring weights."""
+    print("Converting float32 model to QAT model...")
+    qat_model = create_cgra4ml_segmentation_model(use_quantization=True, w_bits=w_bits, a_bits=a_bits, config=config)
+    float32_layers = {layer.name: layer for layer in float32_model.layers}
+    copied_count = 0
+    for qat_layer in qat_model.layers:
+        layer_name = qat_layer.name
+        if layer_name in float32_layers:
+            float32_layer = float32_layers[layer_name]
+            try:
+                if hasattr(qat_layer, 'set_weights') and hasattr(float32_layer, 'get_weights'):
+                    weights = float32_layer.get_weights()
+                    if len(weights) > 0 and all([w.shape == q.shape for w, q in zip(weights, qat_layer.get_weights())]):
+                        qat_layer.set_weights(weights)
+                        copied_count += 1
+            except Exception as e:
+                print(f"Could not transfer weights for {layer_name}: {e}")
+    print(f"Successfully copied weights for {copied_count} layers")
+    return qat_model
+
 def main():
     """Main training function"""
     print("=" * 60)
     print("CGRA4ML LMIINet Semantic Segmentation Training")
     print("=" * 60)
     print(f"Training with QAT: {TRAIN_QAT}")
-    print(f"Epochs: {EPOCHS}")
-    print(f"Batch size: {BATCH_SIZE}")
-    print(f"Learning rate: {LEARNING_RATE}")
-    print(f"Use dropout: {USE_DROPOUT_DURING_TRAINING}")
-    print(f"Subset ratio: {SUBSET_RATIO}")
+    # PHASE 1: Baseline training (float32)
+    if not TRAIN_QAT:
+        print("\n[PHASE 1] Baseline float32 training mode.")
+        if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
+            print(f"Loading baseline model weights from: {LOAD_MODEL_PATH}")
+            model = create_cgra4ml_segmentation_model(use_quantization=False)
+            model.load_weights(LOAD_MODEL_PATH)
+        else:
+            print("Creating new baseline model.")
+            model = create_cgra4ml_segmentation_model(use_quantization=False)
+
+    # PHASE 2: QAT conversion and training
+    elif TRAIN_QAT and not USE_AUTOKERAS:
+        print("\n[PHASE 2] QAT conversion and training mode.")
+        if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
+            print(f"Loading baseline model weights for QAT conversion from: {LOAD_MODEL_PATH}")
+            float32_model = create_cgra4ml_segmentation_model(use_quantization=False)
+            float32_model.load_weights(LOAD_MODEL_PATH)
+            print("Converting baseline weights to QAT model...")
+            model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+        else:
+            print("Creating new QAT model (no baseline weights found).")
+            model = create_cgra4ml_segmentation_model(use_quantization=True)
+
+    # PHASE 3: QAT with AutoKeras quantization search
+    elif TRAIN_QAT and USE_AUTOKERAS:
+        print("\n[PHASE 3] QAT with AutoKeras/KerasTuner quantization search mode.")
+        # Prepare a small subset for search (tuner accepts numpy arrays)
+        x_train, y_train = next(iter(train_generator))
+        num_sub = min(64, x_train.shape[0])
+        x_sub = x_train[:num_sub]
+        y_sub = y_train[:num_sub]
+        target_h = max(32, INPUT_HEIGHT // 4)
+        target_w = max(32, INPUT_WIDTH // 4)
+        x_sub_resized = tf.image.resize(x_sub, (target_h, target_w), method='bilinear').numpy()
+        y_idx = np.argmax(y_sub, axis=-1)[..., np.newaxis].astype(np.float32)
+        y_resized = tf.image.resize(y_idx, (target_h, target_w), method='nearest').numpy().squeeze(-1).astype(np.int32)
+        y_sub_resized = tf.keras.utils.to_categorical(y_resized, num_classes=NUM_CLASSES)
+        tune_dir = os.path.join(MODELS_DIR, f"tune_qkeras_{int(time.time())}")
+        os.makedirs(tune_dir, exist_ok=True)
+        tuner = kt.Hyperband(
+            lambda hp: build_q_model(hp, input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES),
+            objective=kt.Objective("val_mean_iou", direction="max"),
+            max_epochs=20,
+            directory=tune_dir,
+            project_name="lmiinet",
+            executions_per_trial=1,
+        )
+        best_hps = tuner.get_best_hyperparameters(num_trials=1)
+        if best_hps:
+            best_hp = best_hps[0]
+            optimal_w_bits = best_hp.get('w_bits')
+            optimal_a_bits = best_hp.get('a_bits')
+            print(f"KerasTuner search complete. Optimal bit-widths: w_bits={optimal_w_bits}, a_bits={optimal_a_bits}")
+            model = create_cgra4ml_segmentation_model(
+                use_quantization=True,
+                w_bits=optimal_w_bits,
+                a_bits=optimal_a_bits
+            )
+        else:
+            print("AutoKeras/KerasTuner search disabled. Using default quantized model.")
+            model = create_cgra4ml_segmentation_model(use_quantization=True)
+    checkpoint_loaded = False
+    initial_epoch = 0
+    if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
+        epoch_match = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
+        if epoch_match:
+            print(f"Detected epoch checkpoint in filename: {LOAD_MODEL_PATH}")
+            try:
+                model.load_weights(LOAD_MODEL_PATH)
+                loaded_epoch = int(epoch_match.group(1))
+                initial_epoch = loaded_epoch
+                print(f"Loaded weights from epoch {loaded_epoch} successfully! Will resume from epoch {loaded_epoch + 1}.")
+                checkpoint_loaded = True
+            except Exception as e:
+                print(f"Error loading weights from checkpoint: {e}")
+        else:
+            print(f"Loading existing model from: {LOAD_MODEL_PATH}")
+            try:
+                # Try to load as full model first
+                float32_model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
+                print("Loaded full model successfully!")
+                if TRAIN_QAT:
+                    print("Converting loaded float32 model to QAT model...")
+                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                else:
+                    model = float32_model
+            except Exception as e:
+                print(f"Could not load as full model: {e}")
+                # Try to load as weights-only checkpoint
+                if LOAD_MODEL_PATH.endswith('.weights.h5'):
+                    print("Attempting to load weights-only checkpoint...")
+                    # Create float32 model and load weights
+                    float32_model = create_cgra4ml_segmentation_model(use_quantization=False)
+                    float32_model.load_weights(LOAD_MODEL_PATH)
+                    print("Loaded weights successfully!")
+                    if TRAIN_QAT:
+                        print("Converting loaded float32 weights to QAT model...")
+                        model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                    else:
+                        model = float32_model
+                else:
+                    print(f"Unsupported model format: {LOAD_MODEL_PATH}")
+                    print("Continuing with fresh model...")
     
-    # Create data generators
-    print("\nCreating data generators...")
+    # Initialize data generators (user-specified argument order)
     train_generator = CityscapesDataGenerator(
         TRAIN_IMAGES_DIR,
         TRAIN_MASKS_DIR,
@@ -1049,99 +1138,7 @@ def main():
         num_workers=NUM_WORKERS,
         prefetch_batches=8
     )
-    
-    print(f"Training samples: {len(train_generator) * BATCH_SIZE}")
-    print(f"Validation samples: {len(val_generator) * BATCH_SIZE}")
-    
-    # Create model
-    if TRAIN_QAT:
-        print("\nRunning KerasTuner quantization search (weights/activation bitwidths)...")
-        # Prepare a small subset for search (tuner accepts numpy arrays)
-        x_train, y_train = next(iter(train_generator))
-        # Use a small slice to speed up hyperparameter search
-        num_sub = min(64, x_train.shape[0])
-        x_sub = x_train[:num_sub]
-        y_sub = y_train[:num_sub]
 
-        # Tuner model uses smaller input to speed up search; resize images and masks
-        target_h = max(32, INPUT_HEIGHT // 4)  # keep reasonable minimum
-        target_w = max(32, INPUT_WIDTH // 4)
-        x_sub_resized = tf.image.resize(x_sub, (target_h, target_w), method='bilinear').numpy()
-
-        # Convert one-hot masks to indices, resize with nearest, then back to one-hot
-        y_idx = np.argmax(y_sub, axis=-1)[..., np.newaxis].astype(np.float32)
-        y_resized = tf.image.resize(y_idx, (target_h, target_w), method='nearest').numpy().squeeze(-1).astype(np.int32)
-        y_sub_resized = tf.keras.utils.to_categorical(y_resized, num_classes=NUM_CLASSES)
-
-        # Use a timestamped directory inside MODELS_DIR so tuner artifacts are stored with models
-        tune_dir = os.path.join(MODELS_DIR, f"tune_qkeras_{int(time.time())}")
-        # Ensure the directory exists before passing to the tuner
-        os.makedirs(tune_dir, exist_ok=True)
-
-        tuner = kt.Hyperband(
-            lambda hp: build_q_model(hp, input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES),
-            objective=kt.Objective("val_mean_iou", direction="max"),
-            max_epochs=20,
-            directory=tune_dir,
-            project_name="lmiinet",
-            executions_per_trial=1,
-        )
-
-        tuner.search(x_sub_resized, y_sub_resized, epochs=8, validation_split=0.2)
-        
-        # Get best hyperparameters instead of best model
-        best_hps = tuner.get_best_hyperparameters(num_trials=1)
-        if best_hps:
-            best_hp = best_hps[0]
-            optimal_w_bits = best_hp.get('w_bits')
-            optimal_a_bits = best_hp.get('a_bits')
-            print(f"KerasTuner search complete. Optimal bit-widths: w_bits={optimal_w_bits}, a_bits={optimal_a_bits}")
-            
-            # Create full LMIINet model with optimal quantization
-            model = create_cgra4ml_segmentation_model(
-                use_quantization=True, 
-                w_bits=optimal_w_bits, 
-                a_bits=optimal_a_bits
-            )
-        else:
-            print("KerasTuner search returned no hyperparameters. Falling back to default quantized model.")
-            model = create_cgra4ml_segmentation_model(use_quantization=True)
-    else:
-        print("\nCreating CGRA4ML-optimized LMIINet model...")
-        model = create_cgra4ml_segmentation_model(use_quantization=False)
-    
-    # Load model weights from checkpoint if --load_model filename contains epoch
-    checkpoint_loaded = False
-    initial_epoch = 0
-    if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-        epoch_match = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
-        if epoch_match:
-            print(f"Detected epoch checkpoint in filename: {LOAD_MODEL_PATH}")
-            try:
-                model.load_weights(LOAD_MODEL_PATH)
-                loaded_epoch = int(epoch_match.group(1))
-                initial_epoch = loaded_epoch
-                print(f"Loaded weights from epoch {loaded_epoch} successfully! Will resume from epoch {loaded_epoch + 1}.")
-                checkpoint_loaded = True
-            except Exception as e:
-                print(f"Error loading weights from checkpoint: {e}")
-        else:
-            print(f"Loading existing model from: {LOAD_MODEL_PATH}")
-            try:
-                # Try to load as full model first
-                model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
-                print("Loaded full model successfully!")
-            except Exception as e:
-                print(f"Could not load as full model: {e}")
-                # Try to load as weights-only checkpoint
-                if LOAD_MODEL_PATH.endswith('.weights.h5'):
-                    print("Attempting to load weights-only checkpoint...")
-                    model.load_weights(LOAD_MODEL_PATH)
-                    print("Loaded weights successfully!")
-                else:
-                    print(f"Unsupported model format: {LOAD_MODEL_PATH}")
-                    print("Continuing with fresh model...")
-    
     # Compile model
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
@@ -1163,6 +1160,7 @@ def main():
     history = model.fit(
         train_generator,
         epochs=EPOCHS,
+        initial_epoch=initial_epoch,
         validation_data=val_generator,
         callbacks=callbacks,
         verbose=1
