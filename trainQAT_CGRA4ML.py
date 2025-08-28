@@ -42,11 +42,9 @@ CGRA4ML Compatibility:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=True --subset_ratio=0.9 --LR=1e-5
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=140 --batch_size=3 --use_dropout=False --subset_ratio=0.9 
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_01.weights.h5 --trainQAT=False --epochs=70 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=4e-4
 
- Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=80 --batch_size=4 --use_dropout=True --subset_ratio=0.9  --LR=5e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_27.weights.h5 --trainQAT=True --epochs=80 --batch_size=2 --use_dropout=True --subset_ratio=0.9  --LR=5e-4
 """
 
 import os
@@ -107,8 +105,8 @@ LOAD_MODEL_PATH = args.load_model
 DEBUG_MODE = args.debug
 
 # Model constants
-INPUT_HEIGHT = 512
-INPUT_WIDTH = 1024
+INPUT_HEIGHT = 1024
+INPUT_WIDTH = 2048
 NUM_CLASSES = 20
 NUM_WORKERS = 6  # Fixed number of workers for data loading
 
@@ -171,13 +169,13 @@ def safe_configure_tensorflow(debug_mode=False):
                     tf.config.experimental.set_memory_growth(gpu, True)
                 except RuntimeError:
                     pass
-                # try:
-                #     tf.config.set_logical_device_configuration(
-                #         gpu,
-                #         [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 13)],
-                #     )
-                # except RuntimeError:
-                #     pass
+                try:
+                    tf.config.set_logical_device_configuration(
+                        gpu,
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 10)],
+                    )
+                except RuntimeError:
+                    pass
     except Exception as e:
         print(f"GPU config skipped: {e}")
 
@@ -1142,7 +1140,8 @@ def main():
     
     model.compile(
         optimizer=optimizer,
-        loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
+        loss=dice_loss,  # Use dice loss for segmentation
         metrics=[
             "accuracy",
             dice_loss,

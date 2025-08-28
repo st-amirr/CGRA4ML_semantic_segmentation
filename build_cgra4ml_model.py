@@ -642,9 +642,9 @@ def convert_to_cgra4ml(model, config, output_dir):
         print("Creating Hardware configuration...")
         
         # Use CGRA4ML-compatible bit widths (1, 2, 4, 8 bits)
-        bits_input = min(8, config.get('data_width', 16))
-        bits_weights = min(8, config.get('data_width', 16))
-        
+        bits_input = 8
+        bits_weights = 8
+
         # Create Hardware configuration following CGRA4ML pattern
         hw = Hardware(
             processing_elements=(16, 192),  # (rows, columns) of multiply-add units
@@ -699,7 +699,7 @@ def convert_to_cgra4ml(model, config, output_dir):
             # Create XModel with the quantization configuration
             xmodel = XModel(
                 sys_bits=quant_config,  # Quantization configuration object
-                x_int_bits=6,           # Integer bits for input quantization
+                x_int_bits=2,           # Integer bits for input quantization
                 name="lmiinet_cgra4ml_model"
             )
             print("Created XModel with quantization configuration")

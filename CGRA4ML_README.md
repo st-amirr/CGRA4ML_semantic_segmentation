@@ -46,9 +46,49 @@ hls4ml_SS/
 1. **Python 3.8+**
 2. **Git** for cloning CGRA4ML
 3. **Hardware Tools**:
-   - Verilator 5.014+ (for simulation)
-   - Xilinx Vivado (for synthesis)
-   - C++ compiler (GCC/Clang)
+    - Verilator 5.014+ (for simulation)
+    - Xilinx Vivado (for synthesis)
+    - C++ compiler (GCC/Clang)
+
+## Custom Board Integration (NEW)
+
+### How to Add a Custom Board
+
+You can now add and target custom FPGA boards for synthesis and deployment. This enables support for new devices beyond the default CGRA4ML boards.
+
+#### Steps to Add a Custom Board:
+1. **Edit the board database/config file**:
+    - Add your board's part number, pin count, and resource specs to the supported boards list (e.g., `compatible_boards.csv` in `reports/`).
+    - Example entry for Kintex-7:
+      ```csv
+      Part,I/O Pin Count,Available IOBs,LUT Elements,FlipFlops,Block RAMs,Ultra RAMs,DSPs,...
+      xc7k70tfbv676-1,676,400,41000,82000,135,0,240,...
+      ```
+2. **Update synthesis scripts**:
+    - Ensure your board part is referenced in TCL scripts (e.g., `vivado_flow.tcl`).
+    - Example:
+      ```tcl
+      set_part xc7k70tfbv676-1
+      ```
+3. **Model build command**:
+    - Use the `--board` argument (if available) or ensure your custom part is set in the build script.
+    - Example:
+      ```bash
+      python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final.h5 --output_dir ./cgra4ml_models --synthesize --board xc7k70tfbv676-1
+      ```
+4. **Resource validation**:
+    - The build flow will check your board's resources against the model requirements and warn if there are mismatches.
+
+#### Example: Adding Kintex-7 Board
+- Added `xc7k70tfbv676-1` to `compatible_boards.csv` with full resource specs.
+- Updated `vivado_flow.tcl` to use `set_part xc7k70tfbv676-1`.
+- Ran synthesis and confirmed successful build and implementation for Kintex-7.
+
+#### Notes
+- You can add any Xilinx, Intel, or custom FPGA part supported by Vivado or your synthesis tool.
+- For advanced boards, update both the CSV and TCL scripts for full compatibility.
+
+**This project now supports custom board integration for flexible deployment!**
 
 ### Quick Setup (Windows)
 
