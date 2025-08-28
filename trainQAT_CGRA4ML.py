@@ -17,9 +17,21 @@ CGRA4ML Optimizations:
 - Hardware-friendly activation functions
 - Optimized for CGRA4ML's dataflow architecture
 
-Usage:
-    python trainQAT_CGRA4ML.py --trainQAT=False  # Train baseline float32 model
-    python trainQAT_CGRA4ML.py --trainQAT=True   # Apply QAT to trained model
+Recommended Training Schedule:
+1. Train baseline float32 model:
+    python trainQAT_CGRA4ML.py --trainQAT=False
+
+2. Train QAT model (weights & activations quantized):
+    python trainQAT_CGRA4ML.py --trainQAT=True --freeze_bn=True --use_dropout=True
+
+3. (Optional) QAT with AutoKeras quantizer search:
+    python trainQAT_CGRA4ML.py --trainQAT=True --use_autokeras=True --freeze_bn=True --use_dropout=True
+
+4. For last 10 epochs, turn dropout off:
+    python trainQAT_CGRA4ML.py --trainQAT=True --freeze_bn=True --use_dropout=False --epochs=<last_10_epochs>
+
+5. For last 5 epochs, turn batchnorm freezing off:
+    python trainQAT_CGRA4ML.py --trainQAT=True --freeze_bn=False --use_dropout=False --epochs=<last_5_epochs>
 
 Key Features:
 - CGRA4ML-optimized LMIINet architecture
@@ -41,7 +53,7 @@ CGRA4ML Compatibility:
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
-
+Example commands:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_01.weights.h5 --trainQAT=False --epochs=70 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=4e-4
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_20.weights.h5 --trainQAT=True --epochs=80 --batch_size=2 --use_dropout=True --subset_ratio=0.9  --LR=5e-4
@@ -96,9 +108,10 @@ if __name__ == "__main__":
     parser.add_argument('--load_model', type=str, default=None, help='Path to load existing model')
     parser.add_argument('--debug', type=str, default='False', help='Enable debug mode')
     parser.add_argument('--use_autokeras', type=str, default='False', help='Enable AutoKeras/KerasTuner search (True/False)')
+    parser.add_argument('--freeze_bn', type=str, default='False', help='Freeze batch normalization layers during training (True/False)')
     args = parser.parse_args()
 
-# Configuration constants
+ # Configuration constants
 TRAIN_QAT = True if args.trainQAT=='True' else False
 EPOCHS = args.epochs
 BATCH_SIZE = args.batch_size
@@ -108,6 +121,7 @@ LEARNING_RATE = args.LR
 LOAD_MODEL_PATH = args.load_model
 DEBUG_MODE = True if args.debug=='True' else False
 USE_AUTOKERAS = True if args.use_autokeras=='True' else False
+FREEZE_BN = True if args.freeze_bn=='True' else False
 
 # Model constants
 INPUT_HEIGHT = 1024
@@ -514,6 +528,13 @@ def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bit
     )
 
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIINet_CGRA4ML")
+
+    # Freeze batch normalization layers if requested
+    if 'FREEZE_BN' in globals() and FREEZE_BN:
+        for layer in model.layers:
+            if 'batchnorm' in layer.name.lower() or 'bn' in layer.name.lower():
+                if hasattr(layer, 'trainable'):
+                    layer.trainable = False
     return model
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
@@ -1034,6 +1055,34 @@ def main():
     print("CGRA4ML LMIINet Semantic Segmentation Training")
     print("=" * 60)
     print(f"Training with QAT: {TRAIN_QAT}")
+
+    # Initialize data generators (user-specified argument order)
+    train_generator = CityscapesDataGenerator(
+        TRAIN_IMAGES_DIR,
+        TRAIN_MASKS_DIR,
+        batch_size=BATCH_SIZE,
+        subset_ratio=SUBSET_RATIO,
+        target_height=INPUT_HEIGHT,
+        target_width=INPUT_WIDTH,
+        shuffle=True,
+        augment=True,
+        num_workers=NUM_WORKERS,
+        prefetch_batches=8
+    )
+
+    val_generator = CityscapesDataGenerator(
+        VAL_IMAGES_DIR,
+        VAL_MASKS_DIR,
+        batch_size=BATCH_SIZE,
+        subset_ratio=SUBSET_RATIO,
+        target_height=INPUT_HEIGHT,
+        target_width=INPUT_WIDTH,
+        shuffle=False,
+        augment=False,
+        num_workers=NUM_WORKERS,
+        prefetch_batches=8
+    )
+
     # PHASE 1: Baseline training (float32)
     if not TRAIN_QAT:
         print("\n[PHASE 1] Baseline float32 training mode.")
@@ -1061,6 +1110,17 @@ def main():
     # PHASE 3: QAT with AutoKeras quantization search
     elif TRAIN_QAT and USE_AUTOKERAS:
         print("\n[PHASE 3] QAT with AutoKeras/KerasTuner quantization search mode.")
+        # Load QAT weights if available
+        qat_weights_loaded = False
+        if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
+            print(f"Loading QAT model weights for tuner initialization from: {LOAD_MODEL_PATH}")
+            qat_model = create_cgra4ml_segmentation_model(use_quantization=True)
+            try:
+                qat_model.load_weights(LOAD_MODEL_PATH)
+                print("Loaded QAT weights for tuner initialization.")
+                qat_weights_loaded = True
+            except Exception as e:
+                print(f"Error loading QAT weights for tuner: {e}")
         # Prepare a small subset for search (tuner accepts numpy arrays)
         x_train, y_train = next(iter(train_generator))
         num_sub = min(64, x_train.shape[0])
@@ -1082,6 +1142,9 @@ def main():
             project_name="lmiinet",
             executions_per_trial=1,
         )
+        # Optionally, set initial weights for tuner trials
+        if qat_weights_loaded:
+            print("Note: KerasTuner does not natively support weight transfer for each trial, but you can manually set weights in the build function if needed.")
         best_hps = tuner.get_best_hyperparameters(num_trials=1)
         if best_hps:
             best_hp = best_hps[0]
@@ -1093,6 +1156,13 @@ def main():
                 w_bits=optimal_w_bits,
                 a_bits=optimal_a_bits
             )
+            # Optionally, transfer weights from previous QAT model if shapes match
+            if qat_weights_loaded:
+                try:
+                    model.load_weights(LOAD_MODEL_PATH)
+                    print("Transferred QAT weights to optimal quantized model.")
+                except Exception as e:
+                    print(f"Could not transfer QAT weights to optimal model: {e}")
         else:
             print("AutoKeras/KerasTuner search disabled. Using default quantized model.")
             model = create_cgra4ml_segmentation_model(use_quantization=True)
@@ -1139,32 +1209,7 @@ def main():
                     print(f"Unsupported model format: {LOAD_MODEL_PATH}")
                     print("Continuing with fresh model...")
     
-    # Initialize data generators (user-specified argument order)
-    train_generator = CityscapesDataGenerator(
-        TRAIN_IMAGES_DIR,
-        TRAIN_MASKS_DIR,
-        batch_size=BATCH_SIZE,
-        subset_ratio=SUBSET_RATIO,
-        target_height=INPUT_HEIGHT,
-        target_width=INPUT_WIDTH,
-        shuffle=True,
-        augment=True,
-        num_workers=NUM_WORKERS,
-        prefetch_batches=8
-    )
 
-    val_generator = CityscapesDataGenerator(
-        VAL_IMAGES_DIR,
-        VAL_MASKS_DIR,
-        batch_size=BATCH_SIZE,
-        subset_ratio=SUBSET_RATIO,
-        target_height=INPUT_HEIGHT,
-        target_width=INPUT_WIDTH,
-        shuffle=False,
-        augment=False,
-        num_workers=NUM_WORKERS,
-        prefetch_batches=8
-    )
 
     # Compile model
     print("\nCompiling model...")
