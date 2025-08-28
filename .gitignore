@@ -25,3 +25,5 @@ models/*.keras
 cgra4ml/**/*
 cgra4ml_models/**
 cgra4ml_models/**/*
+tune_qkeras/**
+tune_qkeras/**/*

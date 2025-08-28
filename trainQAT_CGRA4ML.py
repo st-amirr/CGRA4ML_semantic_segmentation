@@ -58,6 +58,7 @@ import sys
 import json
 import argparse
 import glob
+import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -78,6 +79,8 @@ import cv2
 from pathlib import Path
 import math
 import matplotlib.pyplot as plt
+# Use KerasTuner for quantizer hyperparameter search instead of AutoQKeras
+import keras_tuner as kt
 from matplotlib.colors import ListedColormap
 import tensorflow.keras.backend as K
 
@@ -95,14 +98,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
 # Configuration constants
-TRAIN_QAT = args.trainQAT
+TRAIN_QAT = True if args.trainQAT=='True' else False
 EPOCHS = args.epochs
 BATCH_SIZE = args.batch_size
-USE_DROPOUT_DURING_TRAINING = args.use_dropout
+USE_DROPOUT_DURING_TRAINING = True if args.use_dropout=='True' else False
 SUBSET_RATIO = args.subset_ratio
 LEARNING_RATE = args.LR
 LOAD_MODEL_PATH = args.load_model
-DEBUG_MODE = args.debug
+DEBUG_MODE = True if args.debug=='True' else False
 
 # Model constants
 INPUT_HEIGHT = 1024
@@ -196,51 +199,61 @@ def safe_configure_tensorflow(debug_mode=False):
 # Call safe TF configuration early
 safe_configure_tensorflow(DEBUG_MODE)
 
-def get_cgra4ml_quantization_config(layer_name, layer_type):
+
+# We'll use KerasTuner to search quantizer bit-widths for weights and activations.
+# The tuner build function is defined below and used only when a search is requested.
+
+def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES):
+    """Build a quantized model with tunable bit-widths using QKeras layers.
+
+    The function exposes two hyperparameters: w_bits and a_bits (weight and
+    activation quantization bitwidths). Returns the quantization configuration.
     """
-    Get intelligent quantization configuration with appropriate bit allocation
-    Uses 32-bit for critical layers, 16-bit for important layers, 8-bit for efficiency
-    """
-    # Output layer - CRITICAL for accuracy, use 32-bit
-    if 'output' in layer_name.lower():
-        return create_quantized_bits_config(32, 6, True)  # 32-bit, 6 int bits for maximum accuracy
-    
-    # Stem layer - CRITICAL for initial feature extraction, use 32-bit
-    elif 'stem' in layer_name.lower():
-        return create_quantized_bits_config(32, 6, True)  # 32-bit, 6 int bits for critical features
-    
-    # BatchNorm moving stats - CRITICAL for stability, use 32-bit
-    elif ('bn' in layer_name.lower() or 'batch' in layer_name.lower()) and ('moving_mean' in layer_name.lower() or 'moving_variance' in layer_name.lower()):
-        # Moving stats are critical for BatchNorm stability
-        return create_quantized_bits_config(32, 8, True)  # 32-bit, 8 int bits for stability
-    
-    # BatchNorm gamma/beta - IMPORTANT for stability, use 16-bit
-    elif 'bn' in layer_name.lower() or 'batch' in layer_name.lower():
-        return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for stability
-    
-    # Early layers (stage1) - IMPORTANT for feature extraction, use 16-bit
-    elif 'stage1' in layer_name.lower():
-        return create_quantized_bits_config(16, 5, True)  # 16-bit, 5 int bits for good range
-    
-    # Middle layers (stage2, stage3) - IMPORTANT for feature processing, use 16-bit
-    elif 'stage2' in layer_name.lower() or 'stage3' in layer_name.lower():
-        return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for good accuracy
-    
-    # Deep layers (stage4) - IMPORTANT for semantic features, use 16-bit
-    elif 'stage4' in layer_name.lower():
-        return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for semantic accuracy
-    
-    # Dense/MLP layers - IMPORTANT for global context, use 16-bit
-    elif 'dense' in layer_name.lower() or 'mlp' in layer_name.lower():
-        return create_quantized_bits_config(16, 4, True)  # 16-bit, 4 int bits for context accuracy
-    
-    # Decoder layers - CRITICAL for reconstruction, use 16-bit
-    elif 'dec' in layer_name.lower() or 'up' in layer_name.lower():
-        return create_quantized_bits_config(16, 5, True)  # 16-bit, 5 int bits for reconstruction accuracy
-    
-    # Default - conservative approach
-    else:
-        return create_quantized_bits_config(16, 6, True)  # 16-bit, 6 int bits
+    # choose bitwidths with KerasTuner
+    w_bits = hp.Choice("w_bits", [2, 3, 4, 6, 8], default=8)
+    a_bits = hp.Choice("a_bits", [2, 3, 4, 6, 8], default=8)
+
+    def qbits(b):
+        return f"quantized_bits({b},0,1)"
+
+    x_in = tf.keras.Input(shape=input_shape)
+
+    # Minimal example: a small conv stem and a classifier head. Replace with
+    # a call to your full LMIINet using the same pattern where quantizers are
+    # built from `qbits(w_bits)` and `qbits(a_bits)`.
+    # Keep stride=1 here so the tuner's model preserves input spatial resolution
+    x = QConv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=1, padding='same', use_bias=False,
+                kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='stem_q')(x_in)
+    x = QBatchNormalization(name='stem_q_bn')(x)
+    x = QActivation(qbits(a_bits), name='stem_q_act')(x)
+
+    # Small conv head to produce per-pixel segmentation (keep spatial dims)
+    x = QConv2D(32, kernel_size=3, padding='same', use_bias=False,
+                kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='head_conv1')(x)
+    x = QBatchNormalization(name='head_conv1_bn')(x)
+    x = QActivation(qbits(a_bits), name='head_conv1_act')(x)
+
+    x = QConv2D(32, kernel_size=3, padding='same', use_bias=False,
+                kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='head_conv2')(x)
+    x = QBatchNormalization(name='head_conv2_bn')(x)
+    x = QActivation(qbits(a_bits), name='head_conv2_act')(x)
+
+    # Final 1x1 conv to output per-pixel class probabilities
+    out = QConv2D(num_classes, kernel_size=1, padding='same', use_bias=True,
+                  kernel_quantizer=qbits(w_bits), bias_quantizer=qbits(min(w_bits, 4)), name='logits_q')(x)
+    out = Activation('softmax', name='softmax')(out)
+
+    model = tf.keras.Model(inputs=x_in, outputs=out, name='lmiinet_tunable')
+
+    # Compile model so KerasTuner can fit it during search
+    optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
+    model.compile(optimizer=optimizer,
+                  loss='categorical_crossentropy',
+                  metrics=["accuracy", dice_loss, mean_iou])
+
+    return model
+
+# Replace manual quantization config with AutoQKeras scheduler in main training loop
 
 def create_quantized_bits_config(bits, integer_bits, symmetric=True):
     """
@@ -270,57 +283,41 @@ quantized_relu_config = {
     'use_stochastic_rounding': False  # Disable to avoid learning_phase() issue
 }
 
-def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_rate=0.1):
+def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_rate=0.1, w_bits=None, a_bits=None):
     """
     CGRA4ML-optimized Lightweight Feature Interaction Bottleneck (LFIB) module
     Simplified for better CGRA4ML mapping with reduced branching complexity
     """
     if use_quantization:
-        conv_config = get_cgra4ml_quantization_config(f'{name_prefix}_conv', 'Conv2D')
-        bn_config = get_cgra4ml_quantization_config(f'{name_prefix}_bn', 'BatchNormalization')
-        act_config = quantized_relu_config
+        def qbits_w(b): return f"quantized_bits({b},0,1)"
+        def qbits_a(b): return f"quantized_bits({b},0,1)"
         
         # Simplified branching for CGRA4ML - reduced complexity
         # Branch 1: Standard convolution (simpler than depthwise for CGRA4ML)
         x1 = QConv2D(filters//2, kernel_size=3, padding='same', use_bias=False,
-                    kernel_quantizer=quantized_bits(**conv_config),
-                    bias_quantizer=quantized_bits(**conv_config),
-                    name=f'{name_prefix}_conv1')(x)
-        x1 = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**bn_config),
-            beta_quantizer=quantized_bits(**bn_config),
-            mean_quantizer=quantized_bits(**bn_config),
-            variance_quantizer=quantized_bits(**bn_config),
-            name=f'{name_prefix}_bn1')(x1)
-        x1 = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act1')(x1)
+            kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_conv1')(x)
+        x1 = QBatchNormalization(name=f'{name_prefix}_bn1')(x1)
+        x1 = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act1')(x1)
         
         # Branch 2: Dilated convolution for context
         x2 = QConv2D(filters//2, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
-                    kernel_quantizer=quantized_bits(**conv_config),
-                    bias_quantizer=quantized_bits(**conv_config),
-                    name=f'{name_prefix}_dilated')(x)
+            kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_dilated')(x)
         
         # Simple concatenation (CGRA4ML friendly)
         x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
         
         # Final 1x1 convolution
         x_out = QConv2D(filters, kernel_size=1, padding='same', use_bias=False,
-                       kernel_quantizer=quantized_bits(**conv_config),
-                       bias_quantizer=quantized_bits(**conv_config),
-                       name=f'{name_prefix}_final')(x_concat)
-        x_out = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**bn_config),
-            beta_quantizer=quantized_bits(**bn_config),
-            mean_quantizer=quantized_bits(**bn_config),
-            variance_quantizer=quantized_bits(**bn_config),
-            name=f'{name_prefix}_bn_final')(x_out)
-        x_out = QActivation(quantized_relu(**act_config), name=f'{name_prefix}_act_final')(x_out)
+                        kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_final')(x_concat)
+        x_out = QBatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
+        x_out = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act_final')(x_out)
+
         
     else:
         # Branch 1: Standard convolution
         x1 = Conv2D(filters//2, kernel_size=3, padding='same', use_bias=False,
                    name=f'{name_prefix}_conv1')(x)
-        x1 = BatchNormalization(name=f'{name_prefix}_bn1')(x1)
+        x1 = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_bn1')(x1)
         x1 = Activation('relu', name=f'{name_prefix}_act1')(x1)
         
         # Branch 2: Dilated convolution
@@ -333,7 +330,7 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
         # Final 1x1 convolution
         x_out = Conv2D(filters, kernel_size=1, padding='same', use_bias=False,
                       name=f'{name_prefix}_final')(x_concat)
-        x_out = BatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
+        x_out = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_bn_final')(x_out)
         x_out = Activation('relu', name=f'{name_prefix}_act_final')(x_out)
     
     # Add dropout if enabled
@@ -342,7 +339,7 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
     
     return x_out
 
-def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_context', dropout_rate=0.1):
+def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_context', dropout_rate=0.1, w_bits=None, a_bits=None):
     """
     CGRA4ML-optimized global context block
     Simplified for better CGRA4ML mapping
@@ -351,25 +348,24 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
     
     # Global average pooling
     x_pooled = GlobalAveragePooling2D(name=f'{name_prefix}_gap')(x)
-    
-        # Simple MLP for global context
+
+    # Simple MLP for global context
     if use_quantization:
-        mlp_config = get_cgra4ml_quantization_config(f'{name_prefix}_mlp', 'Dense')
-        
+        def qbits_w(b): return f"quantized_bits({b},0,1)"
+        def qbits_a(b): return f"quantized_bits({b},0,1)"
         x_mlp = QDense(MODEL_CONFIG['aspp_filters'], use_bias=False,
-                       kernel_quantizer=quantized_bits(**mlp_config),
-                       bias_quantizer=quantized_bits(**mlp_config),
-                       name=f'{name_prefix}_mlp1')(x_pooled)
-        x_mlp = QActivation(quantized_relu(**quantized_relu_config), name=f'{name_prefix}_act1')(x_mlp)
+                        kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_mlp1')(x_pooled)
+        x_mlp = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act1')(x_mlp)
         x_mlp = QDense(channels, use_bias=False,
-                       kernel_quantizer=quantized_bits(**mlp_config),
-                       bias_quantizer=quantized_bits(**mlp_config),
-                       name=f'{name_prefix}_mlp2')(x_mlp)
-        x_mlp = QActivation(quantized_relu(**quantized_relu_config), name=f'{name_prefix}_act2')(x_mlp)
+                        kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_mlp2')(x_mlp)
+        x_mlp = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act2')(x_mlp)
+
     else:
         x_mlp = Dense(MODEL_CONFIG['aspp_filters'], use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
+        x_mlp = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_mlp1_bn')(x_mlp)
         x_mlp = Activation('relu', name=f'{name_prefix}_act1')(x_mlp)
         x_mlp = Dense(channels, use_bias=False, name=f'{name_prefix}_mlp2')(x_mlp)
+        x_mlp = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_mlp2_bn')(x_mlp)
         x_mlp = Activation('relu', name=f'{name_prefix}_act2')(x_mlp)
     
     # Reshape for broadcasting
@@ -384,126 +380,87 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
     
     return x_out
 
-def cgra4ml_encoder(inputs, use_quantization=False):
+def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None):
     """
     CGRA4ML-optimized LMIINet encoder
     Simplified for better CGRA4ML mapping with efficient skip connections
     """
-        # Initial stem
+    # Initial stem
     if use_quantization:
-        stem_config = get_cgra4ml_quantization_config('stem', 'Conv2D')
-        bn_config = get_cgra4ml_quantization_config('stem_bn', 'BatchNormalization')
+        def qbits_w(b): return f"quantized_bits({b},0,1)"
+        def qbits_a(b): return f"quantized_bits({b},0,1)"
         x = QConv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                    kernel_quantizer=quantized_bits(**stem_config),
-                    bias_quantizer=quantized_bits(**stem_config),
-                    name='stem')(inputs)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**bn_config),
-            beta_quantizer=quantized_bits(**bn_config),
-            mean_quantizer=quantized_bits(**bn_config),
-            variance_quantizer=quantized_bits(**bn_config),
-            name='stem_bn')(x)
-        x = QActivation(quantized_relu(**quantized_relu_config), name='stem_act')(x)
+                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stem')(inputs)
+        x = QBatchNormalization(name='stem_bn')(x)
+        x = QActivation(qbits_a(a_bits), name='stem_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
-        x = BatchNormalization(name='stem_bn')(x)
+        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stem_bn')(x)
         x = Activation('relu', name='stem_act')(x)
     
     # Stage 1: 1/4 resolution (additional stride 2)
     if use_quantization:
-        bn_config = get_cgra4ml_quantization_config('stage1_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                    kernel_quantizer=quantized_bits(**stem_config),
-                    bias_quantizer=quantized_bits(**stem_config),
-                    name='stage1_downsample')(x)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**bn_config),
-            beta_quantizer=quantized_bits(**bn_config),
-            mean_quantizer=quantized_bits(**bn_config),
-            variance_quantizer=quantized_bits(**bn_config),
-            name='stage1_downsample_bn')(x)
-        x = QActivation(quantized_relu(**quantized_relu_config), name='stage1_downsample_act')(x)
+                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage1_downsample')(x)
+        x = QBatchNormalization(name='stage1_downsample_bn')(x)
+        x = QActivation(qbits_a(a_bits), name='stage1_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
-        x = BatchNormalization(name='stage1_downsample_bn')(x)
+        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage1_downsample_bn')(x)
         x = Activation('relu', name='stage1_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib1', dropout_rate=0.05)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib2', dropout_rate=0.05)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage1_global', dropout_rate=0.05)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib1', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c1'], use_quantization, 'stage1_lfib2', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage1_global', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
     stage1_out = x
     
     # Stage 2: 1/8 resolution
     if use_quantization:
-        bn_config = get_cgra4ml_quantization_config('stage2_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                    kernel_quantizer=quantized_bits(**stem_config),
-                    bias_quantizer=quantized_bits(**stem_config),
-                    name='stage2_downsample')(x)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**bn_config),
-            beta_quantizer=quantized_bits(**bn_config),
-            mean_quantizer=quantized_bits(**bn_config),
-            variance_quantizer=quantized_bits(**bn_config),
-            name='stage2_downsample_bn')(x)
-        x = QActivation(quantized_relu(**quantized_relu_config), name='stage2_downsample_act')(x)
+                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage2_downsample')(x)
+        x = QBatchNormalization(name='stage2_downsample_bn')(x)
+        x = QActivation(qbits_a(a_bits), name='stage2_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
-        x = BatchNormalization(name='stage2_downsample_bn')(x)
+        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage2_downsample_bn')(x)
         x = Activation('relu', name='stage2_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib1', dropout_rate=0.1)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib2', dropout_rate=0.1)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage2_global', dropout_rate=0.1)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib1', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c2'], use_quantization, 'stage2_lfib2', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage2_global', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
     stage2_out = x
     
     # Stage 3: 1/16 resolution
     if use_quantization:
-        bn_config = get_cgra4ml_quantization_config('stage3_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                    kernel_quantizer=quantized_bits(**stem_config),
-                    bias_quantizer=quantized_bits(**stem_config),
-                    name='stage3_downsample')(x)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**bn_config),
-            beta_quantizer=quantized_bits(**bn_config),
-            mean_quantizer=quantized_bits(**bn_config),
-            variance_quantizer=quantized_bits(**bn_config),
-            name='stage3_downsample_bn')(x)
-        x = QActivation(quantized_relu(**quantized_relu_config), name='stage3_downsample_act')(x)
+                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage3_downsample')(x)
+        x = QBatchNormalization(name='stage3_downsample_bn')(x)
+        x = QActivation(qbits_a(a_bits), name='stage3_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
-        x = BatchNormalization(name='stage3_downsample_bn')(x)
+        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage3_downsample_bn')(x)
         x = Activation('relu', name='stage3_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib1', dropout_rate=0.15)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib2', dropout_rate=0.15)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global', dropout_rate=0.15)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib1', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c3'], use_quantization, 'stage3_lfib2', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
     stage3_out = x
     
     # Stage 4: 1/32 resolution
     if use_quantization:
-        bn_config = get_cgra4ml_quantization_config('stage4_downsample_bn', 'BatchNormalization')
         x = QConv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                    kernel_quantizer=quantized_bits(**stem_config),
-                    bias_quantizer=quantized_bits(**stem_config),
-                    name='stage4_downsample')(x)
-        x = QBatchNormalization(
-            gamma_quantizer=quantized_bits(**bn_config),
-            beta_quantizer=quantized_bits(**bn_config),
-            mean_quantizer=quantized_bits(**bn_config),
-            variance_quantizer=quantized_bits(**bn_config),
-            name='stage4_downsample_bn')(x)
-        x = QActivation(quantized_relu(**quantized_relu_config), name='stage4_downsample_act')(x)
+                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage4_downsample')(x)
+        x = QBatchNormalization(name='stage4_downsample_bn')(x)
+        x = QActivation(qbits_a(a_bits), name='stage4_downsample_act')(x)
     else:
         x = Conv2D(MODEL_CONFIG['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
-        x = BatchNormalization(name='stage4_downsample_bn')(x)
+        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage4_downsample_bn')(x)
         x = Activation('relu', name='stage4_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib1', dropout_rate=0.2)
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib2', dropout_rate=0.2)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global', dropout_rate=0.2)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib1', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['mv2_c4'], use_quantization, 'stage4_lfib2', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
+    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
     stage4_out = x
     
     return stage1_out, stage2_out, stage3_out, stage4_out
 
-def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantization=False):
+def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantization=False, w_bits=None, a_bits=None):
     """
     CGRA4ML-optimized LMIINet decoder
     Simplified skip connections for better CGRA4ML mapping
@@ -514,34 +471,33 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
     # Upsample to stage3 (1/16) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up1')(x)
     x = Concatenate(name='concat1')([x, stage3_out])
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec1_lfib', dropout_rate=0.15)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec1_lfib', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
 
     # Upsample to stage2 (1/8) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up2')(x)
     x = Concatenate(name='concat2')([x, stage2_out])
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec2_lfib', dropout_rate=0.1)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['decoder_filters'], use_quantization, 'dec2_lfib', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
 
     # Upsample to stage1 (1/4) with skip connection
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up3')(x)
     x = Concatenate(name='concat3')([x, stage1_out])
-    x = cgra4ml_lfib_module(x, MODEL_CONFIG['low_level_proj'], use_quantization, 'dec3_lfib', dropout_rate=0.05)
+    x = cgra4ml_lfib_module(x, MODEL_CONFIG['low_level_proj'], use_quantization, 'dec3_lfib', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
 
     # Final upsampling to full resolution (1/4 -> 1/1)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='up_final')(x)
 
     # Final convolution for output
     if use_quantization:
-        output_config = get_cgra4ml_quantization_config('output_conv', 'Conv2D')
-        x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax',
-                   kernel_quantizer=quantized_bits(**output_config),
-                   bias_quantizer=quantized_bits(**output_config),
-                   name='output_conv')(x)
+        def qbits_w(b): return f"quantized_bits({b},0,1)"
+        x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', use_bias=True,
+                       kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='output_conv')(x)
+
     else:
         x = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
 
     return x
 
-def create_cgra4ml_segmentation_model(use_quantization=False):
+def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None):
     """
     Create CGRA4ML-optimized LMIINet model
     """
@@ -552,12 +508,12 @@ def create_cgra4ml_segmentation_model(use_quantization=False):
 
     # CGRA4ML-optimized encoder
     stage1_out, stage2_out, stage3_out, stage4_out = cgra4ml_encoder(
-        inputs, use_quantization
+        inputs, use_quantization, w_bits, a_bits
     )
 
     # CGRA4ML-optimized decoder
     outputs = cgra4ml_decoder(
-        stage1_out, stage2_out, stage3_out, stage4_out, use_quantization
+        stage1_out, stage2_out, stage3_out, stage4_out, use_quantization, w_bits, a_bits
     )
 
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIINet_CGRA4ML")
@@ -1098,14 +1054,66 @@ def main():
     print(f"Validation samples: {len(val_generator) * BATCH_SIZE}")
     
     # Create model
-    print("\nCreating CGRA4ML-optimized LMIINet model...")
-    model = create_cgra4ml_segmentation_model(use_quantization=TRAIN_QAT)
+    if TRAIN_QAT:
+        print("\nRunning KerasTuner quantization search (weights/activation bitwidths)...")
+        # Prepare a small subset for search (tuner accepts numpy arrays)
+        x_train, y_train = next(iter(train_generator))
+        # Use a small slice to speed up hyperparameter search
+        num_sub = min(64, x_train.shape[0])
+        x_sub = x_train[:num_sub]
+        y_sub = y_train[:num_sub]
+
+        # Tuner model uses smaller input to speed up search; resize images and masks
+        target_h = max(32, INPUT_HEIGHT // 4)  # keep reasonable minimum
+        target_w = max(32, INPUT_WIDTH // 4)
+        x_sub_resized = tf.image.resize(x_sub, (target_h, target_w), method='bilinear').numpy()
+
+        # Convert one-hot masks to indices, resize with nearest, then back to one-hot
+        y_idx = np.argmax(y_sub, axis=-1)[..., np.newaxis].astype(np.float32)
+        y_resized = tf.image.resize(y_idx, (target_h, target_w), method='nearest').numpy().squeeze(-1).astype(np.int32)
+        y_sub_resized = tf.keras.utils.to_categorical(y_resized, num_classes=NUM_CLASSES)
+
+        # Use a timestamped directory inside MODELS_DIR so tuner artifacts are stored with models
+        tune_dir = os.path.join(MODELS_DIR, f"tune_qkeras_{int(time.time())}")
+        # Ensure the directory exists before passing to the tuner
+        os.makedirs(tune_dir, exist_ok=True)
+
+        tuner = kt.Hyperband(
+            lambda hp: build_q_model(hp, input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES),
+            objective=kt.Objective("val_mean_iou", direction="max"),
+            max_epochs=20,
+            directory=tune_dir,
+            project_name="lmiinet",
+            executions_per_trial=1,
+        )
+
+        tuner.search(x_sub_resized, y_sub_resized, epochs=8, validation_split=0.2)
+        
+        # Get best hyperparameters instead of best model
+        best_hps = tuner.get_best_hyperparameters(num_trials=1)
+        if best_hps:
+            best_hp = best_hps[0]
+            optimal_w_bits = best_hp.get('w_bits')
+            optimal_a_bits = best_hp.get('a_bits')
+            print(f"KerasTuner search complete. Optimal bit-widths: w_bits={optimal_w_bits}, a_bits={optimal_a_bits}")
+            
+            # Create full LMIINet model with optimal quantization
+            model = create_cgra4ml_segmentation_model(
+                use_quantization=True, 
+                w_bits=optimal_w_bits, 
+                a_bits=optimal_a_bits
+            )
+        else:
+            print("KerasTuner search returned no hyperparameters. Falling back to default quantized model.")
+            model = create_cgra4ml_segmentation_model(use_quantization=True)
+    else:
+        print("\nCreating CGRA4ML-optimized LMIINet model...")
+        model = create_cgra4ml_segmentation_model(use_quantization=False)
     
     # Load model weights from checkpoint if --load_model filename contains epoch
     checkpoint_loaded = False
     initial_epoch = 0
     if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-        import re
         epoch_match = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
         if epoch_match:
             print(f"Detected epoch checkpoint in filename: {LOAD_MODEL_PATH}")
@@ -1137,25 +1145,19 @@ def main():
     # Compile model
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
-    
     model.compile(
         optimizer=optimizer,
-        # loss='categorical_crossentropy',  # Use categorical crossentropy loss
-        loss=dice_loss,  # Use dice loss for segmentation
-        metrics=[
-            "accuracy",
-            dice_loss,
-            mean_iou,
-        ]
+        loss='categorical_crossentropy',
+        metrics=["accuracy", dice_loss, mean_iou]
     )
-    
+
     # Print model summary
     model.summary()
-    
+
     # Create callbacks
     model_name = "cgra4ml_lmiinet_qat" if TRAIN_QAT else "cgra4ml_lmiinet_baseline"
     callbacks = create_callbacks(model_name, val_generator)
-    
+
     # Train model
     print("\nStarting training...")
     history = model.fit(
@@ -1163,15 +1165,13 @@ def main():
         epochs=EPOCHS,
         validation_data=val_generator,
         callbacks=callbacks,
-        verbose=1,
-        initial_epoch=initial_epoch
+        verbose=1
     )
-    
+
     # Save final model (architecture + weights) at the end of training in .h5 format
     final_model_path = os.path.join(MODELS_DIR, f"{model_name}_final.h5")
     print(f"\nSaving final model to: {final_model_path}")
     try:
-        # Save full model (architecture + weights) for CGRA4ML compatibility
         model.save(final_model_path, save_format='h5')
         print("Full model saved successfully!")
     except Exception as e:
