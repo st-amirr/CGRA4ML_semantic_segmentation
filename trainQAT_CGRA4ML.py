@@ -166,6 +166,13 @@ TB_LOGS_DIR = "/workspace/models/tb_logs"
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(TB_LOGS_DIR, exist_ok=True)
 
+# Quantizer helpers for QKeras
+def q_w(i_bits=1):
+    return f"quantized_bits(8, {i_bits}, 1)"  # (total=8, integer=i_bits, signed)
+
+def q_a_relu(maxv=6):
+    return f"quantized_relu(8, {maxv})"
+
 # Configure TensorFlow for optimal performance
 tf.config.optimizer.set_experimental_options({
     'layout_optimizer': False,
@@ -259,30 +266,32 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
     Simplified for better CGRA4ML mapping with reduced branching complexity
     """
     if use_quantization:
-        def qbits_w(b): return f"quantized_bits({b},0,1)"
-        def qbits_a(b): return f"quantized_bits({b},0,1)"
-        
-        # Simplified branching for CGRA4ML - reduced complexity
-        # Branch 1: Standard convolution (simpler than depthwise for CGRA4ML)
-        x1 = QConv2D(filters//2, kernel_size=3, padding='same', use_bias=False,
-            kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_conv1')(x)
-        x1 = QBatchNormalization(name=f'{name_prefix}_bn1')(x1)
-        x1 = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act1')(x1)
-        
-        # Branch 2: Dilated convolution for context
-        x2 = QConv2D(filters//2, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
-            kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_dilated')(x)
-        
-        # Simple concatenation (CGRA4ML friendly)
-        x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
-        
-        # Final 1x1 convolution
-        x_out = QConv2D(filters, kernel_size=1, padding='same', use_bias=False,
-                        kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_final')(x_concat)
-        x_out = QBatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
-        x_out = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act_final')(x_out)
+        # Use i_bits per block type: mid/LFIB: i=0, decoder: i=1
+        i_bits_w = 0 if 'lfib' in name_prefix else 1
+        # Weights quantizer
+        w_quant = q_w(i_bits_w)
+        b_quant = q_w(0)
+        # Activations: always bounded ReLU
+        a_quant = q_a_relu(6)
 
-        
+        # Branch 1: Standard convolution
+        x1 = QConv2D(filters//2, kernel_size=3, padding='same', use_bias=True,
+            kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_conv1')(x)
+        x1 = QBatchNormalization(name=f'{name_prefix}_bn1')(x1)
+        x1 = QActivation(a_quant, name=f'{name_prefix}_act1')(x1)
+
+        # Branch 2: Dilated convolution
+        x2 = QConv2D(filters//2, kernel_size=3, padding='same', dilation_rate=2, use_bias=True,
+            kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_dilated')(x)
+
+        # Concatenate
+        x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
+
+        # Final 1x1 convolution
+        x_out = QConv2D(filters, kernel_size=1, padding='same', use_bias=True,
+                        kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_final')(x_concat)
+        x_out = QBatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
+        x_out = QActivation(a_quant, name=f'{name_prefix}_act_final')(x_out)
     else:
         # Branch 1: Standard convolution
         x1 = Conv2D(filters//2, kernel_size=3, padding='same', use_bias=False,
@@ -321,14 +330,16 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
 
     # Simple MLP for global context
     if use_quantization:
-        def qbits_w(b): return f"quantized_bits({b},0,1)"
-        def qbits_a(b): return f"quantized_bits({b},0,1)"
-        x_mlp = QDense(config['aspp_filters'], use_bias=False,
-                        kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_mlp1')(x_pooled)
-        x_mlp = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act1')(x_mlp)
-        x_mlp = QDense(channels, use_bias=False,
-                        kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name=f'{name_prefix}_mlp2')(x_mlp)
-        x_mlp = QActivation(qbits_a(a_bits), name=f'{name_prefix}_act2')(x_mlp)
+        # Use i_bits=1 for global context weights
+        w_quant = q_w(1)
+        b_quant = q_w(0)
+        a_quant = q_a_relu(6)
+        x_mlp = QDense(config['aspp_filters'], use_bias=True,
+                        kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_mlp1')(x_pooled)
+        x_mlp = QActivation(a_quant, name=f'{name_prefix}_act1')(x_mlp)
+        x_mlp = QDense(channels, use_bias=True,
+                        kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_mlp2')(x_mlp)
+        x_mlp = QActivation(a_quant, name=f'{name_prefix}_act2')(x_mlp)
 
     else:
         x_mlp = Dense(config['aspp_filters'], use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
@@ -357,12 +368,14 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
     """
     # Initial stem
     if use_quantization:
-        def qbits_w(b): return f"quantized_bits({b},0,1)"
-        def qbits_a(b): return f"quantized_bits({b},0,1)"
-        x = QConv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stem')(inputs)
+        # Stem: i_bits=1 for weights
+        w_quant = q_w(1)
+        b_quant = q_w(0)
+        a_quant = q_a_relu(6)
+        x = QConv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=True,
+                   kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stem')(inputs)
         x = QBatchNormalization(name='stem_bn')(x)
-        x = QActivation(qbits_a(a_bits), name='stem_act')(x)
+        x = QActivation(a_quant, name='stem_act')(x)
     else:
         x = Conv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stem_bn')(x)
@@ -370,10 +383,14 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
     
     # Stage 1: 1/4 resolution (additional stride 2)
     if use_quantization:
-        x = QConv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage1_downsample')(x)
+        # Downsample: i_bits=1 for weights
+        w_quant = q_w(1)
+        b_quant = q_w(0)
+        a_quant = q_a_relu(6)
+        x = QConv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=True,
+                   kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage1_downsample')(x)
         x = QBatchNormalization(name='stage1_downsample_bn')(x)
-        x = QActivation(qbits_a(a_bits), name='stage1_downsample_act')(x)
+        x = QActivation(a_quant, name='stage1_downsample_act')(x)
     else:
         x = Conv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage1_downsample_bn')(x)
@@ -385,10 +402,13 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
     
     # Stage 2: 1/8 resolution
     if use_quantization:
-        x = QConv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage2_downsample')(x)
+        w_quant = q_w(1)
+        b_quant = q_w(0)
+        a_quant = q_a_relu(6)
+        x = QConv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=True,
+                   kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage2_downsample')(x)
         x = QBatchNormalization(name='stage2_downsample_bn')(x)
-        x = QActivation(qbits_a(a_bits), name='stage2_downsample_act')(x)
+        x = QActivation(a_quant, name='stage2_downsample_act')(x)
     else:
         x = Conv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage2_downsample_bn')(x)
@@ -400,10 +420,13 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
     
     # Stage 3: 1/16 resolution
     if use_quantization:
-        x = QConv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage3_downsample')(x)
+        w_quant = q_w(1)
+        b_quant = q_w(0)
+        a_quant = q_a_relu(6)
+        x = QConv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=True,
+                   kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage3_downsample')(x)
         x = QBatchNormalization(name='stage3_downsample_bn')(x)
-        x = QActivation(qbits_a(a_bits), name='stage3_downsample_act')(x)
+        x = QActivation(a_quant, name='stage3_downsample_act')(x)
     else:
         x = Conv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage3_downsample_bn')(x)
@@ -415,10 +438,13 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
     
     # Stage 4: 1/32 resolution
     if use_quantization:
-        x = QConv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,
-                   kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='stage4_downsample')(x)
+        w_quant = q_w(1)
+        b_quant = q_w(0)
+        a_quant = q_a_relu(6)
+        x = QConv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=True,
+                   kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage4_downsample')(x)
         x = QBatchNormalization(name='stage4_downsample_bn')(x)
-        x = QActivation(qbits_a(a_bits), name='stage4_downsample_act')(x)
+        x = QActivation(a_quant, name='stage4_downsample_act')(x)
     else:
         x = Conv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
         x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage4_downsample_bn')(x)
@@ -458,9 +484,11 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
 
     # Final convolution for output
     if use_quantization:
-        def qbits_w(b): return f"quantized_bits({b},0,1)"
+        # Output head: i_bits=1 for weights
+        w_quant = q_w(1)
+        b_quant = q_w(0)
         x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', use_bias=True,
-                       kernel_quantizer=qbits_w(w_bits), bias_quantizer=qbits_w(min(w_bits, 4)), name='output_conv')(x)
+                       kernel_quantizer=w_quant, bias_quantizer=b_quant, name='output_conv')(x)
 
     else:
         x = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
