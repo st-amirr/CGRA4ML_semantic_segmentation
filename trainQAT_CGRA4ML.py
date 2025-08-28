@@ -489,10 +489,9 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
         b_quant = q_w(0)
         x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', use_bias=True,
                        kernel_quantizer=w_quant, bias_quantizer=b_quant, name='output_conv')(x)
-
+        x = Activation('softmax', name='output_softmax')(x)
     else:
         x = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
-
     return x
 
 def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG):
