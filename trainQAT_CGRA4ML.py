@@ -124,8 +124,8 @@ USE_AUTOKERAS = True if args.use_autokeras=='True' else False
 FREEZE_BN = True if args.freeze_bn=='True' else False
 
 # Model constants
-INPUT_HEIGHT = 1024
-INPUT_WIDTH = 2048
+INPUT_HEIGHT = 640
+INPUT_WIDTH = 1280
 NUM_CLASSES = 20
 NUM_WORKERS = 6  # Fixed number of workers for data loading
 
@@ -134,18 +134,22 @@ NUM_WORKERS = 6  # Fixed number of workers for data loading
 # and match the original LMIINet parameter count (~2.7M parameters)
 MODEL_CONFIG = {
     # MobileNetV2 channels (fixed to match DeepLabV3+ MobileNetV2 ~2.7M params)
-    'mv2_init': 16,        # Initial stem channels
-    'mv2_c1':   16,        # Stage 1 channels (1/4 resolution)
-    'mv2_c2':   24,        # Stage 2 channels (1/8 resolution)
-    'mv2_c3':   32,        # Stage 3 channels (1/16 resolution)
-    'mv2_c4':   64,        # Stage 4 channels (1/32 resolution)
-    'mv2_c5':   96,        # Additional stage channels (if needed)
+    'mv2_init': 24,        # Initial stem channels
+    'mv2_c1':   24,        # Stage 1 channels (1/4 resolution)
+    'mv2_c2':   32,        # Stage 2 channels (1/8 resolution)
+    'mv2_c3':   38,        # Stage 3 channels (1/16 resolution)
+    'mv2_c4':   96,        # Stage 4 channels (1/32 resolution)
+    'mv2_c5':   128,        # Additional stage channels (if needed)
     'mv2_c6':   160,       # Additional stage channels (if needed)
     'mv2_c7':   320,       # Additional stage channels (if needed)
     # ASPP and decoder configuration
     'aspp_filters':    128, # Global context MLP filters
-    'low_level_proj':  42,  # Low-level feature projection
+    'low_level_proj':  64,  # Low-level feature projection
     'decoder_filters': 160, # Decoder refinement filters
+    # Decoder block filters (parameterized)
+    'dec1_filters': 256,
+    'dec2_filters': 256,
+    'dec3_filters': 256,
 }
 
 # Scaled-down configuration for KerasTuner hyperparameter search
@@ -290,13 +294,13 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
         a_quant = q_a_relu(6)
 
         # Branch 1: Standard convolution
-        x1 = QConv2D(filters//2, kernel_size=3, padding='same', use_bias=True,
+        x1 = QConv2D(filters, kernel_size=3, padding='same', use_bias=True,
             kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_conv1')(x)
         x1 = QBatchNormalization(name=f'{name_prefix}_bn1')(x1)
         x1 = QActivation(a_quant, name=f'{name_prefix}_act1')(x1)
 
         # Branch 2: Dilated convolution
-        x2 = QConv2D(filters//2, kernel_size=3, padding='same', dilation_rate=2, use_bias=True,
+        x2 = QConv2D(filters, kernel_size=3, padding='same', dilation_rate=2, use_bias=True,
             kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_dilated')(x)
 
         # Concatenate
@@ -308,15 +312,15 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
         x_out = QBatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
         x_out = QActivation(a_quant, name=f'{name_prefix}_act_final')(x_out)
     else:
-        # Branch 1: Standard convolution
-        x1 = Conv2D(filters//2, kernel_size=3, padding='same', use_bias=False,
-                   name=f'{name_prefix}_conv1')(x)
+    # Branch 1: Standard convolution
+        x1 = Conv2D(filters, kernel_size=3, padding='same', use_bias=False,
+           name=f'{name_prefix}_conv1')(x)
         x1 = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_bn1')(x1)
         x1 = Activation('relu', name=f'{name_prefix}_act1')(x1)
         
-        # Branch 2: Dilated convolution
-        x2 = Conv2D(filters//2, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
-                   name=f'{name_prefix}_dilated')(x)
+    # Branch 2: Dilated convolution
+        x2 = Conv2D(filters, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
+           name=f'{name_prefix}_dilated')(x)
         
         # Simple concatenation
         x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
@@ -511,7 +515,7 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
     # Upsample to stage3 (1/16) with gated skip fusion
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up1')(x)
     x = gated_fuse(x, stage3_out, 'dec1')
-    x = sep_decoder_block(x, 128, 'dec1', use_quantization, w_bits, a_bits)
+    x = sep_decoder_block(x, config['dec1_filters'], 'dec1', use_quantization, w_bits, a_bits)
 
     # --- Auxiliary head at stage3 (QAT-aware) ---
     if use_quantization:
@@ -529,12 +533,12 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
     # Upsample to stage2 (1/8) with gated skip fusion
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up2')(x)
     x = gated_fuse(x, stage2_out, 'dec2')
-    x = sep_decoder_block(x, 128, 'dec2', use_quantization, w_bits, a_bits)
+    x = sep_decoder_block(x, config['dec2_filters'], 'dec2', use_quantization, w_bits, a_bits)
 
     # Upsample to stage1 (1/4) with gated skip fusion
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up3')(x)
     x = gated_fuse(x, stage1_out, 'dec3')
-    x = sep_decoder_block(x, 64, 'dec3', use_quantization, w_bits, a_bits)
+    x = sep_decoder_block(x, config['dec3_filters'], 'dec3', use_quantization, w_bits, a_bits)
 
     # Final upsampling to full resolution (1/4 -> 1/1)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='up_final')(x)
@@ -791,6 +795,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
 
         batch_images = []
         batch_masks = []
+        batch_masks_aux = []
 
         # Use ThreadPoolExecutor for parallel loading/augmentation
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
@@ -799,8 +804,14 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             if image is not None and mask is not None:
                 batch_images.append(image)
                 batch_masks.append(mask)
+                # Downsample mask for aux3 (1/4 resolution)
+                mask_aux = tf.image.resize(mask, (self.target_height // 4, self.target_width // 4), method='nearest').numpy()
+                batch_masks_aux.append(mask_aux)
 
-        return np.array(batch_images), np.array(batch_masks)
+        return np.array(batch_images), {
+            'output_conv': np.array(batch_masks),
+            'aux3_softmax': np.array(batch_masks_aux)
+        }
 
 def dice_loss(y_true, y_pred, smooth=1e-7):
     """
@@ -1278,20 +1289,22 @@ def main():
     # Compile model
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
-    # Multi-output loss for deep supervision
-    loss = {
-        'output_softmax': 'categorical_crossentropy',
-        'aux3_softmax': 'categorical_crossentropy'
+        # Use correct output names for loss and loss_weights
+    losses = {
+        'output_conv': 'categorical_crossentropy',
+        'aux3_softmax': 'categorical_crossentropy',
     }
     loss_weights = {
-        'output_softmax': 1.0,
-        'aux3_softmax': 0.3
+        'output_conv': 1.0,
+        'aux3_softmax': 0.4,
     }
     model.compile(
         optimizer=optimizer,
-        loss=loss,
+        loss=losses,
         loss_weights=loss_weights,
-        metrics=["accuracy", dice_loss, mean_iou]
+        metrics={
+            'output_conv': ["accuracy", dice_loss, mean_iou],
+        }
     )
 
     # Print model summary
