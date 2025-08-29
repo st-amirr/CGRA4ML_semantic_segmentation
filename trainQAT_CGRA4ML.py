@@ -79,7 +79,7 @@ from tensorflow.keras.preprocessing.image import load_img
 from tensorflow.keras.layers import (
     Input, Conv2D, BatchNormalization, Activation, Dropout, Dense, 
     Add, DepthwiseConv2D, UpSampling2D, Concatenate, GlobalAveragePooling2D, 
-    Reshape, AveragePooling2D, MaxPooling2D
+    Reshape, AveragePooling2D, MaxPooling2D, Multiply, Lambda
 )
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 from qkeras.utils import model_save_quantized_weights
@@ -476,30 +476,71 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
     CGRA4ML-optimized LMIINet decoder
     Simplified skip connections for better CGRA4ML mapping
     """
+    # --- Gated skip fusion helper ---
+    def gated_fuse(dec, skip, name):
+        # Ensure gate and skip convolutions output dec.shape[-1] channels
+        z = Concatenate(name=name+'_cat')([dec, skip])
+        g = Conv2D(dec.shape[-1], 1, use_bias=True, name=name+'_gate1')(z)
+        g = Activation('sigmoid', name=name+'_gate_sig')(g)
+        s1 = Conv2D(dec.shape[-1], 1, use_bias=True, name=name+'_skip1')(skip)
+        return Add(name=name+'_fuse')([
+            Multiply()([g, s1]),
+            Multiply()([Lambda(lambda x: 1-x)(g), dec])
+        ])
+
+    # --- Wider decoder with separable convs ---
+    def sep_decoder_block(x, filters, name, use_quantization=False, w_bits=None, a_bits=None):
+        if use_quantization:
+            w_quant = q_w(1)
+            b_quant = q_w(0)
+            a_quant = q_a_relu(6)
+            x = QDepthwiseConv2D(3, padding='same', use_bias=False, name=name+'_dw', kernel_quantizer=w_quant)(x)
+            x = QConv2D(filters, 1, use_bias=True, name=name+'_pw', kernel_quantizer=w_quant, bias_quantizer=b_quant)(x)
+            x = QBatchNormalization(name=name+'_bn')(x)
+            x = QActivation(a_quant, name=name+'_act')(x)
+        else:
+            x = DepthwiseConv2D(3, padding='same', use_bias=False, name=name+'_dw')(x)
+            x = Conv2D(filters, 1, use_bias=True, name=name+'_pw')(x)
+            x = BatchNormalization(renorm=True, renorm_momentum=0.99, name=name+'_bn')(x)
+            x = Activation('relu', name=name+'_act')(x)
+        return x
+
     # Start from stage4 (1/32 resolution)
     x = stage4_out
 
-    # Upsample to stage3 (1/16) with skip connection
+    # Upsample to stage3 (1/16) with gated skip fusion
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up1')(x)
-    x = Concatenate(name='concat1')([x, stage3_out])
-    x = cgra4ml_lfib_module(x, config['decoder_filters'], use_quantization, 'dec1_lfib', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
+    x = gated_fuse(x, stage3_out, 'dec1')
+    x = sep_decoder_block(x, 128, 'dec1', use_quantization, w_bits, a_bits)
 
-    # Upsample to stage2 (1/8) with skip connection
+    # --- Auxiliary head at stage3 (QAT-aware) ---
+    if use_quantization:
+        w_quant = q_w(1)
+        b_quant = q_w(0)
+        aux3 = QConv2D(NUM_CLASSES, 1, padding='same', use_bias=True, kernel_quantizer=w_quant, bias_quantizer=b_quant, name='aux3_logits')(stage3_out)
+        aux3 = QActivation(q_a_relu(6), name='aux3_relu')(aux3)
+    else:
+        aux3 = Conv2D(NUM_CLASSES, 1, padding='same', use_bias=True, name='aux3_logits')(stage3_out)
+        aux3 = Activation('relu', name='aux3_relu')(aux3)
+    aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up1')(aux3)
+    aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up2')(aux3)
+    aux3 = Activation('softmax', name='aux3_softmax')(aux3)
+
+    # Upsample to stage2 (1/8) with gated skip fusion
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up2')(x)
-    x = Concatenate(name='concat2')([x, stage2_out])
-    x = cgra4ml_lfib_module(x, config['decoder_filters'], use_quantization, 'dec2_lfib', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
+    x = gated_fuse(x, stage2_out, 'dec2')
+    x = sep_decoder_block(x, 128, 'dec2', use_quantization, w_bits, a_bits)
 
-    # Upsample to stage1 (1/4) with skip connection
+    # Upsample to stage1 (1/4) with gated skip fusion
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up3')(x)
-    x = Concatenate(name='concat3')([x, stage1_out])
-    x = cgra4ml_lfib_module(x, config['low_level_proj'], use_quantization, 'dec3_lfib', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
+    x = gated_fuse(x, stage1_out, 'dec3')
+    x = sep_decoder_block(x, 64, 'dec3', use_quantization, w_bits, a_bits)
 
     # Final upsampling to full resolution (1/4 -> 1/1)
     x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='up_final')(x)
 
     # Final convolution for output
     if use_quantization:
-        # Output head: i_bits=1 for weights
         w_quant = q_w(1)
         b_quant = q_w(0)
         x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', use_bias=True,
@@ -507,7 +548,8 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
         x = Activation('softmax', name='output_softmax')(x)
     else:
         x = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
-    return x
+    # Return both main and aux heads
+    return [x, aux3]
 
 def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3)):
     """
@@ -523,11 +565,10 @@ def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bit
         inputs, use_quantization, w_bits, a_bits, config
     )
 
-    # CGRA4ML-optimized decoder
+    # CGRA4ML-optimized decoder (returns [main_head, aux3_head])
     outputs = cgra4ml_decoder(
         stage1_out, stage2_out, stage3_out, stage4_out, use_quantization, w_bits, a_bits, config
     )
-
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIINet_CGRA4ML")
 
     # Freeze batch normalization layers if requested
@@ -1237,10 +1278,19 @@ def main():
     # Compile model
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
+    # Multi-output loss for deep supervision
+    loss = {
+        'output_softmax': 'categorical_crossentropy',
+        'aux3_softmax': 'categorical_crossentropy'
+    }
+    loss_weights = {
+        'output_softmax': 1.0,
+        'aux3_softmax': 0.3
+    }
     model.compile(
         optimizer=optimizer,
-        #loss='categorical_crossentropy',
-        loss=dice_loss,
+        loss=loss,
+        loss_weights=loss_weights,
         metrics=["accuracy", dice_loss, mean_iou]
     )
 
