@@ -833,21 +833,25 @@ def dice_loss(y_true, y_pred, smooth=1e-7):
 
 def mean_iou(y_true, y_pred):
     """
-    Mean IoU metric for semantic segmentation - ignores void class (index 19)
+    Mean IoU metric for semantic segmentation - only considers classes present in ground truth (excludes void=19)
     """
-    # Convert to class predictions
     y_pred = tf.argmax(y_pred, axis=-1)
     y_true = tf.argmax(y_true, axis=-1)
 
-    # Calculate IoU for each class
     ious = []
     for class_id in range(NUM_CLASSES - 1):  # exclude void=19
-        intersection = tf.reduce_sum(tf.cast(tf.logical_and(y_true == class_id, y_pred == class_id), tf.float32))
-        union = tf.reduce_sum(tf.cast(tf.logical_or(y_true == class_id, y_pred == class_id), tf.float32))
-        iou = tf.cond(union > 0, lambda: intersection / union, lambda: 0.0)
+        true_mask = tf.equal(y_true, class_id)
+        pred_mask = tf.equal(y_pred, class_id)
+        intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, pred_mask), tf.float32))
+        union = tf.reduce_sum(tf.cast(tf.logical_or(true_mask, pred_mask), tf.float32))
+        # Only include classes present in ground truth (union > 0)
+        iou = tf.where(union > 0, intersection / union, tf.constant(float('nan')))
         ious.append(iou)
-    
-    return tf.reduce_mean(ious)
+    # Remove NaNs before averaging
+    ious = tf.stack(ious)
+    valid_ious = tf.boolean_mask(ious, ~tf.math.is_nan(ious))
+    result = tf.reduce_mean(valid_ious)
+    return result
 
 # Custom callbacks for better training monitoring
 # class MemoryCleanupCallback(tf.keras.callbacks.Callback):
@@ -925,12 +929,19 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                     try:
                         # Fetch a small validation batch
                         batch = self.val_generator[batch_idx]
-                        if len(batch) == 3:
+                        # Handle dict mask format from generator
+                        if isinstance(batch, tuple) and isinstance(batch[1], dict):
+                            batch_images = batch[0]
+                            batch_masks_dict = batch[1]
+                            batch_masks = batch_masks_dict['output_conv']
+                            # Optionally: batch_masks_aux = batch_masks_dict['aux3_softmax']
+                            batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
+                        elif len(batch) == 3:
                             batch_images, batch_masks, batch_weights = batch
                         else:
                             batch_images, batch_masks = batch
                             batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
-                        
+
                         # Use a smaller batch size for prediction to avoid memory issues
                         if batch_images.shape[0] > 2:
                             batch_images = batch_images[:2]
@@ -940,6 +951,8 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                         # Use eager execution for prediction to avoid XLA compilation
                         with tf.device('/CPU:0'):  # Force CPU execution for prediction
                             predictions = self.model(batch_images, training=False)
+                            if isinstance(predictions, list):
+                                predictions = predictions[0]  # Use main output
                             predictions = predictions.numpy()
 
                         take = min(self.num_samples - saved, batch_images.shape[0])
