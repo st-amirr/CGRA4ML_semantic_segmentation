@@ -261,7 +261,8 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
         use_quantization=True,
         w_bits=w_bits,
         a_bits=a_bits,
-        config=TUNER_CONFIG
+        config=TUNER_CONFIG,
+        input_shape=input_shape
     )
 
     # Compile model
@@ -508,14 +509,14 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
         x = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
     return x
 
-def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG):
+def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3)):
     """
     Create CGRA4ML-optimized LMIINet model
+    input_shape: tuple, e.g. (height, width, channels). If None, uses default.
     """
     tf.keras.backend.clear_session()
 
-    # Input
-    inputs = Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name="input_image")
+    inputs = Input(shape=input_shape, name="input_image")
 
     # CGRA4ML-optimized encoder
     stage1_out, stage2_out, stage3_out, stage4_out = cgra4ml_encoder(
@@ -1098,29 +1099,30 @@ def main():
     elif TRAIN_QAT and not USE_AUTOKERAS:
         print("\n[PHASE 2] QAT conversion and training mode.")
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-            print(f"Loading baseline model weights for QAT conversion from: {LOAD_MODEL_PATH}")
-            float32_model = create_cgra4ml_segmentation_model(use_quantization=False)
-            float32_model.load_weights(LOAD_MODEL_PATH)
-            print("Converting baseline weights to QAT model...")
-            model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+            if 'qat' in os.path.basename(LOAD_MODEL_PATH).lower():
+                print(f"Detected QAT weights file: {LOAD_MODEL_PATH}")
+                model = create_cgra4ml_segmentation_model(use_quantization=True)
+                try:
+                    model.load_weights(LOAD_MODEL_PATH)
+                    print("Loaded QAT weights successfully.")
+                except Exception as e:
+                    print(f"Error loading QAT weights: {e}")
+            else:
+                print(f"Detected baseline weights file: {LOAD_MODEL_PATH}")
+                float32_model = create_cgra4ml_segmentation_model(use_quantization=False)
+                try:
+                    float32_model.load_weights(LOAD_MODEL_PATH)
+                    print("Loaded baseline weights successfully. Converting to QAT model...")
+                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                except Exception as e:
+                    print(f"Error loading baseline weights: {e}")
         else:
-            print("Creating new QAT model (no baseline weights found).")
+            print("Creating new QAT model (no weights found).")
             model = create_cgra4ml_segmentation_model(use_quantization=True)
 
     # PHASE 3: QAT with AutoKeras quantization search
     elif TRAIN_QAT and USE_AUTOKERAS:
         print("\n[PHASE 3] QAT with AutoKeras/KerasTuner quantization search mode.")
-        # Load QAT weights if available
-        qat_weights_loaded = False
-        if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-            print(f"Loading QAT model weights for tuner initialization from: {LOAD_MODEL_PATH}")
-            qat_model = create_cgra4ml_segmentation_model(use_quantization=True)
-            try:
-                qat_model.load_weights(LOAD_MODEL_PATH)
-                print("Loaded QAT weights for tuner initialization.")
-                qat_weights_loaded = True
-            except Exception as e:
-                print(f"Error loading QAT weights for tuner: {e}")
         # Prepare a small subset for search (tuner accepts numpy arrays)
         x_train, y_train = next(iter(train_generator))
         num_sub = min(64, x_train.shape[0])
@@ -1128,6 +1130,18 @@ def main():
         y_sub = y_train[:num_sub]
         target_h = max(32, INPUT_HEIGHT // 4)
         target_w = max(32, INPUT_WIDTH // 4)
+
+        # Load QAT weights if available
+        qat_weights_loaded = False
+        if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
+            print(f"Loading QAT model weights for tuner initialization from: {LOAD_MODEL_PATH}")
+            qat_model = create_cgra4ml_segmentation_model(use_quantization=True, input_shape=(target_h, target_w, 3))
+            try:
+                qat_model.load_weights(LOAD_MODEL_PATH)
+                print("Loaded QAT weights for tuner initialization.")
+                qat_weights_loaded = True
+            except Exception as e:
+                print(f"Error loading QAT weights for tuner: {e}")
         x_sub_resized = tf.image.resize(x_sub, (target_h, target_w), method='bilinear').numpy()
         y_idx = np.argmax(y_sub, axis=-1)[..., np.newaxis].astype(np.float32)
         y_resized = tf.image.resize(y_idx, (target_h, target_w), method='nearest').numpy().squeeze(-1).astype(np.int32)
@@ -1145,6 +1159,14 @@ def main():
         # Optionally, set initial weights for tuner trials
         if qat_weights_loaded:
             print("Note: KerasTuner does not natively support weight transfer for each trial, but you can manually set weights in the build function if needed.")
+        # Actually run the tuner search
+        print("Starting KerasTuner search for optimal quantizer bit-widths...")
+        tuner.search(
+            x_sub_resized, y_sub_resized,
+            epochs=10,
+            validation_split=0.2,
+            verbose=1
+        )
         best_hps = tuner.get_best_hyperparameters(num_trials=1)
         if best_hps:
             best_hp = best_hps[0]
@@ -1154,7 +1176,8 @@ def main():
             model = create_cgra4ml_segmentation_model(
                 use_quantization=True,
                 w_bits=optimal_w_bits,
-                a_bits=optimal_a_bits
+                a_bits=optimal_a_bits,
+                input_shape=(target_h, target_w, 3)
             )
             # Optionally, transfer weights from previous QAT model if shapes match
             if qat_weights_loaded:
@@ -1216,7 +1239,8 @@ def main():
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     model.compile(
         optimizer=optimizer,
-        loss='categorical_crossentropy',
+        #loss='categorical_crossentropy',
+        loss=dice_loss,
         metrics=["accuracy", dice_loss, mean_iou]
     )
 
