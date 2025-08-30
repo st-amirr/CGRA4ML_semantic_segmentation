@@ -73,6 +73,10 @@ import glob
 import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+import os, cv2, multiprocessing
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+cv2.setNumThreads(0)
 import threading
 import time
 from tensorflow.keras.preprocessing.image import load_img
@@ -203,8 +207,8 @@ def safe_configure_tensorflow(debug_mode=False):
     """Safely configure TF threading and GPU options if not already initialized."""
     try:
         n_cores = multiprocessing.cpu_count()
-        tf.config.threading.set_inter_op_parallelism_threads(n_cores)
-        tf.config.threading.set_intra_op_parallelism_threads(n_cores)
+        tf.config.threading.set_inter_op_parallelism_threads(2)
+        tf.config.threading.set_intra_op_parallelism_threads(n_cores // 2)
         tf.config.set_soft_device_placement(True)
     except RuntimeError as e:
         print(f"Skipping thread config (already initialized): {e}")
@@ -673,6 +677,13 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                         min_width=4,
                         p=0.15,
                     ),
+                    # # Random zoom (resized crop) - new augmentation
+                    # A.RandomResizedCrop(
+                    #     size=(self.target_height, self.target_width),
+                    #     scale=(0.5, 1.0),  # Random zoom between 100% and 300%
+                    #     ratio=(0.8, 1.2),
+                    #     p=0.1
+                    # ),
                 ]
             )
         else:
@@ -789,24 +800,20 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             index * self.batch_size : (index + 1) * self.batch_size
         ]
 
-        def process_path(path):
-            image, mask = self.load_and_preprocess_image(path)
-            return image, mask
-
         batch_images = []
         batch_masks = []
         batch_masks_aux = []
-
-        # Use ThreadPoolExecutor for parallel loading/augmentation
-        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-            results = list(executor.map(process_path, batch_paths))
-        for image, mask in results:
-            if image is not None and mask is not None:
-                batch_images.append(image)
-                batch_masks.append(mask)
-                # Downsample mask for aux3 (1/4 resolution)
-                mask_aux = tf.image.resize(mask, (self.target_height // 4, self.target_width // 4), method='nearest').numpy()
-                batch_masks_aux.append(mask_aux)
+        # Load sequentially; parallelism will come from model.fit(workers=...)
+        for path in batch_paths:
+            image, mask = self.load_and_preprocess_image(path)
+            if image is None or mask is None:
+                continue
+            batch_images.append(image)
+            batch_masks.append(mask)
+            mask_aux = tf.image.resize(
+                mask, (self.target_height // 4, self.target_width // 4), method='nearest'
+            ).numpy()
+            batch_masks_aux.append(mask_aux)
 
         return np.array(batch_images), {
             'output_conv': np.array(batch_masks),
@@ -852,16 +859,6 @@ def mean_iou(y_true, y_pred):
     valid_ious = tf.boolean_mask(ious, ~tf.math.is_nan(ious))
     result = tf.reduce_mean(valid_ious)
     return result
-
-# Custom callbacks for better training monitoring
-# class MemoryCleanupCallback(tf.keras.callbacks.Callback):
-#     def on_epoch_end(self, epoch, logs=None):
-#         """Clean up memory at the end of each epoch"""
-#         gc.collect()
-#         # Log memory usage
-#         process = psutil.Process()
-#         memory_usage = process.memory_info().rss / 1024 / 1024  # Convert to MB
-#         print(f"\nMemory usage after epoch {epoch}: {memory_usage:.2f} MB")
 
 class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
     def __init__(self, val_generator, save_dir, num_samples=4, save_frequency=5):
@@ -1055,8 +1052,8 @@ def create_callbacks(model_name, val_generator):
     lr_reducer = ReduceLROnPlateau(
         monitor='val_loss',
         factor=0.5,
-        patience=10,
-        min_lr=1e-7,
+        patience=7,
+        min_lr=1e-5,
         verbose=1
     )
     callbacks.append(lr_reducer)
@@ -1335,7 +1332,9 @@ def main():
         initial_epoch=initial_epoch,
         validation_data=val_generator,
         callbacks=callbacks,
-        verbose=1
+        verbose=1,
+        workers=NUM_WORKERS,
+        max_queue_size=max(8, NUM_WORKERS * 2)
     )
 
     # Save final model (architecture + weights) at the end of training in .h5 format
