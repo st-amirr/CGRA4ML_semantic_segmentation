@@ -54,9 +54,9 @@ CGRA4ML Compatibility:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training tensorboard --logdir="/app/models/tb_logs" --host=0.0.0.0 --port=6006
 
 Example commands:
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_01.weights.h5 --trainQAT=False --epochs=70 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=4e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_20.weights.h5 --trainQAT=True --epochs=80 --batch_size=2 --use_dropout=True --subset_ratio=0.9  --LR=5e-4
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=5e-5 --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
 """
 
 import os
@@ -727,7 +727,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             else:
                 # Map labelIds (34) to our 20-class scheme: 19 trainIds + void=19
                 lid_to_tid = {
-                    7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 17: 5, 18: 5, 19: 6, 20: 7,
+                    7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 14: 4, 15: 2, 16: 2, 17: 5, 18: 5, 19: 6, 20: 7,
                     21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14, 28: 15,
                     31: 16, 32: 17, 33: 18, 29: 13, 30: 13,
                 }
