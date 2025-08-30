@@ -755,13 +755,11 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             # Normalize image
             image = image.astype(np.float32) / 255.0
 
-            # One-hot: map 255 (ignore) to void index 19
-            if mask.dtype != np.uint8:
-                mask = mask.astype(np.uint8)
-            mask_safe = mask.copy()
-            mask_safe[mask_safe == 255] = 19
-            mask = tf.keras.utils.to_categorical(mask_safe, num_classes=NUM_CLASSES)
-
+            # Ensure mask is int32 and ignore label 255 is mapped to ignore_index
+            ignore_index = NUM_CLASSES  # Use NUM_CLASSES as ignore index
+            mask = mask.astype(np.int32)
+            mask[mask == 255] = ignore_index
+            # Do NOT one-hot encode here; keep as int32 for masking in loss/metrics
             return image, mask
 
         except Exception as e:
@@ -810,9 +808,8 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 continue
             batch_images.append(image)
             batch_masks.append(mask)
-            mask_aux = tf.image.resize(
-                mask, (self.target_height // 4, self.target_width // 4), method='nearest'
-            ).numpy()
+            # Downsample mask for aux output, keep as class indices
+            mask_aux = cv2.resize(mask, (self.target_width // 4, self.target_height // 4), interpolation=cv2.INTER_NEAREST)
             batch_masks_aux.append(mask_aux)
 
         return np.array(batch_images), {
@@ -824,37 +821,39 @@ def dice_loss(y_true, y_pred, smooth=1e-7):
     """
     Dice loss for semantic segmentation - measures overlap between predicted and ground truth masks
     """
-    # Ensure consistent tensor types for mixed precision compatibility
-    y_true = tf.cast(y_true, tf.float32)
+    # y_true: (batch, H, W), int32, with ignore_index
+    # y_pred: (batch, H, W, num_classes), float32
+    ignore_index = NUM_CLASSES
+    mask = tf.not_equal(y_true, ignore_index)  # shape (batch, H, W)
+    y_true = tf.where(mask, y_true, 0)  # set ignore pixels to background for one-hot
+    y_true = tf.cast(y_true, tf.int32)
+    y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)
     y_pred = tf.cast(y_pred, tf.float32)
-    
-    # Compute per-class Dice over classes 0..18 (exclude void=19), unweighted
-    y_true_19 = y_true[..., :19]
-    y_pred_19 = y_pred[..., :19]
-    y_true_clipped = K.clip(y_true_19, 0.0, 1.0)
-    y_pred_clipped = K.clip(y_pred_19, 0.0, 1.0)
-    intersection = K.sum(y_true_clipped * y_pred_clipped, axis=[0, 1, 2])
-    sums = K.sum(y_true_clipped, axis=[0, 1, 2]) + K.sum(y_pred_clipped, axis=[0, 1, 2])
+    y_true_onehot = tf.cast(y_true_onehot, tf.float32)
+    mask = tf.cast(mask, tf.float32)
+    # Only consider non-ignored pixels
+    intersection = tf.reduce_sum(y_true_onehot * y_pred * mask[..., None], axis=[0, 1, 2])
+    sums = tf.reduce_sum(y_true_onehot * mask[..., None], axis=[0, 1, 2]) + tf.reduce_sum(y_pred * mask[..., None], axis=[0, 1, 2])
     dice_per_class = (2.0 * intersection + smooth) / (sums + smooth)
-    return K.mean(1.0 - dice_per_class)
+    return tf.reduce_mean(1.0 - dice_per_class)
 
 def mean_iou(y_true, y_pred):
     """
     Mean IoU metric for semantic segmentation - only considers classes present in ground truth (excludes void=19)
     """
+    # y_true: (batch, H, W), int32, with ignore_index
+    # y_pred: (batch, H, W, num_classes), float32
+    ignore_index = NUM_CLASSES
+    mask = tf.not_equal(y_true, ignore_index)
     y_pred = tf.argmax(y_pred, axis=-1)
-    y_true = tf.argmax(y_true, axis=-1)
-
     ious = []
-    for class_id in range(NUM_CLASSES - 1):  # exclude void=19
-        true_mask = tf.equal(y_true, class_id)
-        pred_mask = tf.equal(y_pred, class_id)
+    for class_id in range(NUM_CLASSES):
+        true_mask = tf.logical_and(tf.equal(y_true, class_id), mask)
+        pred_mask = tf.logical_and(tf.equal(y_pred, class_id), mask)
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, pred_mask), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(true_mask, pred_mask), tf.float32))
-        # Only include classes present in ground truth (union > 0)
         iou = tf.where(union > 0, intersection / union, tf.constant(float('nan')))
         ious.append(iou)
-    # Remove NaNs before averaging
     ious = tf.stack(ious)
     valid_ious = tf.boolean_mask(ious, ~tf.math.is_nan(ious))
     result = tf.reduce_mean(valid_ious)
@@ -1299,10 +1298,21 @@ def main():
     # Compile model
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
-        # Use correct output names for loss and loss_weights
+    # Use custom masked loss for both outputs
+    def masked_categorical_crossentropy(y_true, y_pred):
+        ignore_index = NUM_CLASSES
+        mask = tf.not_equal(y_true, ignore_index)
+        y_true = tf.where(mask, y_true, 0)
+        y_true = tf.cast(y_true, tf.int32)
+        y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)
+        loss = tf.keras.losses.categorical_crossentropy(y_true_onehot, y_pred)
+        mask = tf.cast(mask, tf.float32)
+        loss = loss * mask
+        return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-7)
+
     losses = {
-        'output_conv': 'categorical_crossentropy',
-        'aux3_softmax': 'categorical_crossentropy',
+        'output_conv': masked_categorical_crossentropy,
+        'aux3_softmax': masked_categorical_crossentropy,
     }
     loss_weights = {
         'output_conv': 1.0,
