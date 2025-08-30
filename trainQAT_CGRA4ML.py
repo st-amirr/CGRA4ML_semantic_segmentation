@@ -56,7 +56,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Example commands:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=5e-5 --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=5e-4 --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_88.weights.h5
 """
 
 import os
@@ -298,47 +298,47 @@ def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', 
         a_quant = q_a_relu(6)
 
         # Branch 1: Standard convolution
-        x1 = QConv2D(filters, kernel_size=3, padding='same', use_bias=True,
+        x1 = QConv2D(filters, kernel_size=3, padding='same', use_bias=False,
             kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_conv1')(x)
         x1 = QBatchNormalization(name=f'{name_prefix}_bn1')(x1)
         x1 = QActivation(a_quant, name=f'{name_prefix}_act1')(x1)
 
         # Branch 2: Dilated convolution
-        x2 = QConv2D(filters, kernel_size=3, padding='same', dilation_rate=2, use_bias=True,
+        x2 = QConv2D(filters, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
             kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_dilated')(x)
 
         # Concatenate
         x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
 
         # Final 1x1 convolution
-        x_out = QConv2D(filters, kernel_size=1, padding='same', use_bias=True,
-                        kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_final')(x_concat)
+        x_out = QConv2D(filters, kernel_size=1, padding='same', use_bias=False,
+            kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_final')(x_concat)
         x_out = QBatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
         x_out = QActivation(a_quant, name=f'{name_prefix}_act_final')(x_out)
     else:
-    # Branch 1: Standard convolution
+        # Branch 1: Standard convolution
         x1 = Conv2D(filters, kernel_size=3, padding='same', use_bias=False,
-           name=f'{name_prefix}_conv1')(x)
+            name=f'{name_prefix}_conv1')(x)
         x1 = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_bn1')(x1)
         x1 = Activation('relu', name=f'{name_prefix}_act1')(x1)
-        
-    # Branch 2: Dilated convolution
+
+        # Branch 2: Dilated convolution
         x2 = Conv2D(filters, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
-           name=f'{name_prefix}_dilated')(x)
-        
+            name=f'{name_prefix}_dilated')(x)
+
         # Simple concatenation
         x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
-        
+
         # Final 1x1 convolution
         x_out = Conv2D(filters, kernel_size=1, padding='same', use_bias=False,
-                      name=f'{name_prefix}_final')(x_concat)
+            name=f'{name_prefix}_final')(x_concat)
         x_out = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_bn_final')(x_out)
         x_out = Activation('relu', name=f'{name_prefix}_act_final')(x_out)
-    
+
     # Add dropout if enabled
     if USE_DROPOUT_DURING_TRAINING and dropout_rate > 0:
         x_out = Dropout(dropout_rate, name=f'{name_prefix}_dropout')(x_out)
-    
+
     return x_out
 
 def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_context', dropout_rate=0.1, w_bits=None, a_bits=None, config=MODEL_CONFIG):
@@ -357,10 +357,10 @@ def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_
         w_quant = q_w(1)
         b_quant = q_w(0)
         a_quant = q_a_relu(6)
-        x_mlp = QDense(config['aspp_filters'], use_bias=True,
+        x_mlp = QDense(config['aspp_filters'], use_bias=False,  # Updated to use_bias=False
                         kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_mlp1')(x_pooled)
         x_mlp = QActivation(a_quant, name=f'{name_prefix}_act1')(x_mlp)
-        x_mlp = QDense(channels, use_bias=True,
+        x_mlp = QDense(channels, use_bias=False,  # Updated to use_bias=False
                         kernel_quantizer=w_quant, bias_quantizer=b_quant, name=f'{name_prefix}_mlp2')(x_mlp)
         x_mlp = QActivation(a_quant, name=f'{name_prefix}_act2')(x_mlp)
 
@@ -395,7 +395,7 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
         w_quant = q_w(1)
         b_quant = q_w(0)
         a_quant = q_a_relu(6)
-        x = QConv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
                    kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stem')(inputs)
         x = QBatchNormalization(name='stem_bn')(x)
         x = QActivation(a_quant, name='stem_act')(x)
@@ -410,7 +410,7 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
         w_quant = q_w(1)
         b_quant = q_w(0)
         a_quant = q_a_relu(6)
-        x = QConv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
                    kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage1_downsample')(x)
         x = QBatchNormalization(name='stage1_downsample_bn')(x)
         x = QActivation(a_quant, name='stage1_downsample_act')(x)
@@ -428,7 +428,7 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
         w_quant = q_w(1)
         b_quant = q_w(0)
         a_quant = q_a_relu(6)
-        x = QConv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
                    kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage2_downsample')(x)
         x = QBatchNormalization(name='stage2_downsample_bn')(x)
         x = QActivation(a_quant, name='stage2_downsample_act')(x)
@@ -446,7 +446,7 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
         w_quant = q_w(1)
         b_quant = q_w(0)
         a_quant = q_a_relu(6)
-        x = QConv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
                    kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage3_downsample')(x)
         x = QBatchNormalization(name='stage3_downsample_bn')(x)
         x = QActivation(a_quant, name='stage3_downsample_act')(x)
@@ -464,7 +464,7 @@ def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, co
         w_quant = q_w(1)
         b_quant = q_w(0)
         a_quant = q_a_relu(6)
-        x = QConv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
                    kernel_quantizer=w_quant, bias_quantizer=b_quant, name='stage4_downsample')(x)
         x = QBatchNormalization(name='stage4_downsample_bn')(x)
         x = QActivation(a_quant, name='stage4_downsample_act')(x)
@@ -502,7 +502,7 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
             w_quant = q_w(1)
             b_quant = q_w(0)
             a_quant = q_a_relu(6)
-            x = QDepthwiseConv2D(3, padding='same', use_bias=False, name=name+'_dw', kernel_quantizer=w_quant)(x)
+            x = QDepthwiseConv2D(3, padding='same', use_bias=False, name=name+'_dw')(x)  # Removed kernel_quantizer
             x = QConv2D(filters, 1, use_bias=True, name=name+'_pw', kernel_quantizer=w_quant, bias_quantizer=b_quant)(x)
             x = QBatchNormalization(name=name+'_bn')(x)
             x = QActivation(a_quant, name=name+'_act')(x)
@@ -552,8 +552,8 @@ def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantiza
         w_quant = q_w(1)
         b_quant = q_w(0)
         x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', use_bias=True,
-                       kernel_quantizer=w_quant, bias_quantizer=b_quant, name='output_conv')(x)
-        x = Activation('softmax', name='output_softmax')(x)
+                   activation='softmax',  # Folded activation here
+                   kernel_quantizer=w_quant, bias_quantizer=b_quant, name='output_conv')(x)
     else:
         x = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
     # Return both main and aux heads
@@ -1123,21 +1123,37 @@ def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFI
     """Convert a trained float32 model to QAT model by replacing layers and transferring weights."""
     print("Converting float32 model to QAT model...")
     qat_model = create_cgra4ml_segmentation_model(use_quantization=True, w_bits=w_bits, a_bits=a_bits, config=config)
-    float32_layers = {layer.name: layer for layer in float32_model.layers}
-    copied_count = 0
-    for qat_layer in qat_model.layers:
-        layer_name = qat_layer.name
-        if layer_name in float32_layers:
-            float32_layer = float32_layers[layer_name]
-            try:
-                if hasattr(qat_layer, 'set_weights') and hasattr(float32_layer, 'get_weights'):
-                    weights = float32_layer.get_weights()
-                    if len(weights) > 0 and all([w.shape == q.shape for w, q in zip(weights, qat_layer.get_weights())]):
-                        qat_layer.set_weights(weights)
-                        copied_count += 1
-            except Exception as e:
-                print(f"Could not transfer weights for {layer_name}: {e}")
-    print(f"Successfully copied weights for {copied_count} layers")
+    f_layers = {l.name: l for l in float32_model.layers}
+    copied, skipped = 0, []
+
+    for ql in qat_model.layers:
+        fl = f_layers.get(ql.name)
+        if not fl or not hasattr(ql, 'get_weights') or not hasattr(fl, 'get_weights'):
+            continue
+        fw, qw = fl.get_weights(), ql.get_weights()
+
+        try:
+            # exact match
+            if len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
+                ql.set_weights(fw); copied += 1; continue
+
+            # float no-bias -> QAT bias (append zeros)
+            if len(fw) + 1 == len(qw) and all(fw[i].shape == qw[i].shape for i in range(len(fw))):
+                ql.set_weights(fw + [np.zeros_like(qw[-1])]); copied += 1; continue
+
+            # BN renorm (float 7 tensors) -> QBN (4 tensors): take first 4 (gamma, beta, mean, var)
+            if ('bn' in ql.name.lower()) and len(fw) > len(qw):
+                base = fw[:len(qw)]
+                if all(b.shape == q.shape for b, q in zip(base, qw)):
+                    ql.set_weights(base); copied += 1; continue
+
+            skipped.append((ql.name, [w.shape for w in fw], [w.shape for w in qw]))
+        except Exception as e:
+            skipped.append((ql.name, str(e)))
+
+    print(f"Weight transfer coverage: {copied}/{len(qat_model.layers)}")
+    if skipped[:5]:
+        print("Examples of unmatched layers:", skipped[:5])
     return qat_model
 
 def main():
@@ -1204,11 +1220,21 @@ def main():
                     float32_model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded baseline weights successfully. Converting to QAT model...")
                     model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                    # prevent later generic loader from re-loading float weights into QAT model
+                    checkpoint_loaded = True
+                    initial_epoch = 0
+                    m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
+                    if m:
+                        initial_epoch = int(m.group(1))
+                        print(f"Resuming QAT from baseline epoch {initial_epoch} (for logging only).")
                 except Exception as e:
                     print(f"Error loading baseline weights: {e}")
         else:
             print("Creating new QAT model (no weights found).")
             model = create_cgra4ml_segmentation_model(use_quantization=True)
+            # prevent later generic loader from re-loading float weights into QAT model
+            checkpoint_loaded = True
+            initial_epoch = 0
 
     # PHASE 3: QAT with AutoKeras quantization search
     elif TRAIN_QAT and USE_AUTOKERAS:
@@ -1279,9 +1305,10 @@ def main():
         else:
             print("AutoKeras/KerasTuner search disabled. Using default quantized model.")
             model = create_cgra4ml_segmentation_model(use_quantization=True)
-    checkpoint_loaded = False
-    initial_epoch = 0
-    if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
+    checkpoint_loaded = locals().get('checkpoint_loaded', False)
+    initial_epoch = locals().get('initial_epoch', 0)
+
+    if (not checkpoint_loaded) and LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
         epoch_match = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
         if epoch_match:
             print(f"Detected epoch checkpoint in filename: {LOAD_MODEL_PATH}")
@@ -1302,6 +1329,12 @@ def main():
                 if TRAIN_QAT:
                     print("Converting loaded float32 model to QAT model...")
                     model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                    checkpoint_loaded = True
+                    initial_epoch = 0
+                    m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
+                    if m:
+                        initial_epoch = int(m.group(1))
+                        print(f"Resuming QAT from baseline epoch {initial_epoch} (for logging only).")
                 else:
                     model = float32_model
             except Exception as e:
@@ -1316,6 +1349,12 @@ def main():
                     if TRAIN_QAT:
                         print("Converting loaded float32 weights to QAT model...")
                         model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                        checkpoint_loaded = True
+                        initial_epoch = 0
+                        m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
+                        if m:
+                            initial_epoch = int(m.group(1))
+                            print(f"Resuming QAT from baseline epoch {initial_epoch} (for logging only).")
                     else:
                         model = float32_model
                 else:
