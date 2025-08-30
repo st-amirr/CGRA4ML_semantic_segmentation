@@ -633,8 +633,11 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     ),
                     A.HorizontalFlip(p=0.2),
                     A.Rotate(limit=5, p=0.2, border_mode=cv2.BORDER_CONSTANT),
-                    A.ShiftScaleRotate(
-                        shift_limit=0.2, scale_limit=0.2, rotate_limit=20, p=0.1
+                    A.Affine(
+                        scale=(1 - 0.2, 1 + 0.2),
+                        rotate=(-20, 20),
+                        translate_percent=(0.2, 0.2),
+                        p=0.1
                     ),
                     # Color and contrast augmentations - enhanced for lighting variations
                     A.RandomBrightnessContrast(
@@ -651,7 +654,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     ),
                     A.RandomGamma(gamma_limit=(80, 120), p=0.2),
                     # Noise and blur augmentations
-                    A.GaussNoise(var_limit=10.0, p=0.2),
+                    A.GaussNoise(std_range=(0.05, 0.2), mean_range=(0, 0), per_channel=False, p=0.2),
                     A.GaussianBlur(blur_limit=(3, 7), p=0.15),
                     A.MotionBlur(blur_limit=3, p=0.15),
                     # Weather and lighting effects
@@ -669,13 +672,12 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     ),
                     # Occlusion and masking
                     A.CoarseDropout(
-                        max_holes=8,
-                        max_height=16,
-                        max_width=16,
-                        min_holes=1,
-                        min_height=4,
-                        min_width=4,
-                        p=0.15,
+                        num_holes_range=(1, 8),
+                        hole_height_range=(4, 16),
+                        hole_width_range=(4, 16),
+                        fill=0,
+                        fill_mask=0,
+                        p=0.1,
                     ),
                     # # Random zoom (resized crop) - new augmentation
                     # A.RandomResizedCrop(
@@ -959,29 +961,56 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
 
                                 original_img = (batch_images[i] * 255).astype(np.uint8)
 
-                                gt_mask = np.argmax(batch_masks[i], axis=-1)
+
+
+
+                                # Defensive shape checks for mask arrays
+                                gt_mask_arr = batch_masks[i]
+                                pred_arr = predictions[i]
+                                # If mask is not at least 2D, skip
+                                if gt_mask_arr.ndim < 2 or pred_arr.ndim < 2:
+                                    print(f"⚠️  Skipping sample {i}: mask or prediction is not at least 2D (shape: {gt_mask_arr.shape}, {pred_arr.shape})")
+                                    continue
+                                # If mask is one-hot (HxWxC), convert to class indices; if already class indices (HxW), use as-is
+                                if gt_mask_arr.ndim == 3 and gt_mask_arr.shape[-1] == len(self.trainids_colors):
+                                    gt_mask = np.argmax(gt_mask_arr, axis=-1)
+                                elif gt_mask_arr.ndim == 2:
+                                    gt_mask = gt_mask_arr
+                                else:
+                                    print(f"⚠️  Skipping sample {i}: GT mask shape not recognized: {gt_mask_arr.shape}")
+                                    continue
+                                # Same for predictions: if logits/probabilities, convert; if already class indices, use as-is
+                                if pred_arr.ndim == 3 and pred_arr.shape[-1] == len(self.trainids_colors):
+                                    pred_mask = np.argmax(pred_arr, axis=-1)
+                                elif pred_arr.ndim == 2:
+                                    pred_mask = pred_arr
+                                else:
+                                    print(f"⚠️  Skipping sample {i}: prediction shape not recognized: {pred_arr.shape}")
+                                    continue
                                 # Reapply ignore (255) where sample weights are 0
-                                if batch_weights is not None:
+                                if batch_weights is not None and batch_weights[i].shape == gt_mask.shape:
                                     ignore_mask = batch_weights[i] < 0.5
                                     gt_mask_vis = gt_mask.copy()
                                     gt_mask_vis[ignore_mask] = 255
                                 else:
                                     gt_mask_vis = gt_mask
                                 gt_colored = self.colorize_mask(gt_mask_vis)
-
-                                pred_mask = np.argmax(predictions[i], axis=-1)
                                 pred_colored = self.colorize_mask(pred_mask)
-
-                                combined = np.hstack([original_img, gt_colored, pred_colored])
-
+                                # Defensive shape check for original_img
+                                if original_img.ndim != 3 or gt_colored.ndim != 3 or pred_colored.ndim != 3:
+                                    print(f"⚠️  Skipping sample {i}: image or mask not 3D (shapes: {original_img.shape}, {gt_colored.shape}, {pred_colored.shape})")
+                                    continue
+                                try:
+                                    combined = np.hstack([original_img, gt_colored, pred_colored])
+                                except Exception as e:
+                                    print(f"⚠️  Error stacking images for sample {i}: {e}")
+                                    continue
                                 save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
                                 success = cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
-                                
                                 if success:
                                     saved += 1
                                 else:
                                     print(f"⚠️  Failed to save image: {save_path}")
-                                    
                             except Exception as img_error:
                                 print(f"⚠️  Error processing image {i}: {img_error}")
                                 continue
@@ -1039,7 +1068,7 @@ def create_callbacks(model_name, val_generator):
     checkpoint_callback = ModelCheckpoint(
         filepath=checkpoint_path,
         monitor='val_loss',
-        save_best_only=True,
+        save_best_only=False,  # Save every epoch, not just best
         save_weights_only=True,  # Save weights only to avoid Keras format issues
         mode='min',
         verbose=1
@@ -1049,7 +1078,7 @@ def create_callbacks(model_name, val_generator):
     
     # Learning rate reduction
     lr_reducer = ReduceLROnPlateau(
-        monitor='val_loss',
+        monitor='val_output_conv_accuracy',
         factor=0.5,
         patience=7,
         min_lr=1e-5,
@@ -1061,7 +1090,7 @@ def create_callbacks(model_name, val_generator):
     viz_callback = PredictionVisualizationCallback(
         val_generator=val_generator,
         save_dir=viz_dir,
-        num_samples=4,
+        num_samples=6,
         save_frequency=5
     )
     callbacks.append(viz_callback)
