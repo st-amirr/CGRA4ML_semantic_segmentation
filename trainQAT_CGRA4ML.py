@@ -56,7 +56,7 @@ Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4
 Example commands:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
 
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=5e-4 --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_88.weights.h5
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=200 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=5e-4 --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_88.weights.h5
 """
 
 import os
@@ -579,12 +579,6 @@ def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bit
     )
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIINet_CGRA4ML")
 
-    # Freeze batch normalization layers if requested
-    if 'FREEZE_BN' in globals() and FREEZE_BN:
-        for layer in model.layers:
-            if 'batchnorm' in layer.name.lower() or 'bn' in layer.name.lower():
-                if hasattr(layer, 'trainable'):
-                    layer.trainable = False
     return model
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
@@ -861,6 +855,23 @@ def mean_iou(y_true, y_pred):
     result = tf.reduce_mean(valid_ious)
     return result
 
+class BatchNormFreezeCallback(tf.keras.callbacks.Callback):
+    def __init__(self, freeze_bn):
+        super().__init__()
+        self.freeze_bn = freeze_bn
+
+    def on_epoch_begin(self, epoch, logs=None):
+        if self.freeze_bn:
+            # Unfreeze every 5th epoch (epoch numbers are 0-based)
+            unfreeze = ((epoch + 1) % 5 == 0)
+            for layer in self.model.layers:
+                if 'batchnorm' in layer.name.lower() or 'bn' in layer.name.lower():
+                    layer.trainable = not self.freeze_bn or unfreeze
+            if unfreeze:
+                print(f"Unfreezing BN layers for epoch {epoch+1}")
+            else:
+                print(f"Freezing BN layers for epoch {epoch+1}")
+
 class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
     def __init__(self, val_generator, save_dir, num_samples=4, save_frequency=5):
         super().__init__()
@@ -1056,6 +1067,7 @@ class DetailedMetricsCallback(tf.keras.callbacks.Callback):
             print(f"⚠️  Error in DetailedMetricsCallback: {e}")
 
 def create_callbacks(model_name, val_generator):
+
     """Create training callbacks"""
     callbacks = []
     
@@ -1116,6 +1128,10 @@ def create_callbacks(model_name, val_generator):
     # Memory cleanup callback
     # memory_callback = MemoryCleanupCallback()
     # callbacks.append(memory_callback)
+    
+    # Add BN freeze callback if requested
+    if FREEZE_BN:
+        callbacks.append(BatchNormFreezeCallback(FREEZE_BN))
         
     return callbacks
 
