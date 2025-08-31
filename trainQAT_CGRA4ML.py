@@ -129,8 +129,8 @@ USE_AUTOKERAS = True if args.use_autokeras=='True' else False
 FREEZE_BN = True if args.freeze_bn=='True' else False
 
 # Model constants
-INPUT_HEIGHT = 640
-INPUT_WIDTH = 1280
+INPUT_HEIGHT = 512
+INPUT_WIDTH = 1024
 NUM_CLASSES = 20
 NUM_WORKERS = 6  # Fixed number of workers for data loading
 
@@ -140,15 +140,20 @@ NUM_WORKERS = 6  # Fixed number of workers for data loading
 
 # LMIA/LMIINet-style config (~1M params, early encoder + late decoder focus)
 MODEL_CONFIG_LMIA = {
-    'enc1': 32,   # 1/2 resolution
-    'enc2': 64,   # 1/4 resolution
-    'enc3': 96,   # 1/8 resolution
-    'enc4': 128,  # 1/16 resolution
-    'dec1': 128,  # decoder block 1
-    'dec2': 96,   # decoder block 2
-    'dec3': 64,   # decoder block 3
-    'seghead': 32,# segmentation head
-    'num_classes': NUM_CLASSES,
+    'mv2_init': 24,   # stem (H/2)
+    'mv2_c1':   40,   # H/4
+    'mv2_c2':   64,   # H/8
+    'mv2_c3':   64,   # H/16 (LMIINet uses 64)
+    'mv2_c4':   128,  # H/32 (LMIINet uses 128)
+
+    # Decoder width for upsampling steps
+    'dec1_filters': 256,   # After s3→s2 fuse
+    'dec2_filters': 256,   # After s2→s1 fuse
+    'dec3_filters': 256,   # 1/4 refinement
+
+    # SegHead: projecting 1/8, 1/4, 1/2 features
+    'head_proj': 64,   # SegHead 1x1 projection
+    'head_refine': 128,  # Refine projection after DW Conv
 }
 
 # Data paths - Docker mounted paths
@@ -264,6 +269,7 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
 # Replace manual quantization config with AutoQKeras scheduler in main training loop
 
 def lmia_lfib(x, filters, name, dropout=0.0, use_quantization=True):
+    # LMIINet-style fusion block: asymmetric conv + depthwise + pointwise + quantization
     if use_quantization:
         a = QConv2D(filters // 2, (3, 1), padding='same', use_bias=True,
                     kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_a31')(x)
@@ -273,6 +279,7 @@ def lmia_lfib(x, filters, name, dropout=0.0, use_quantization=True):
         a = QActivation(qr, name=f'{name}_a13_act')(a)
         b = QDepthwiseConv2D(3, padding='same', use_bias=False,
                              depthwise_quantizer=kq, name=f'{name}_b_dw')(x)
+        b = QActivation(qr, name=f'{name}_b_dw_act')(b)
         b = QConv2D(filters // 2, 1, padding='same', use_bias=True,
                     kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_b_pw')(b)
         b = QActivation(qr, name=f'{name}_b_pw_act')(b)
@@ -281,12 +288,6 @@ def lmia_lfib(x, filters, name, dropout=0.0, use_quantization=True):
         y = QConv2D(filters, 1, padding='same', use_bias=True,
                     kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_proj')(y)
         y = QActivation(qr, name=f'{name}_proj_act')(y)
-        cc = GlobalAveragePooling2D(name=f'{name}_cc_gap')(x)
-        cc = QDense(filters, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq,
-                    name=f'{name}_cc_fc')(cc)
-        cc = Activation('sigmoid', name=f'{name}_cc_sig')(cc)
-        cc = Reshape((1, 1, filters), name=f'{name}_cc_rs')(cc)
-        y = Multiply(name=f'{name}_cc_mul')([y, cc])
         if dropout and dropout > 0.0:
             y = Dropout(dropout, name=f'{name}_drop')(y)
         return y
@@ -296,64 +297,88 @@ def lmia_lfib(x, filters, name, dropout=0.0, use_quantization=True):
         a = Conv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13')(a)
         a = Activation('relu', name=f'{name}_a13_act')(a)
         b = DepthwiseConv2D(3, padding='same', use_bias=False, name=f'{name}_b_dw')(x)
+        b = Activation('relu', name=f'{name}_b_dw_act')(b)
         b = Conv2D(filters // 2, 1, padding='same', use_bias=True, name=f'{name}_b_pw')(b)
         b = Activation('relu', name=f'{name}_b_pw_act')(b)
         y = Concatenate(name=f'{name}_cat')([a, b])
         y = Activation('relu', name=f'{name}_cat_rq')(y)
         y = Conv2D(filters, 1, padding='same', use_bias=True, name=f'{name}_proj')(y)
         y = Activation('relu', name=f'{name}_proj_act')(y)
-        cc = GlobalAveragePooling2D(name=f'{name}_cc_gap')(x)
-        cc = Dense(filters, use_bias=True, name=f'{name}_cc_fc')(cc)
-        cc = Activation('sigmoid', name=f'{name}_cc_sig')(cc)
-        cc = Reshape((1, 1, filters), name=f'{name}_cc_rs')(cc)
-        y = Multiply(name=f'{name}_cc_mul')([y, cc])
         if dropout and dropout > 0.0:
             y = Dropout(dropout, name=f'{name}_drop')(y)
         return y
 
-def lmia_encoder(inputs, config=MODEL_CONFIG_LMIA, use_quantization=True):
+
+# --- CRU Block Definition ---
+def cru_block(x, filters, name, use_quantization=True):
+    """
+    CRU (Contextual Refinement Unit) for refining the feature maps.
+    - Uses 1x1 convolutions, global average pooling, and feature fusion.
+    """
     if use_quantization:
-        x = QConv2D(config['enc1'], 3, strides=2, padding='same', use_bias=True,
+        global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
+        global_context = QDense(filters, activation='sigmoid', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_context_fc')(global_context)
+        global_context = Reshape((1, 1, filters), name=f'{name}_gap_reshape')(global_context)
+        x_refined = QConv2D(filters, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_conv')(x)
+        x_refined = QActivation(qr, name=f'{name}_act')(x_refined)
+        x_refined = Multiply(name=f'{name}_mul')([x_refined, global_context])
+        return x_refined
+    else:
+        global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
+        global_context = Dense(filters, activation='sigmoid', name=f'{name}_context_fc')(global_context)
+        global_context = Reshape((1, 1, filters), name=f'{name}_gap_reshape')(global_context)
+        x_refined = Conv2D(filters, 1, padding='same', name=f'{name}_conv')(x)
+        x_refined = Activation('relu', name=f'{name}_act')(x_refined)
+        x_refined = Multiply(name=f'{name}_mul')([x_refined, global_context])
+        return x_refined
+
+# --- Encoder with CRU after enc4 ---
+def lmia_encoder(inputs, config=MODEL_CONFIG_LMIA, use_quantization=True):
+    # Use correct config keys for LMIA
+    if use_quantization:
+        x = QConv2D(config['mv2_init'], 3, strides=2, padding='same', use_bias=True,
                     kernel_quantizer=kq, bias_quantizer=bq, name='enc1_conv')(inputs)
         x = QActivation(qr, name='enc1_act')(x)
-        x = lmia_lfib(x, config['enc1'], 'enc1_lfib', dropout=0.05, use_quantization=True)
+        x = lmia_lfib(x, config['mv2_init'], 'enc1_lfib', dropout=0.05, use_quantization=True)
         enc1 = x
-        x = QConv2D(config['enc2'], 3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_c1'], 3, strides=2, padding='same', use_bias=True,
                     kernel_quantizer=kq, bias_quantizer=bq, name='enc2_conv')(x)
         x = QActivation(qr, name='enc2_act')(x)
-        x = lmia_lfib(x, config['enc2'], 'enc2_lfib', dropout=0.05, use_quantization=True)
+        x = lmia_lfib(x, config['mv2_c1'], 'enc2_lfib', dropout=0.05, use_quantization=True)
         enc2 = x
-        x = QConv2D(config['enc3'], 3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_c2'], 3, strides=2, padding='same', use_bias=True,
                     kernel_quantizer=kq, bias_quantizer=bq, name='enc3_conv')(x)
         x = QActivation(qr, name='enc3_act')(x)
-        x = lmia_lfib(x, config['enc3'], 'enc3_lfib', dropout=0.1, use_quantization=True)
+        x = lmia_lfib(x, config['mv2_c2'], 'enc3_lfib', dropout=0.1, use_quantization=True)
         enc3 = x
-        x = QConv2D(config['enc4'], 3, strides=2, padding='same', use_bias=True,
+        x = QConv2D(config['mv2_c3'], 3, strides=2, padding='same', use_bias=True,
                     kernel_quantizer=kq, bias_quantizer=bq, name='enc4_conv')(x)
         x = QActivation(qr, name='enc4_act')(x)
-        x = lmia_lfib(x, config['enc4'], 'enc4_lfib', dropout=0.15, use_quantization=True)
-        enc4 = x
+        x = lmia_lfib(x, config['mv2_c3'], 'enc4_lfib', dropout=0.15, use_quantization=True)
+        # Apply CRU after last encoder stage
+        enc4 = cru_block(x, config['mv2_c4'], 'enc4_cru', use_quantization=True)
         return enc1, enc2, enc3, enc4
     else:
-        x = Conv2D(config['enc1'], 3, strides=2, padding='same', use_bias=True, name='enc1_conv')(inputs)
+        x = Conv2D(config['mv2_init'], 3, strides=2, padding='same', use_bias=True, name='enc1_conv')(inputs)
         x = Activation('relu', name='enc1_act')(x)
-        x = lmia_lfib(x, config['enc1'], 'enc1_lfib', dropout=0.05, use_quantization=False)
+        x = lmia_lfib(x, config['mv2_init'], 'enc1_lfib', dropout=0.05, use_quantization=False)
         enc1 = x
-        x = Conv2D(config['enc2'], 3, strides=2, padding='same', use_bias=True, name='enc2_conv')(x)
+        x = Conv2D(config['mv2_c1'], 3, strides=2, padding='same', use_bias=True, name='enc2_conv')(x)
         x = Activation('relu', name='enc2_act')(x)
-        x = lmia_lfib(x, config['enc2'], 'enc2_lfib', dropout=0.05, use_quantization=False)
+        x = lmia_lfib(x, config['mv2_c1'], 'enc2_lfib', dropout=0.05, use_quantization=False)
         enc2 = x
-        x = Conv2D(config['enc3'], 3, strides=2, padding='same', use_bias=True, name='enc3_conv')(x)
+        x = Conv2D(config['mv2_c2'], 3, strides=2, padding='same', use_bias=True, name='enc3_conv')(x)
         x = Activation('relu', name='enc3_act')(x)
-        x = lmia_lfib(x, config['enc3'], 'enc3_lfib', dropout=0.1, use_quantization=False)
+        x = lmia_lfib(x, config['mv2_c2'], 'enc3_lfib', dropout=0.1, use_quantization=False)
         enc3 = x
-        x = Conv2D(config['enc4'], 3, strides=2, padding='same', use_bias=True, name='enc4_conv')(x)
+        x = Conv2D(config['mv2_c3'], 3, strides=2, padding='same', use_bias=True, name='enc4_conv')(x)
         x = Activation('relu', name='enc4_act')(x)
-        x = lmia_lfib(x, config['enc4'], 'enc4_lfib', dropout=0.15, use_quantization=False)
-        enc4 = x
+        x = lmia_lfib(x, config['mv2_c3'], 'enc4_lfib', dropout=0.15, use_quantization=False)
+        # Apply CRU after last encoder stage
+        enc4 = cru_block(x, config['mv2_c4'], 'enc4_cru', use_quantization=False)
         return enc1, enc2, enc3, enc4
 
-def lmia_decoder(enc1, enc2, enc3, enc4, config=MODEL_CONFIG_LMIA, use_quantization=True):
+def lmia_decoder(enc1, enc2, enc3, enc4, config=MODEL_CONFIG_LMIA, use_quantization=True, num_classes=NUM_CLASSES):
     def gated_fuse(dec, skip, name):
         if use_quantization:
             z = Concatenate(name=f'{name}_cat')([dec, skip])
@@ -393,32 +418,32 @@ def lmia_decoder(enc1, enc2, enc3, enc4, config=MODEL_CONFIG_LMIA, use_quantizat
     x = enc4
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec1_up')(x)
     x = gated_fuse(x, enc3, 'dec1')
-    x = sep_decoder_block(x, config['dec1'], 'dec1')
+    x = sep_decoder_block(x, config['dec1_filters'], 'dec1')
     if use_quantization:
-        aux3 = QConv2D(config['num_classes'], 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='aux3_logits')(enc3)
+        aux3 = QConv2D(num_classes, 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='aux3_logits')(enc3)
         aux3 = QActivation(qr, name='aux3_relu')(aux3)
     else:
-        aux3 = Conv2D(config['num_classes'], 1, padding='same', use_bias=True, name='aux3_logits')(enc3)
+        aux3 = Conv2D(num_classes, 1, padding='same', use_bias=True, name='aux3_logits')(enc3)
         aux3 = Activation('relu', name='aux3_relu')(aux3)
     aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up1')(aux3)
     aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up2')(aux3)
     aux3 = Activation('softmax', name='aux3_softmax')(aux3)
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec2_up')(x)
     x = gated_fuse(x, enc2, 'dec2')
-    x = sep_decoder_block(x, config['dec2'], 'dec2')
+    x = sep_decoder_block(x, config['dec2_filters'], 'dec2')
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec3_up')(x)
     x = gated_fuse(x, enc1, 'dec3')
-    x = sep_decoder_block(x, config['dec3'], 'dec3')
+    x = sep_decoder_block(x, config['dec3_filters'], 'dec3')
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='seghead_up')(x)
     if use_quantization:
-        x = QConv2D(config['seghead'], 3, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='seghead_conv')(x)
+        x = QConv2D(config['head_proj'], 3, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='seghead_conv')(x)
         x = QActivation(qr, name='seghead_act')(x)
-        x = QConv2D(config['num_classes'], 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='output_logits')(x)
+        x = QConv2D(num_classes, 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='output_logits')(x)
         x = QActivation(qb, name='output_logits_rq')(x)
     else:
-        x = Conv2D(config['seghead'], 3, padding='same', use_bias=True, name='seghead_conv')(x)
+        x = Conv2D(config['head_proj'], 3, padding='same', use_bias=True, name='seghead_conv')(x)
         x = Activation('relu', name='seghead_act')(x)
-        x = Conv2D(config['num_classes'], 1, padding='same', use_bias=True, name='output_logits')(x)
+        x = Conv2D(num_classes, 1, padding='same', use_bias=True, name='output_logits')(x)
     x = Activation('softmax', name='output_softmax')(x)
     return [x, aux3]
 
@@ -427,7 +452,7 @@ def create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), n
     tf.keras.backend.clear_session()
     inputs = Input(shape=input_shape, name="input_image")
     enc1, enc2, enc3, enc4 = lmia_encoder(inputs, config, use_quantization=use_quantization)
-    outputs = lmia_decoder(enc1, enc2, enc3, enc4, config, use_quantization=use_quantization)
+    outputs = lmia_decoder(enc1, enc2, enc3, enc4, config, use_quantization=use_quantization, num_classes=num_classes)
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIA_CGRA4ML")
     return model
 
@@ -652,14 +677,16 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             image, mask = self.load_and_preprocess_image(path)
             if image is None or mask is None:
                 continue
+            # Main mask: [INPUT_HEIGHT, INPUT_WIDTH]
+            mask_main = cv2.resize(mask, (self.target_width, self.target_height), interpolation=cv2.INTER_NEAREST)
+            # Aux mask: [INPUT_HEIGHT // 2, INPUT_WIDTH // 2] (matches aux output)
+            mask_aux = cv2.resize(mask, (self.target_width // 2, self.target_height // 2), interpolation=cv2.INTER_NEAREST)
             batch_images.append(image)
-            batch_masks.append(mask)
-            # Downsample mask for aux output, keep as class indices
-            mask_aux = cv2.resize(mask, (self.target_width // 4, self.target_height // 4), interpolation=cv2.INTER_NEAREST)
+            batch_masks.append(mask_main)
             batch_masks_aux.append(mask_aux)
 
         return np.array(batch_images), {
-            'output_conv': np.array(batch_masks),
+            'output_softmax': np.array(batch_masks),
             'aux3_softmax': np.array(batch_masks_aux)
         }
 
@@ -1231,22 +1258,30 @@ def main():
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     # Use custom masked loss for both outputs
     def masked_categorical_crossentropy(y_true, y_pred):
+        """
+        Masked categorical crossentropy for semantic segmentation with ignore index.
+        Handles both integer and one-hot masks robustly.
+        """
         ignore_index = NUM_CLASSES
         mask = tf.not_equal(y_true, ignore_index)
         y_true = tf.where(mask, y_true, 0)
-        y_true = tf.cast(y_true, tf.int32)
-        y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)
+        # Always one-hot encode if rank is 3
+        if tf.rank(y_true) == 3:
+            y_true = tf.cast(y_true, tf.int32)
+            y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)
+        else:
+            y_true_onehot = tf.cast(y_true, tf.float32)
         loss = tf.keras.losses.categorical_crossentropy(y_true_onehot, y_pred)
         mask = tf.cast(mask, tf.float32)
         loss = loss * mask
         return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-7)
 
     losses = {
-        'output_conv': masked_categorical_crossentropy,
+        'output_softmax': masked_categorical_crossentropy,
         'aux3_softmax': masked_categorical_crossentropy,
     }
     loss_weights = {
-        'output_conv': 1.0,
+        'output_softmax': 1.0,
         'aux3_softmax': 0.4,
     }
     model.compile(
@@ -1254,7 +1289,7 @@ def main():
         loss=losses,
         loss_weights=loss_weights,
         metrics={
-            'output_conv': ["accuracy", dice_loss, mean_iou],
+            'output_softmax': ["accuracy", dice_loss, mean_iou],
         }
     )
 
