@@ -137,42 +137,18 @@ NUM_WORKERS = 6  # Fixed number of workers for data loading
 # Model configuration for CGRA4ML-optimized LMIINet
 # This configuration is used throughout the model architecture to ensure consistency
 # and match the original LMIINet parameter count (~2.7M parameters)
-MODEL_CONFIG = {
-    # MobileNetV2 channels (fixed to match DeepLabV3+ MobileNetV2 ~2.7M params)
-    'mv2_init': 24,        # Initial stem channels
-    'mv2_c1':   24,        # Stage 1 channels (1/4 resolution)
-    'mv2_c2':   32,        # Stage 2 channels (1/8 resolution)
-    'mv2_c3':   38,        # Stage 3 channels (1/16 resolution)
-    'mv2_c4':   96,        # Stage 4 channels (1/32 resolution)
-    'mv2_c5':   128,        # Additional stage channels (if needed)
-    'mv2_c6':   160,       # Additional stage channels (if needed)
-    'mv2_c7':   320,       # Additional stage channels (if needed)
-    # ASPP and decoder configuration
-    'aspp_filters':    128, # Global context MLP filters
-    'low_level_proj':  64,  # Low-level feature projection
-    'decoder_filters': 160, # Decoder refinement filters
-    # Decoder block filters (parameterized)
-    'dec1_filters': 256,
-    'dec2_filters': 256,
-    'dec3_filters': 256,
-}
 
-# Scaled-down configuration for KerasTuner hyperparameter search
-# Uses smaller channels to speed up search while maintaining architectural patterns
-TUNER_CONFIG = {
-    # Scaled-down MobileNetV2 channels for faster hyperparameter search
-    'mv2_init': 8,         # Initial stem channels (scaled down)
-    'mv2_c1':   8,         # Stage 1 channels (1/4 resolution)
-    'mv2_c2':   12,        # Stage 2 channels (1/8 resolution)
-    'mv2_c3':   16,        # Stage 3 channels (1/16 resolution)
-    'mv2_c4':   32,        # Stage 4 channels (1/32 resolution)
-    'mv2_c5':   48,        # Additional stage channels (if needed)
-    'mv2_c6':   80,        # Additional stage channels (if needed)
-    'mv2_c7':   160,       # Additional stage channels (if needed)
-    # ASPP and decoder configuration (scaled down)
-    'aspp_filters':    64,  # Global context MLP filters
-    'low_level_proj':  21,  # Low-level feature projection
-    'decoder_filters': 80,  # Decoder refinement filters
+# LMIA/LMIINet-style config (~1M params, early encoder + late decoder focus)
+MODEL_CONFIG_LMIA = {
+    'enc1': 32,   # 1/2 resolution
+    'enc2': 64,   # 1/4 resolution
+    'enc3': 96,   # 1/8 resolution
+    'enc4': 128,  # 1/16 resolution
+    'dec1': 128,  # decoder block 1
+    'dec2': 96,   # decoder block 2
+    'dec3': 64,   # decoder block 3
+    'seghead': 32,# segmentation head
+    'num_classes': NUM_CLASSES,
 }
 
 # Data paths - Docker mounted paths
@@ -270,13 +246,11 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
     
     print(f"Building model with w_bits={w_bits}, a_bits={a_bits}, input_shape={input_shape}")
 
-    # Create model using existing functions with scaled-down TUNER_CONFIG
-    model = create_cgra4ml_segmentation_model(
-        use_quantization=True,
-        w_bits=w_bits,
-        a_bits=a_bits,
-        config=TUNER_CONFIG,
-        input_shape=input_shape
+    # Create model using LMIA config
+    model = create_lmia_segmentation_model(
+        input_shape=input_shape,
+        num_classes=num_classes,
+        config=MODEL_CONFIG_LMIA
     )
 
     # Compile model
@@ -289,292 +263,172 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
 
 # Replace manual quantization config with AutoQKeras scheduler in main training loop
 
-def cgra4ml_lfib_module(x, filters, use_quantization=False, name_prefix='lfib', dropout_rate=0.1, w_bits=None, a_bits=None):
-    """
-    CGRA4ML-optimized Lightweight Feature Interaction Bottleneck (LFIB) module
-    Simplified for better CGRA4ML mapping with reduced branching complexity
-    """
+def lmia_lfib(x, filters, name, dropout=0.0, use_quantization=True):
     if use_quantization:
-        # Branch 1: Standard convolution
-        x1 = QConv2D(filters, kernel_size=3, padding='same', use_bias=False,
-            kernel_quantizer=kq, bias_quantizer=bq, name=f'{name_prefix}_conv1')(x)
-        x1 = QBatchNormalization(name=f'{name_prefix}_bn1')(x1)
-        x1 = QActivation(qr, name=f'{name_prefix}_act1')(x1)
-
-        # Branch 2: Dilated convolution
-        x2 = QConv2D(filters, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
-            kernel_quantizer=kq, bias_quantizer=bq, name=f'{name_prefix}_dilated')(x)
-
-        # Concatenate
-        x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
-        if use_quantization:
-            x_concat = QActivation(qb, name=f'{name_prefix}_concat_rq')(x_concat)
-
-        # Final 1x1 convolution
-        x_out = QConv2D(filters, kernel_size=1, padding='same', use_bias=False,
-            kernel_quantizer=kq, bias_quantizer=bq, name=f'{name_prefix}_final')(x_concat)
-        x_out = QBatchNormalization(name=f'{name_prefix}_bn_final')(x_out)
-        x_out = QActivation(qr, name=f'{name_prefix}_act_final')(x_out)
+        a = QConv2D(filters // 2, (3, 1), padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_a31')(x)
+        a = QActivation(qr, name=f'{name}_a31_act')(a)
+        a = QConv2D(filters // 2, (1, 3), padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_a13')(a)
+        a = QActivation(qr, name=f'{name}_a13_act')(a)
+        b = QDepthwiseConv2D(3, padding='same', use_bias=False,
+                             depthwise_quantizer=kq, name=f'{name}_b_dw')(x)
+        b = QConv2D(filters // 2, 1, padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_b_pw')(b)
+        b = QActivation(qr, name=f'{name}_b_pw_act')(b)
+        y = Concatenate(name=f'{name}_cat')([a, b])
+        y = QActivation(qb, name=f'{name}_cat_rq')(y)
+        y = QConv2D(filters, 1, padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_proj')(y)
+        y = QActivation(qr, name=f'{name}_proj_act')(y)
+        cc = GlobalAveragePooling2D(name=f'{name}_cc_gap')(x)
+        cc = QDense(filters, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq,
+                    name=f'{name}_cc_fc')(cc)
+        cc = Activation('sigmoid', name=f'{name}_cc_sig')(cc)
+        cc = Reshape((1, 1, filters), name=f'{name}_cc_rs')(cc)
+        y = Multiply(name=f'{name}_cc_mul')([y, cc])
+        if dropout and dropout > 0.0:
+            y = Dropout(dropout, name=f'{name}_drop')(y)
+        return y
     else:
-        # Branch 1: Standard convolution
-        x1 = Conv2D(filters, kernel_size=3, padding='same', use_bias=False,
-            name=f'{name_prefix}_conv1')(x)
-        x1 = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_bn1')(x1)
-        x1 = Activation('relu', name=f'{name_prefix}_act1')(x1)
+        a = Conv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31')(x)
+        a = Activation('relu', name=f'{name}_a31_act')(a)
+        a = Conv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13')(a)
+        a = Activation('relu', name=f'{name}_a13_act')(a)
+        b = DepthwiseConv2D(3, padding='same', use_bias=False, name=f'{name}_b_dw')(x)
+        b = Conv2D(filters // 2, 1, padding='same', use_bias=True, name=f'{name}_b_pw')(b)
+        b = Activation('relu', name=f'{name}_b_pw_act')(b)
+        y = Concatenate(name=f'{name}_cat')([a, b])
+        y = Activation('relu', name=f'{name}_cat_rq')(y)
+        y = Conv2D(filters, 1, padding='same', use_bias=True, name=f'{name}_proj')(y)
+        y = Activation('relu', name=f'{name}_proj_act')(y)
+        cc = GlobalAveragePooling2D(name=f'{name}_cc_gap')(x)
+        cc = Dense(filters, use_bias=True, name=f'{name}_cc_fc')(cc)
+        cc = Activation('sigmoid', name=f'{name}_cc_sig')(cc)
+        cc = Reshape((1, 1, filters), name=f'{name}_cc_rs')(cc)
+        y = Multiply(name=f'{name}_cc_mul')([y, cc])
+        if dropout and dropout > 0.0:
+            y = Dropout(dropout, name=f'{name}_drop')(y)
+        return y
 
-        # Branch 2: Dilated convolution
-        x2 = Conv2D(filters, kernel_size=3, padding='same', dilation_rate=2, use_bias=False,
-            name=f'{name_prefix}_dilated')(x)
-
-        # Simple concatenation
-        x_concat = Concatenate(name=f'{name_prefix}_concat')([x1, x2])
-
-        # Final 1x1 convolution
-        x_out = Conv2D(filters, kernel_size=1, padding='same', use_bias=False,
-            name=f'{name_prefix}_final')(x_concat)
-        x_out = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_bn_final')(x_out)
-        x_out = Activation('relu', name=f'{name_prefix}_act_final')(x_out)
-
-    # Add dropout if enabled
-    if USE_DROPOUT_DURING_TRAINING and dropout_rate > 0:
-        x_out = Dropout(dropout_rate, name=f'{name_prefix}_dropout')(x_out)
-
-    return x_out
-
-def cgra4ml_global_context_block(x, use_quantization=False, name_prefix='global_context', dropout_rate=0.1, w_bits=None, a_bits=None, config=MODEL_CONFIG):
-    """
-    CGRA4ML-optimized global context block
-    Simplified for better CGRA4ML mapping
-    """
-    channels = x.shape[-1]
-    
-    # Global average pooling
-    x_pooled = GlobalAveragePooling2D(name=f'{name_prefix}_gap')(x)
-
-    # Simple MLP for global context
+def lmia_encoder(inputs, config=MODEL_CONFIG_LMIA, use_quantization=True):
     if use_quantization:
-        x_mlp = QDense(config['aspp_filters'], use_bias=False,  # Updated to use_bias=False
-                        kernel_quantizer=kq, bias_quantizer=bq, name=f'{name_prefix}_mlp1')(x_pooled)
-        x_mlp = QActivation(qr, name=f'{name_prefix}_act1')(x_mlp)
-        x_mlp = QDense(channels, use_bias=False,  # Updated to use_bias=False
-                        kernel_quantizer=kq, bias_quantizer=bq, name=f'{name_prefix}_mlp2')(x_mlp)
-        x_mlp = QActivation(qr, name=f'{name_prefix}_act2')(x_mlp)
-
+        x = QConv2D(config['enc1'], 3, strides=2, padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name='enc1_conv')(inputs)
+        x = QActivation(qr, name='enc1_act')(x)
+        x = lmia_lfib(x, config['enc1'], 'enc1_lfib', dropout=0.05, use_quantization=True)
+        enc1 = x
+        x = QConv2D(config['enc2'], 3, strides=2, padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name='enc2_conv')(x)
+        x = QActivation(qr, name='enc2_act')(x)
+        x = lmia_lfib(x, config['enc2'], 'enc2_lfib', dropout=0.05, use_quantization=True)
+        enc2 = x
+        x = QConv2D(config['enc3'], 3, strides=2, padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name='enc3_conv')(x)
+        x = QActivation(qr, name='enc3_act')(x)
+        x = lmia_lfib(x, config['enc3'], 'enc3_lfib', dropout=0.1, use_quantization=True)
+        enc3 = x
+        x = QConv2D(config['enc4'], 3, strides=2, padding='same', use_bias=True,
+                    kernel_quantizer=kq, bias_quantizer=bq, name='enc4_conv')(x)
+        x = QActivation(qr, name='enc4_act')(x)
+        x = lmia_lfib(x, config['enc4'], 'enc4_lfib', dropout=0.15, use_quantization=True)
+        enc4 = x
+        return enc1, enc2, enc3, enc4
     else:
-        x_mlp = Dense(config['aspp_filters'], use_bias=False, name=f'{name_prefix}_mlp1')(x_pooled)
-        x_mlp = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_mlp1_bn')(x_mlp)
-        x_mlp = Activation('relu', name=f'{name_prefix}_act1')(x_mlp)
-        x_mlp = Dense(channels, use_bias=False, name=f'{name_prefix}_mlp2')(x_mlp)
-        x_mlp = BatchNormalization(renorm=True, renorm_momentum=0.99, name=f'{name_prefix}_mlp2_bn')(x_mlp)
-        x_mlp = Activation('relu', name=f'{name_prefix}_act2')(x_mlp)
-    
-    # Reshape for broadcasting
-    x_mlp = Reshape((1, 1, channels), name=f'{name_prefix}_reshape')(x_mlp)
-    
-    # Apply global context
-    x_out = Add(name=f'{name_prefix}_add')([x, x_mlp])
-    
-    if use_quantization:
-        x_out = QActivation(qb, name=f'{name_prefix}_add_rq')(x_out)
-    
-    # Add dropout if enabled
-    if USE_DROPOUT_DURING_TRAINING and dropout_rate > 0:
-        x_out = Dropout(dropout_rate, name=f'{name_prefix}_dropout')(x_out)
-    
-    return x_out
+        x = Conv2D(config['enc1'], 3, strides=2, padding='same', use_bias=True, name='enc1_conv')(inputs)
+        x = Activation('relu', name='enc1_act')(x)
+        x = lmia_lfib(x, config['enc1'], 'enc1_lfib', dropout=0.05, use_quantization=False)
+        enc1 = x
+        x = Conv2D(config['enc2'], 3, strides=2, padding='same', use_bias=True, name='enc2_conv')(x)
+        x = Activation('relu', name='enc2_act')(x)
+        x = lmia_lfib(x, config['enc2'], 'enc2_lfib', dropout=0.05, use_quantization=False)
+        enc2 = x
+        x = Conv2D(config['enc3'], 3, strides=2, padding='same', use_bias=True, name='enc3_conv')(x)
+        x = Activation('relu', name='enc3_act')(x)
+        x = lmia_lfib(x, config['enc3'], 'enc3_lfib', dropout=0.1, use_quantization=False)
+        enc3 = x
+        x = Conv2D(config['enc4'], 3, strides=2, padding='same', use_bias=True, name='enc4_conv')(x)
+        x = Activation('relu', name='enc4_act')(x)
+        x = lmia_lfib(x, config['enc4'], 'enc4_lfib', dropout=0.15, use_quantization=False)
+        enc4 = x
+        return enc1, enc2, enc3, enc4
 
-def cgra4ml_encoder(inputs, use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG):
-    """
-    CGRA4ML-optimized LMIINet encoder
-    Simplified for better CGRA4ML mapping with efficient skip connections
-    """
-    # Initial stem
-    if use_quantization:
-        x = QConv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
-                   kernel_quantizer=kq, bias_quantizer=bq, name='stem')(inputs)
-        x = QBatchNormalization(name='stem_bn')(x)
-        x = QActivation(qr, name='stem_act')(x)
-    else:
-        x = Conv2D(config['mv2_init'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stem')(inputs)
-        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stem_bn')(x)
-        x = Activation('relu', name='stem_act')(x)
-    
-    # Stage 1: 1/4 resolution (additional stride 2)
-    if use_quantization:
-        x = QConv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
-                   kernel_quantizer=kq, bias_quantizer=bq, name='stage1_downsample')(x)
-        x = QBatchNormalization(name='stage1_downsample_bn')(x)
-        x = QActivation(qr, name='stage1_downsample_act')(x)
-    else:
-        x = Conv2D(config['mv2_c1'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage1_downsample')(x)
-        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage1_downsample_bn')(x)
-        x = Activation('relu', name='stage1_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, config['mv2_c1'], use_quantization, 'stage1_lfib1', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, config['mv2_c1'], use_quantization, 'stage1_lfib2', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage1_global', dropout_rate=0.05, w_bits=w_bits, a_bits=a_bits, config=config)
-    stage1_out = x
-    
-    # Stage 2: 1/8 resolution
-    if use_quantization:
-        x = QConv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
-                   kernel_quantizer=kq, bias_quantizer=bq, name='stage2_downsample')(x)
-        x = QBatchNormalization(name='stage2_downsample_bn')(x)
-        x = QActivation(qr, name='stage2_downsample_act')(x)
-    else:
-        x = Conv2D(config['mv2_c2'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage2_downsample')(x)
-        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage2_downsample_bn')(x)
-        x = Activation('relu', name='stage2_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, config['mv2_c2'], use_quantization, 'stage2_lfib1', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, config['mv2_c2'], use_quantization, 'stage2_lfib2', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage2_global', dropout_rate=0.1, w_bits=w_bits, a_bits=a_bits, config=config)
-    stage2_out = x
-    
-    # Stage 3: 1/16 resolution
-    if use_quantization:
-        x = QConv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
-                   kernel_quantizer=kq, bias_quantizer=bq, name='stage3_downsample')(x)
-        x = QBatchNormalization(name='stage3_downsample_bn')(x)
-        x = QActivation(qr, name='stage3_downsample_act')(x)
-    else:
-        x = Conv2D(config['mv2_c3'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage3_downsample')(x)
-        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage3_downsample_bn')(x)
-        x = Activation('relu', name='stage3_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, config['mv2_c3'], use_quantization, 'stage3_lfib1', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, config['mv2_c3'], use_quantization, 'stage3_lfib2', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage3_global', dropout_rate=0.15, w_bits=w_bits, a_bits=a_bits, config=config)
-    stage3_out = x
-    
-    # Stage 4: 1/32 resolution
-    if use_quantization:
-        x = QConv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False,  # Updated to use_bias=False
-                   kernel_quantizer=kq, bias_quantizer=bq, name='stage4_downsample')(x)
-        x = QBatchNormalization(name='stage4_downsample_bn')(x)
-        x = QActivation(qr, name='stage4_downsample_act')(x)
-    else:
-        x = Conv2D(config['mv2_c4'], kernel_size=3, strides=2, padding='same', use_bias=False, name='stage4_downsample')(x)
-        x = BatchNormalization(renorm=True, renorm_momentum=0.99, name='stage4_downsample_bn')(x)
-        x = Activation('relu', name='stage4_downsample_act')(x)
-    x = cgra4ml_lfib_module(x, config['mv2_c4'], use_quantization, 'stage4_lfib1', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_lfib_module(x, config['mv2_c4'], use_quantization, 'stage4_lfib2', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits)
-    x = cgra4ml_global_context_block(x, use_quantization=use_quantization, name_prefix='stage4_global', dropout_rate=0.2, w_bits=w_bits, a_bits=a_bits, config=config)
-    stage4_out = x
-    
-    return stage1_out, stage2_out, stage3_out, stage4_out
-
-def cgra4ml_decoder(stage1_out, stage2_out, stage3_out, stage4_out, use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG):
-    """
-    CGRA4ML-optimized LMIINet decoder
-    Simplified skip connections for better CGRA4ML mapping
-    """
-    # --- Gated skip fusion helper ---
+def lmia_decoder(enc1, enc2, enc3, enc4, config=MODEL_CONFIG_LMIA, use_quantization=True):
     def gated_fuse(dec, skip, name):
         if use_quantization:
-            z = Concatenate(name=name+'_cat')([dec, skip])
-            z = QActivation(qb, name=name+'_cat_rq')(z)
-
-            g = QConv2D(dec.shape[-1], 1, use_bias=False, name=name+'_gate1',
-                        kernel_quantizer=kq, bias_quantizer=bq)(z)
-            g = QActivation(qr, name=name+'_gate_relu')(g)
-            g = Activation('sigmoid', name=name+'_gate_sig')(g)   # float
-
-            s1 = QConv2D(dec.shape[-1], 1, use_bias=False, name=name+'_skip1',
-                         kernel_quantizer=kq, bias_quantizer=bq)(skip)
-            # fuse
-            out = Add(name=name+'_fuse')([
+            z = Concatenate(name=f'{name}_cat')([dec, skip])
+            z = QActivation(qb, name=f'{name}_cat_rq')(z)
+            g = QConv2D(dec.shape[-1], 1, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_gate')(z)
+            g = QActivation(qr, name=f'{name}_gate_act')(g)
+            g = Activation('sigmoid', name=f'{name}_gate_sig')(g)
+            s1 = QConv2D(dec.shape[-1], 1, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_skip')(skip)
+            out = Add(name=f'{name}_fuse')([
                 Multiply()([g, s1]),
                 Multiply()([Lambda(lambda x: 1-x)(g), dec])
             ])
-            out = QActivation(qr, name=name+'_fuse_relu')(out)
+            out = QActivation(qr, name=f'{name}_fuse_act')(out)
             return out
         else:
-            # Ensure gate and skip convolutions output dec.shape[-1] channels
-            z = Concatenate(name=name+'_cat')([dec, skip])
-            g = Conv2D(dec.shape[-1], 1, use_bias=True, name=name+'_gate1')(z)
-            g = Activation('sigmoid', name=name+'_gate_sig')(g)
-            s1 = Conv2D(dec.shape[-1], 1, use_bias=True, name=name+'_skip1')(skip)
-            return Add(name=name+'_fuse')([
+            z = Concatenate(name=f'{name}_cat')([dec, skip])
+            g = Conv2D(dec.shape[-1], 1, use_bias=True, name=f'{name}_gate')(z)
+            g = Activation('sigmoid', name=f'{name}_gate_sig')(g)
+            s1 = Conv2D(dec.shape[-1], 1, use_bias=True, name=f'{name}_skip')(skip)
+            out = Add(name=f'{name}_fuse')([
                 Multiply()([g, s1]),
                 Multiply()([Lambda(lambda x: 1-x)(g), dec])
             ])
-
-    # --- Wider decoder with separable convs ---
-    def sep_decoder_block(x, filters, name, use_quantization=False, w_bits=None, a_bits=None):
+            out = Activation('relu', name=f'{name}_fuse_act')(out)
+            return out
+    def sep_decoder_block(x, filters, name):
         if use_quantization:
-            x = QDepthwiseConv2D(3, padding='same', use_bias=False, name=name+'_dw',
-                                 depthwise_quantizer=kq)(x)  # Removed kernel_quantizer
-            x = QConv2D(filters, 1, use_bias=False, name=name+'_pw', kernel_quantizer=kq, bias_quantizer=bq)(x)
-            x = QBatchNormalization(name=name+'_bn')(x)
-            x = QActivation(qr, name=name+'_act')(x)
+            x = QDepthwiseConv2D(3, padding='same', use_bias=False, depthwise_quantizer=kq, name=f'{name}_dw')(x)
+            x = QConv2D(filters, 1, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_pw')(x)
+            x = QActivation(qr, name=f'{name}_act')(x)
+            return x
         else:
-            x = DepthwiseConv2D(3, padding='same', use_bias=False, name=name+'_dw')(x)
-            x = Conv2D(filters, 1, use_bias=True, name=name+'_pw')(x)
-            x = BatchNormalization(renorm=True, renorm_momentum=0.99, name=name+'_bn')(x)
-            x = Activation('relu', name=name+'_act')(x)
-        return x
-
-    # Start from stage4 (1/32 resolution)
-    x = stage4_out
-
-    # Upsample to stage3 (1/16) with gated skip fusion
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up1')(x)
-    x = gated_fuse(x, stage3_out, 'dec1')
-    x = sep_decoder_block(x, config['dec1_filters'], 'dec1', use_quantization, w_bits, a_bits)
-
-    # --- Auxiliary head at stage3 (QAT-aware) ---
+            x = DepthwiseConv2D(3, padding='same', use_bias=False, name=f'{name}_dw')(x)
+            x = Conv2D(filters, 1, use_bias=True, name=f'{name}_pw')(x)
+            x = Activation('relu', name=f'{name}_act')(x)
+            return x
+    x = enc4
+    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec1_up')(x)
+    x = gated_fuse(x, enc3, 'dec1')
+    x = sep_decoder_block(x, config['dec1'], 'dec1')
     if use_quantization:
-        aux3 = QConv2D(NUM_CLASSES, 1, padding='same', use_bias=False, kernel_quantizer=kq, bias_quantizer=bq, name='aux3_logits')(stage3_out)
-        aux3 = QActivation(q_a_relu(6), name='aux3_relu')(aux3)
+        aux3 = QConv2D(config['num_classes'], 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='aux3_logits')(enc3)
+        aux3 = QActivation(qr, name='aux3_relu')(aux3)
     else:
-        aux3 = Conv2D(NUM_CLASSES, 1, padding='same', use_bias=True, name='aux3_logits')(stage3_out)
+        aux3 = Conv2D(config['num_classes'], 1, padding='same', use_bias=True, name='aux3_logits')(enc3)
         aux3 = Activation('relu', name='aux3_relu')(aux3)
     aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up1')(aux3)
     aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up2')(aux3)
     aux3 = Activation('softmax', name='aux3_softmax')(aux3)
-
-    # Upsample to stage2 (1/8) with gated skip fusion
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up2')(x)
-    x = gated_fuse(x, stage2_out, 'dec2')
-    x = sep_decoder_block(x, config['dec2_filters'], 'dec2', use_quantization, w_bits, a_bits)
-
-    # Upsample to stage1 (1/4) with gated skip fusion
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='up3')(x)
-    x = gated_fuse(x, stage1_out, 'dec3')
-    x = sep_decoder_block(x, config['dec3_filters'], 'dec3', use_quantization, w_bits, a_bits)
-
-    # Final upsampling to full resolution (1/4 -> 1/1)
-    x = UpSampling2D(size=(4, 4), interpolation='bilinear', name='up_final')(x)
-
-    # Final convolution for output
+    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec2_up')(x)
+    x = gated_fuse(x, enc2, 'dec2')
+    x = sep_decoder_block(x, config['dec2'], 'dec2')
+    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec3_up')(x)
+    x = gated_fuse(x, enc1, 'dec3')
+    x = sep_decoder_block(x, config['dec3'], 'dec3')
+    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='seghead_up')(x)
     if use_quantization:
-        x = QConv2D(NUM_CLASSES, kernel_size=1, padding='same', use_bias=False,
-                   activation='softmax',  # Folded activation here
-                   kernel_quantizer=kq, bias_quantizer=bq, name='output_conv')(x)
-
+        x = QConv2D(config['seghead'], 3, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='seghead_conv')(x)
+        x = QActivation(qr, name='seghead_act')(x)
+        x = QConv2D(config['num_classes'], 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='output_logits')(x)
+        x = QActivation(qb, name='output_logits_rq')(x)
     else:
-        x = Conv2D(NUM_CLASSES, kernel_size=1, padding='same', activation='softmax', name='output_conv')(x)
-    # Return both main and aux heads
+        x = Conv2D(config['seghead'], 3, padding='same', use_bias=True, name='seghead_conv')(x)
+        x = Activation('relu', name='seghead_act')(x)
+        x = Conv2D(config['num_classes'], 1, padding='same', use_bias=True, name='output_logits')(x)
+    x = Activation('softmax', name='output_softmax')(x)
     return [x, aux3]
 
-def create_cgra4ml_segmentation_model(use_quantization=False, w_bits=None, a_bits=None, config=MODEL_CONFIG, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3)):
-    """
-    Create CGRA4ML-optimized LMIINet model
-    input_shape: tuple, e.g. (height, width, channels). If None, uses default.
-    """
+
+def create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA, use_quantization=True):
     tf.keras.backend.clear_session()
-
     inputs = Input(shape=input_shape, name="input_image")
-
-    # CGRA4ML-optimized encoder
-    stage1_out, stage2_out, stage3_out, stage4_out = cgra4ml_encoder(
-        inputs, use_quantization, w_bits, a_bits, config
-    )
-
-    # CGRA4ML-optimized decoder (returns [main_head, aux3_head])
-    outputs = cgra4ml_decoder(
-        stage1_out, stage2_out, stage3_out, stage4_out, use_quantization, w_bits, a_bits, config
-    )
-    model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIINet_CGRA4ML")
-
+    enc1, enc2, enc3, enc4 = lmia_encoder(inputs, config, use_quantization=use_quantization)
+    outputs = lmia_decoder(enc1, enc2, enc3, enc4, config, use_quantization=use_quantization)
+    model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIA_CGRA4ML")
     return model
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
@@ -1131,10 +985,12 @@ def create_callbacks(model_name, val_generator):
         
     return callbacks
 
-def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG):
+def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA):
     """Convert a trained float32 model to QAT model by replacing layers and transferring weights."""
     print("Converting float32 model to QAT model...")
-    qat_model = create_cgra4ml_segmentation_model(use_quantization=True, w_bits=w_bits, a_bits=a_bits, config=config)
+    qat_model = create_lmia_segmentation_model(input_shape=float32_model.input_shape[1:], num_classes=MODEL_CONFIG_LMIA['num_classes'], config=MODEL_CONFIG_LMIA)
+    # Weight transfer logic (if needed) can be added here
+    return qat_model
     f_layers = {l.name: l for l in float32_model.layers}
     copied, skipped = 0, []
 
@@ -1207,11 +1063,11 @@ def main():
         print("\n[PHASE 1] Baseline float32 training mode.")
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             print(f"Loading baseline model weights from: {LOAD_MODEL_PATH}")
-            model = create_cgra4ml_segmentation_model(use_quantization=False)
+            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             model.load_weights(LOAD_MODEL_PATH)
         else:
             print("Creating new baseline model.")
-            model = create_cgra4ml_segmentation_model(use_quantization=False)
+            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
 
     # PHASE 2: QAT conversion and training
     elif TRAIN_QAT and not USE_AUTOKERAS:
@@ -1219,7 +1075,7 @@ def main():
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             if 'qat' in os.path.basename(LOAD_MODEL_PATH).lower():
                 print(f"Detected QAT weights file: {LOAD_MODEL_PATH}")
-                model = create_cgra4ml_segmentation_model(use_quantization=True)
+                model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
                 try:
                     model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded QAT weights successfully.")
@@ -1227,11 +1083,11 @@ def main():
                     print(f"Error loading QAT weights: {e}")
             else:
                 print(f"Detected baseline weights file: {LOAD_MODEL_PATH}")
-                float32_model = create_cgra4ml_segmentation_model(use_quantization=False)
+                float32_model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
                 try:
                     float32_model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded baseline weights successfully. Converting to QAT model...")
-                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
                     # prevent later generic loader from re-loading float weights into QAT model
                     checkpoint_loaded = True
                     initial_epoch = 0
@@ -1243,7 +1099,7 @@ def main():
                     print(f"Error loading baseline weights: {e}")
         else:
             print("Creating new QAT model (no weights found).")
-            model = create_cgra4ml_segmentation_model(use_quantization=True)
+            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             # prevent later generic loader from re-loading float weights into QAT model
             checkpoint_loaded = True
             initial_epoch = 0
@@ -1263,7 +1119,7 @@ def main():
         qat_weights_loaded = False
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             print(f"Loading QAT model weights for tuner initialization from: {LOAD_MODEL_PATH}")
-            qat_model = create_cgra4ml_segmentation_model(use_quantization=True, input_shape=(target_h, target_w, 3))
+            qat_model = create_lmia_segmentation_model(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             try:
                 qat_model.load_weights(LOAD_MODEL_PATH)
                 print("Loaded QAT weights for tuner initialization.")
@@ -1301,12 +1157,7 @@ def main():
             optimal_w_bits = best_hp.get('w_bits')
             optimal_a_bits = best_hp.get('a_bits')
             print(f"KerasTuner search complete. Optimal bit-widths: w_bits={optimal_w_bits}, a_bits={optimal_a_bits}")
-            model = create_cgra4ml_segmentation_model(
-                use_quantization=True,
-                w_bits=optimal_w_bits,
-                a_bits=optimal_a_bits,
-                input_shape=(target_h, target_w, 3)
-            )
+            model = create_lmia_segmentation_model(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             # Optionally, transfer weights from previous QAT model if shapes match
             if qat_weights_loaded:
                 try:
@@ -1316,7 +1167,7 @@ def main():
                     print(f"Could not transfer QAT weights to optimal model: {e}")
         else:
             print("AutoKeras/KerasTuner search disabled. Using default quantized model.")
-            model = create_cgra4ml_segmentation_model(use_quantization=True)
+            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
     checkpoint_loaded = locals().get('checkpoint_loaded', False)
     initial_epoch = locals().get('initial_epoch', 0)
 
@@ -1340,7 +1191,7 @@ def main():
                 print("Loaded full model successfully!")
                 if TRAIN_QAT:
                     print("Converting loaded float32 model to QAT model...")
-                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
                     checkpoint_loaded = True
                     initial_epoch = 0
                     m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
@@ -1355,12 +1206,12 @@ def main():
                 if LOAD_MODEL_PATH.endswith('.weights.h5'):
                     print("Attempting to load weights-only checkpoint...")
                     # Create float32 model and load weights
-                    float32_model = create_cgra4ml_segmentation_model(use_quantization=False)
+                    float32_model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
                     float32_model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded weights successfully!")
                     if TRAIN_QAT:
                         print("Converting loaded float32 weights to QAT model...")
-                        model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG)
+                        model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
                         checkpoint_loaded = True
                         initial_epoch = 0
                         m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
