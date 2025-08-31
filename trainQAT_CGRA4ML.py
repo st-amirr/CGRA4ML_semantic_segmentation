@@ -268,8 +268,10 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
     """Feature Enhancement Block"""
     gap = GlobalAveragePooling2D()(inputs)
     gmp = GlobalMaxPooling2D()(inputs)
-    gap = tf.expand_dims(gap, axis=1)
-    gmp = tf.expand_dims(gmp, axis=1)
+
+    gap = tf.expand_dims(gap, axis=2)
+
+    gmp = tf.expand_dims(gmp, axis=2)
     x = Concatenate(axis=-1)([gap, gmp])
     if use_quantization:
         x = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv',
@@ -619,7 +621,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
 
         batch_images = []
         batch_masks = []
-        batch_masks_aux = []
         # Load sequentially; parallelism will come from model.fit(workers=...)
         for path in batch_paths:
             image, mask = self.load_and_preprocess_image(path)
@@ -627,53 +628,39 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 continue
             # Main mask: [INPUT_HEIGHT, INPUT_WIDTH]
             mask_main = cv2.resize(mask, (self.target_width, self.target_height), interpolation=cv2.INTER_NEAREST)
-            # Aux mask: [INPUT_HEIGHT // 2, INPUT_WIDTH // 2] (matches aux output)
-            mask_aux = cv2.resize(mask, (self.target_width // 2, self.target_height // 2), interpolation=cv2.INTER_NEAREST)
             batch_images.append(image)
             batch_masks.append(mask_main)
-            batch_masks_aux.append(mask_aux)
 
-        return np.array(batch_images), {
-            'output_softmax': np.array(batch_masks),
-            'aux3_softmax': np.array(batch_masks_aux)
+        import tensorflow as tf
+        return tf.convert_to_tensor(batch_images), {
+            'output_softmax': tf.convert_to_tensor(batch_masks),
         }
 
 def dice_loss(y_true, y_pred, smooth=1e-7):
     """
-    Dice loss for semantic segmentation - measures overlap between predicted and ground truth masks
+    Simple Dice loss for categorical segmentation.
     """
-    # y_true: (batch, H, W), int32, with ignore_index
-    # y_pred: (batch, H, W, num_classes), float32
-    ignore_index = NUM_CLASSES
-    mask = tf.not_equal(y_true, ignore_index)  # shape (batch, H, W)
-    y_true = tf.where(mask, y_true, 0)  # set ignore pixels to background for one-hot
-    y_true = tf.cast(y_true, tf.int32)
-    y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)
+    y_true = tf.one_hot(tf.cast(y_true, tf.int32), NUM_CLASSES)
     y_pred = tf.cast(y_pred, tf.float32)
-    y_true_onehot = tf.cast(y_true_onehot, tf.float32)
-    mask = tf.cast(mask, tf.float32)
-    # Only consider non-ignored pixels
-    intersection = tf.reduce_sum(y_true_onehot * y_pred * mask[..., None], axis=[0, 1, 2])
-    sums = tf.reduce_sum(y_true_onehot * mask[..., None], axis=[0, 1, 2]) + tf.reduce_sum(y_pred * mask[..., None], axis=[0, 1, 2])
-    dice_per_class = (2.0 * intersection + smooth) / (sums + smooth)
-    return tf.reduce_mean(1.0 - dice_per_class)
+    intersection = tf.reduce_sum(y_true * y_pred)
+    union = tf.reduce_sum(y_true) + tf.reduce_sum(y_pred)
+    dice = (2. * intersection + smooth) / (union + smooth)
+    return 1. - dice
 
 def mean_iou(y_true, y_pred):
     """
-    Mean IoU metric for semantic segmentation - only considers classes present in ground truth (excludes void=19)
+    Mean IoU metric for semantic segmentation - only considers classes present in ground truth.
     """
-    # y_true: (batch, H, W), int32, with ignore_index
-    # y_pred: (batch, H, W, num_classes), float32
-    ignore_index = NUM_CLASSES
-    mask = tf.not_equal(y_true, ignore_index)
+    y_true = tf.cast(y_true, tf.int32)
     y_pred = tf.argmax(y_pred, axis=-1)
     ious = []
     for class_id in range(NUM_CLASSES):
-        true_mask = tf.logical_and(tf.equal(y_true, class_id), mask)
-        pred_mask = tf.logical_and(tf.equal(y_pred, class_id), mask)
+        true_mask = tf.equal(y_true, class_id)
+        pred_mask = tf.equal(y_pred, class_id)
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, pred_mask), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(true_mask, pred_mask), tf.float32))
-        iou = tf.where(union > 0, intersection / union, tf.constant(float('nan')))
+        class_present = tf.reduce_sum(tf.cast(true_mask, tf.float32)) > 0
+        iou = tf.where(tf.logical_and(union > 0, class_present), intersection / union, tf.constant(float('nan')))
         ious.append(iou)
     ious = tf.stack(ious)
     valid_ious = tf.boolean_mask(ious, ~tf.math.is_nan(ious))
@@ -1010,7 +997,7 @@ def main():
     print("=" * 60)
     print(f"Training with QAT: {TRAIN_QAT}")
 
-    # Initialize data generators (user-specified argument order)
+    # Initialize data generators
     train_generator = CityscapesDataGenerator(
         TRAIN_IMAGES_DIR,
         TRAIN_MASKS_DIR,
@@ -1037,16 +1024,16 @@ def main():
         prefetch_batches=8
     )
 
-    # PHASE 1: Baseline training (float32)
+    # Model selection
     if not TRAIN_QAT:
         print("\n[PHASE 1] Baseline float32 training mode.")
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             print(f"Loading baseline model weights from: {LOAD_MODEL_PATH}")
-            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
             model.load_weights(LOAD_MODEL_PATH)
         else:
             print("Creating new baseline model.")
-            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
 
     # PHASE 2: QAT conversion and training
     elif TRAIN_QAT and not USE_AUTOKERAS:
@@ -1054,7 +1041,7 @@ def main():
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             if 'qat' in os.path.basename(LOAD_MODEL_PATH).lower():
                 print(f"Detected QAT weights file: {LOAD_MODEL_PATH}")
-                model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+                model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA)
                 try:
                     model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded QAT weights successfully.")
@@ -1062,7 +1049,7 @@ def main():
                     print(f"Error loading QAT weights: {e}")
             else:
                 print(f"Detected baseline weights file: {LOAD_MODEL_PATH}")
-                float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+                float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
                 try:
                     float32_model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded baseline weights successfully. Converting to QAT model...")
@@ -1078,178 +1065,18 @@ def main():
                     print(f"Error loading baseline weights: {e}")
         else:
             print("Creating new QAT model (no weights found).")
-            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA)
             # prevent later generic loader from re-loading float weights into QAT model
             checkpoint_loaded = True
             initial_epoch = 0
 
-    # PHASE 3: QAT with AutoKeras quantization search
-    elif TRAIN_QAT and USE_AUTOKERAS:
-        print("\n[PHASE 3] QAT with AutoKeras/KerasTuner quantization search mode.")
-        # Prepare a small subset for search (tuner accepts numpy arrays)
-        x_train, y_train = next(iter(train_generator))
-        num_sub = min(64, x_train.shape[0])
-        x_sub = x_train[:num_sub]
-        y_sub = y_train[:num_sub]
-        target_h = max(32, INPUT_HEIGHT // 4)
-        target_w = max(32, INPUT_WIDTH // 4)
 
-        # Load QAT weights if available
-        qat_weights_loaded = False
-        if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-            print(f"Loading QAT model weights for tuner initialization from: {LOAD_MODEL_PATH}")
-            qat_model = create_lmiinet(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
-            try:
-                qat_model.load_weights(LOAD_MODEL_PATH)
-                print("Loaded QAT weights for tuner initialization.")
-                qat_weights_loaded = True
-            except Exception as e:
-                print(f"Error loading QAT weights for tuner: {e}")
-        x_sub_resized = tf.image.resize(x_sub, (target_h, target_w), method='bilinear').numpy()
-        y_idx = np.argmax(y_sub, axis=-1)[..., np.newaxis].astype(np.float32)
-        y_resized = tf.image.resize(y_idx, (target_h, target_w), method='nearest').numpy().squeeze(-1).astype(np.int32)
-        y_sub_resized = tf.keras.utils.to_categorical(y_resized, num_classes=NUM_CLASSES)
-        tune_dir = os.path.join(MODELS_DIR, f"tune_qkeras_{int(time.time())}")
-        os.makedirs(tune_dir, exist_ok=True)
-        tuner = kt.Hyperband(
-            lambda hp: build_q_model(hp, input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES),
-            objective=kt.Objective("val_mean_iou", direction="max"),
-            max_epochs=20,
-            directory=tune_dir,
-            project_name="lmiinet",
-            executions_per_trial=1,
-        )
-        # Optionally, set initial weights for tuner trials
-        if qat_weights_loaded:
-            print("Note: KerasTuner does not natively support weight transfer for each trial, but you can manually set weights in the build function if needed.")
-        # Actually run the tuner search
-        print("Starting KerasTuner search for optimal quantizer bit-widths...")
-        tuner.search(
-            x_sub_resized, y_sub_resized,
-            epochs=10,
-            validation_split=0.2,
-            verbose=1
-        )
-        best_hps = tuner.get_best_hyperparameters(num_trials=1)
-        if best_hps:
-            best_hp = best_hps[0]
-            optimal_w_bits = best_hp.get('w_bits')
-            optimal_a_bits = best_hp.get('a_bits')
-            print(f"KerasTuner search complete. Optimal bit-widths: w_bits={optimal_w_bits}, a_bits={optimal_a_bits}")
-            model = create_lmiinet(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
-            # Optionally, transfer weights from previous QAT model if shapes match
-            if qat_weights_loaded:
-                try:
-                    model.load_weights(LOAD_MODEL_PATH)
-                    print("Transferred QAT weights to optimal quantized model.")
-                except Exception as e:
-                    print(f"Could not transfer QAT weights to optimal model: {e}")
-        else:
-            print("AutoKeras/KerasTuner search disabled. Using default quantized model.")
-            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
-    checkpoint_loaded = locals().get('checkpoint_loaded', False)
-    initial_epoch = locals().get('initial_epoch', 0)
-
-    if (not checkpoint_loaded) and LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-        epoch_match = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
-        if epoch_match:
-            print(f"Detected epoch checkpoint in filename: {LOAD_MODEL_PATH}")
-            try:
-                model.load_weights(LOAD_MODEL_PATH)
-                loaded_epoch = int(epoch_match.group(1))
-                initial_epoch = loaded_epoch
-                print(f"Loaded weights from epoch {loaded_epoch} successfully! Will resume from epoch {loaded_epoch + 1}.")
-                checkpoint_loaded = True
-            except Exception as e:
-                print(f"Error loading weights from checkpoint: {e}")
-        else:
-            print(f"Loading existing model from: {LOAD_MODEL_PATH}")
-            try:
-                # Try to load as full model first
-                float32_model = tf.keras.models.load_model(LOAD_MODEL_PATH, compile=False)
-                print("Loaded full model successfully!")
-                if TRAIN_QAT:
-                    print("Converting loaded float32 model to QAT model...")
-                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
-                    checkpoint_loaded = True
-                    initial_epoch = 0
-                    m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
-                    if m:
-                        initial_epoch = int(m.group(1))
-                        print(f"Resuming QAT from baseline epoch {initial_epoch} (for logging only).")
-                else:
-                    model = float32_model
-            except Exception as e:
-                print(f"Could not load as full model: {e}")
-                # Try to load as weights-only checkpoint
-                if LOAD_MODEL_PATH.endswith('.weights.h5'):
-                    print("Attempting to load weights-only checkpoint...")
-                    # Create float32 model and load weights
-                    float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
-                    float32_model.load_weights(LOAD_MODEL_PATH)
-                    print("Loaded weights successfully!")
-                    if TRAIN_QAT:
-                        print("Converting loaded float32 weights to QAT model...")
-                        model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
-                        checkpoint_loaded = True
-                        initial_epoch = 0
-                        m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
-                        if m:
-                            initial_epoch = int(m.group(1))
-                            print(f"Resuming QAT from baseline epoch {initial_epoch} (for logging only).")
-                    else:
-                        model = float32_model
-                else:
-                    print(f"Unsupported model format: {LOAD_MODEL_PATH}")
-                    print("Continuing with fresh model...")
-    
-
-
-    # Compile model
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
-    # Use custom masked loss for both outputs
-    def masked_categorical_crossentropy(y_true, y_pred):
-        """
-        Masked categorical crossentropy for semantic segmentation with ignore index.
-        Handles both integer and one-hot masks robustly.
-        """
-        ignore_index = NUM_CLASSES  # Set the ignore index to the number of classes
-
-        # Ensure y_true is integer and mask out ignore_index
-        mask = tf.not_equal(y_true, ignore_index)  # shape: (batch, H, W)
-        y_true = tf.where(mask, y_true, 0)         # set ignored pixels to background
-
-        # One-hot encode y_true to match y_pred shape
-        y_true = tf.cast(y_true, tf.int32)
-        y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)  # shape: (batch, H, W, num_classes)
-        y_true_onehot = tf.cast(y_true_onehot, tf.float32)
-
-        # Compute categorical crossentropy loss
-        loss = tf.keras.losses.categorical_crossentropy(y_true_onehot, y_pred)
-
-        # Apply mask (broadcast mask to match loss shape)
-        mask = tf.cast(mask, tf.float32)
-        loss = loss * mask
-
-        # Normalize by non-masked pixels
-        return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-7)
-
-    losses = {
-        'output_softmax': masked_categorical_crossentropy,
-        'aux3_softmax': masked_categorical_crossentropy,
-    }
-    loss_weights = {
-        'output_softmax': 1.0,
-        'aux3_softmax': 0.4,
-    }
     model.compile(
         optimizer=optimizer,
-        loss=losses,
-        loss_weights=loss_weights,
-        metrics={
-            'output_softmax': ["accuracy", dice_loss, mean_iou],
-        }
+        loss='categorical_crossentropy',
+        metrics=["accuracy", dice_loss, mean_iou]
     )
 
     # Print model summary
@@ -1272,7 +1099,7 @@ def main():
         max_queue_size=max(8, NUM_WORKERS * 2)
     )
 
-    # Save final model (architecture + weights) at the end of training in .h5 format
+    # Save final model
     final_model_path = os.path.join(MODELS_DIR, f"{model_name}_final.h5")
     print(f"\nSaving final model to: {final_model_path}")
     try:
