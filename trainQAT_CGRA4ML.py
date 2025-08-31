@@ -131,8 +131,8 @@ USE_AUTOKERAS = True if args.use_autokeras=='True' else False
 FREEZE_BN = True if args.freeze_bn=='True' else False
 
 # Model constants
-INPUT_HEIGHT = 256
-INPUT_WIDTH = 512
+INPUT_HEIGHT = 512
+INPUT_WIDTH = 1024
 NUM_CLASSES = 20
 NUM_WORKERS = 6  # Fixed number of workers for data loading
 
@@ -142,13 +142,13 @@ NUM_WORKERS = 6  # Fixed number of workers for data loading
 
 # LMIA/LMIINet-style config (~1M params, early encoder + late decoder focus)
 MODEL_CONFIG_LMIA = {
-    'encoder_filters': [64, 128, 256, 512],  # Encoder filters for each stage
-    'decoder_filters': [256, 128, 64],      # Decoder filters for each stage
-    'transformer_heads': 8,                 # Number of heads for transformer
-    'transformer_key_dim': 64,              # Key dimension for transformer
-    'transformer_dropout': 0.1,             # Dropout rate for transformer
-    'seghead_filters': 64,                  # Filters for segmentation head (if needed)
-    'num_classes': NUM_CLASSES              # Number of output classes
+    'encoder_filters': [32, 64, 128, 256],  # Encoder filters reduced to match parameter count
+    'decoder_filters': [128, 64, 32, 16],  # Decoder filters reduced as well
+    'transformer_heads': 4,                 # Reduced transformer heads for efficiency
+    'transformer_key_dim': 64,              # Dimensionality of transformer keys
+    'transformer_dropout': 0.1,             # Dropout for transformer
+    'seghead_filters': 64,                  # Segmentation head filters
+    'num_classes': 20                       # Number of output classes
 }
 
 # Data paths - Docker mounted paths
@@ -206,7 +206,7 @@ def safe_configure_tensorflow(debug_mode=False):
                 try:
                     tf.config.set_logical_device_configuration(
                         gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 16)],
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 9)],
                     )
                 except RuntimeError:
                     pass
@@ -398,46 +398,54 @@ def seghead(inputs, num_classes, use_quantization=True):
     return output
 
 # Encoder Block (initial block, downsampling, LFIB, FE)
-def encoder(inputs, filters, use_quantization=True):
+def encoder(inputs, filters, use_quantization=True, name="enc"):
     """Encoder Block with LFIB and FE"""
     if use_quantization:
-        x = QConv2D(filters, (3, 3), strides=2, padding='same',
-                   kernel_quantizer=kq, bias_quantizer=bq)(inputs)
-        x = QActivation(qr)(x)
+        x = QConv2D(filters, (3, 3), strides=2, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_conv')(inputs)
+        x = QActivation(qr, name=f'{name}_act')(x)
     else:
-        x = Conv2D(filters, (3, 3), strides=2, padding='same')(inputs)
-        x = Activation('relu')(x)
-    x = lfib(x, filters, 'enc_lfib', dropout=0.05, use_quantization=use_quantization)
-    x = feature_enhancement(x, filters, 'enc_fe', use_quantization=use_quantization)
+        x = Conv2D(filters, (3, 3), strides=2, padding='same', name=f'{name}_conv')(inputs)
+        x = Activation('relu', name=f'{name}_act')(x)
+    x = lfib(x, filters, f'{name}_lfib', dropout=0.05, use_quantization=use_quantization)
+    x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
     return x
 
 # Decoder Block (upsampling, LFIB, FE)
-def decoder(inputs, filters, use_quantization=True):
-    """Decoder Block with LFIB and FE"""
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear')(inputs)
-    x = lfib(x, filters, 'dec_lfib', dropout=0.1, use_quantization=use_quantization)
-    x = feature_enhancement(x, filters, 'dec_fe', use_quantization=use_quantization)
+def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec"):
+    """Decoder Block with UpSampling, FE, and Skip Connections"""
+    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name=f'{name}_upsample')(inputs)
+    x_shape = tf.shape(x)
+    skip_resized = tf.image.resize(skip_connection, (x_shape[1], x_shape[2]), method='bilinear', name=f'{name}_final_resize')
+    x = Concatenate(axis=-1, name=f'{name}_concat')([x, skip_resized])
+    x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
     return x
 
 # LMIINet Model
 def create_lmiinet(input_shape=(256, 512, 3), num_classes=20, use_quantization=True, config=MODEL_CONFIG_LMIA):
     inputs = Input(shape=input_shape, name="input_image")
-    # Encoder
     enc = inputs
-    for i, f in enumerate(config['encoder_filters']):
-        enc = encoder(enc, f, use_quantization)
-    # Transformer
+    encoder_outputs = []
+    for idx, f in enumerate(config['encoder_filters']):
+        enc = encoder(enc, f, use_quantization, name=f'enc{idx}')
+        encoder_outputs.append(enc)
+    # Store encoder spatial dims for transformer reshape
+    enc_shape = tf.shape(enc)
+    height = enc_shape[1]
+    width = enc_shape[2]
+    channels = enc.shape[-1]
     transformer_output = improved_flatten_transformer(
         enc,
         num_heads=config.get('transformer_heads', 8),
         key_dim=config.get('transformer_key_dim', 64),
         dropout_rate=config.get('transformer_dropout', 0.1)
     )
-    # Decoder
+    # Reshape transformer output to 4D (batch, height, width, channels)
+    transformer_output = tf.reshape(transformer_output, [-1, height, width, channels])
     dec = transformer_output
     for i, f in enumerate(config['decoder_filters']):
-        dec = decoder(dec, f, use_quantization)
-    # Segmentation Head
+        dec = decoder(dec, encoder_outputs[-(i+1)], f, use_quantization, name=f'dec{i}')
+    # Final upsampling to match input/mask size
+    dec = tf.image.resize(dec, (INPUT_HEIGHT, INPUT_WIDTH), method='bilinear', name='final_upsample')
     seg_output = seghead(dec, num_classes, use_quantization)
     model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML")
     return model
@@ -668,10 +676,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             batch_images.append(image)
             batch_masks.append(mask_main)
 
-        import tensorflow as tf
-        return tf.convert_to_tensor(batch_images), {
-            'output_softmax': tf.convert_to_tensor(batch_masks),
-        }
+        return np.array(batch_images), np.array(batch_masks)
 
 def dice_loss(y_true, y_pred, smooth=1e-7):
     """
@@ -992,8 +997,7 @@ def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFI
     """Convert a trained float32 model to QAT model by replacing layers and transferring weights."""
     print("Converting float32 model to QAT model...")
     qat_model = create_lmiinet(input_shape=float32_model.input_shape[1:], num_classes=MODEL_CONFIG_LMIA['num_classes'], config=MODEL_CONFIG_LMIA)
-    # Weight transfer logic (if needed) can be added here
-    return qat_model
+
     f_layers = {l.name: l for l in float32_model.layers}
     copied, skipped = 0, []
 
@@ -1033,6 +1037,8 @@ def main():
     print("CGRA4ML LMIINet Semantic Segmentation Training")
     print("=" * 60)
     print(f"Training with QAT: {TRAIN_QAT}")
+
+    initial_epoch = 0  # Ensure initial_epoch is always defined
 
     # Initialize data generators
     train_generator = CityscapesDataGenerator(
@@ -1093,7 +1099,6 @@ def main():
                     model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
                     # prevent later generic loader from re-loading float weights into QAT model
                     checkpoint_loaded = True
-                    initial_epoch = 0
                     m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
                     if m:
                         initial_epoch = int(m.group(1))
@@ -1105,14 +1110,13 @@ def main():
             model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA)
             # prevent later generic loader from re-loading float weights into QAT model
             checkpoint_loaded = True
-            initial_epoch = 0
 
 
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     model.compile(
         optimizer=optimizer,
-        loss='categorical_crossentropy',
+        loss='sparse_categorical_crossentropy',
         metrics=["accuracy", dice_loss, mean_iou]
     )
 
