@@ -75,16 +75,13 @@ import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 import os, cv2, multiprocessing
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-cv2.setNumThreads(0)
 import threading
 import time
 from tensorflow.keras.preprocessing.image import load_img
 from tensorflow.keras.layers import (
     Input, Conv2D, BatchNormalization, Activation, Dropout, Dense, 
     Add, DepthwiseConv2D, UpSampling2D, Concatenate, GlobalAveragePooling2D, 
-    Reshape, AveragePooling2D, MaxPooling2D, Multiply, Lambda
+    Reshape, AveragePooling2D, MaxPooling2D, Multiply, Lambda, MultiHeadAttention, LayerNormalization, GlobalMaxPooling2D
 )
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 from qkeras.utils import model_save_quantized_weights
@@ -100,6 +97,11 @@ import matplotlib.pyplot as plt
 import keras_tuner as kt
 from matplotlib.colors import ListedColormap
 import tensorflow.keras.backend as K
+import tensorflow as tf
+from tensorflow.keras.models import Model
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+cv2.setNumThreads(0)
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -129,8 +131,8 @@ USE_AUTOKERAS = True if args.use_autokeras=='True' else False
 FREEZE_BN = True if args.freeze_bn=='True' else False
 
 # Model constants
-INPUT_HEIGHT = 512
-INPUT_WIDTH = 1024
+INPUT_HEIGHT = 256
+INPUT_WIDTH = 512
 NUM_CLASSES = 20
 NUM_WORKERS = 6  # Fixed number of workers for data loading
 
@@ -140,20 +142,13 @@ NUM_WORKERS = 6  # Fixed number of workers for data loading
 
 # LMIA/LMIINet-style config (~1M params, early encoder + late decoder focus)
 MODEL_CONFIG_LMIA = {
-    'mv2_init': 24,   # stem (H/2)
-    'mv2_c1':   40,   # H/4
-    'mv2_c2':   64,   # H/8
-    'mv2_c3':   64,   # H/16 (LMIINet uses 64)
-    'mv2_c4':   128,  # H/32 (LMIINet uses 128)
-
-    # Decoder width for upsampling steps
-    'dec1_filters': 256,   # After s3→s2 fuse
-    'dec2_filters': 256,   # After s2→s1 fuse
-    'dec3_filters': 256,   # 1/4 refinement
-
-    # SegHead: projecting 1/8, 1/4, 1/2 features
-    'head_proj': 64,   # SegHead 1x1 projection
-    'head_refine': 128,  # Refine projection after DW Conv
+    'encoder_filters': [64, 128, 256, 512],  # Encoder filters for each stage
+    'decoder_filters': [256, 128, 64],      # Decoder filters for each stage
+    'transformer_heads': 8,                 # Number of heads for transformer
+    'transformer_key_dim': 64,              # Key dimension for transformer
+    'transformer_dropout': 0.1,             # Dropout rate for transformer
+    'seghead_filters': 64,                  # Filters for segmentation head (if needed)
+    'num_classes': NUM_CLASSES              # Number of output classes
 }
 
 # Data paths - Docker mounted paths
@@ -211,7 +206,7 @@ def safe_configure_tensorflow(debug_mode=False):
                 try:
                     tf.config.set_logical_device_configuration(
                         gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 12)],
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 16)],
                     )
                 except RuntimeError:
                     pass
@@ -252,7 +247,7 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
     print(f"Building model with w_bits={w_bits}, a_bits={a_bits}, input_shape={input_shape}")
 
     # Create model using LMIA config
-    model = create_lmia_segmentation_model(
+    model = create_lmiinet(
         input_shape=input_shape,
         num_classes=num_classes,
         config=MODEL_CONFIG_LMIA
@@ -268,193 +263,146 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
 
 # Replace manual quantization config with AutoQKeras scheduler in main training loop
 
-def lmia_lfib(x, filters, name, dropout=0.0, use_quantization=True):
-    # LMIINet-style fusion block: asymmetric conv + depthwise + pointwise + quantization
+# Helper function for Feature Enhancement (FE) block
+def feature_enhancement(inputs, filters, name, use_quantization=True):
+    """Feature Enhancement Block"""
+    gap = GlobalAveragePooling2D()(inputs)
+    gmp = GlobalMaxPooling2D()(inputs)
+    gap = tf.expand_dims(gap, axis=1)
+    gmp = tf.expand_dims(gmp, axis=1)
+    x = Concatenate(axis=-1)([gap, gmp])
     if use_quantization:
-        a = QConv2D(filters // 2, (3, 1), padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_a31')(x)
-        a = QActivation(qr, name=f'{name}_a31_act')(a)
-        a = QConv2D(filters // 2, (1, 3), padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_a13')(a)
-        a = QActivation(qr, name=f'{name}_a13_act')(a)
-        b = QDepthwiseConv2D(3, padding='same', use_bias=False,
-                             depthwise_quantizer=kq, name=f'{name}_b_dw')(x)
-        b = QActivation(qr, name=f'{name}_b_dw_act')(b)
-        b = QConv2D(filters // 2, 1, padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_b_pw')(b)
-        b = QActivation(qr, name=f'{name}_b_pw_act')(b)
-        y = Concatenate(name=f'{name}_cat')([a, b])
-        y = QActivation(qb, name=f'{name}_cat_rq')(y)
-        y = QConv2D(filters, 1, padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_proj')(y)
-        y = QActivation(qr, name=f'{name}_proj_act')(y)
-        if dropout and dropout > 0.0:
-            y = Dropout(dropout, name=f'{name}_drop')(y)
-        return y
+        x = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv',
+                   kernel_quantizer=kq, bias_quantizer=bq)(x)
+        x = QActivation(qr)(x)
     else:
-        a = Conv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31')(x)
+        x = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv')(x)
+        x = Activation('relu')(x)
+    return x
+
+# Helper function for Lightweight Feature Interaction Bottleneck (LFIB)
+def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
+    """LFIB Block: Lightweight Feature Interaction Bottleneck"""
+    if use_quantization:
+        a = QConv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31',
+                   kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        a = QActivation(qr, name=f'{name}_a31_act')(a)
+        a = QConv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13',
+                   kernel_quantizer=kq, bias_quantizer=bq)(a)
+        a = QActivation(qr, name=f'{name}_a13_act')(a)
+        b = QConv2D(filters // 2, (3, 3), padding='same', use_bias=True, name=f'{name}_b',
+                   kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        b = QActivation(qr, name=f'{name}_b_act')(b)
+        y = Concatenate(name=f'{name}_cat')([a, b])
+        y = QConv2D(filters, 1, padding='same', use_bias=True, name=f'{name}_proj',
+                   kernel_quantizer=kq, bias_quantizer=bq)(y)
+        y = QActivation(qr, name=f'{name}_proj_act')(y)
+    else:
+        a = Conv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31')(inputs)
         a = Activation('relu', name=f'{name}_a31_act')(a)
         a = Conv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13')(a)
         a = Activation('relu', name=f'{name}_a13_act')(a)
-        b = DepthwiseConv2D(3, padding='same', use_bias=False, name=f'{name}_b_dw')(x)
-        b = Activation('relu', name=f'{name}_b_dw_act')(b)
-        b = Conv2D(filters // 2, 1, padding='same', use_bias=True, name=f'{name}_b_pw')(b)
-        b = Activation('relu', name=f'{name}_b_pw_act')(b)
+        b = Conv2D(filters // 2, (3, 3), padding='same', use_bias=True, name=f'{name}_b')(inputs)
+        b = Activation('relu', name=f'{name}_b_act')(b)
         y = Concatenate(name=f'{name}_cat')([a, b])
-        y = Activation('relu', name=f'{name}_cat_rq')(y)
         y = Conv2D(filters, 1, padding='same', use_bias=True, name=f'{name}_proj')(y)
         y = Activation('relu', name=f'{name}_proj_act')(y)
-        if dropout and dropout > 0.0:
-            y = Dropout(dropout, name=f'{name}_drop')(y)
-        return y
+    if dropout and dropout > 0.0:
+        y = Dropout(dropout)(y)
+    
+    return y
 
+# Combination Coefficient Learning (CC)
+def combination_coefficient_learning(inputs):
+    """Combination Coefficient Learning (CC) with GAP + SDP"""
+    gap = GlobalAveragePooling2D()(inputs)
+    sdp = GlobalAveragePooling2D()(inputs)  # Standard Deviation Pooling
+    gap = Activation('relu')(gap)
+    sdp = Activation('relu')(sdp)
+    gap = Activation('sigmoid')(gap)
+    sdp = Activation('sigmoid')(sdp)
+    combined = Multiply()([gap, sdp])
+    return combined
 
-# --- CRU Block Definition ---
+# Channel Reconstruction Unit (CRU)
 def cru_block(x, filters, name, use_quantization=True):
-    """
-    CRU (Contextual Refinement Unit) for refining the feature maps.
-    - Uses 1x1 convolutions, global average pooling, and feature fusion.
-    """
+    """Channel Reconstruction Unit (CRU)"""
+    global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
+    global_context = tf.expand_dims(global_context, axis=1)
     if use_quantization:
-        global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
-        global_context = QDense(filters, activation='sigmoid', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_context_fc')(global_context)
-        global_context = Reshape((1, 1, filters), name=f'{name}_gap_reshape')(global_context)
-        x_refined = QConv2D(filters, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_conv')(x)
-        x_refined = QActivation(qr, name=f'{name}_act')(x_refined)
-        x_refined = Multiply(name=f'{name}_mul')([x_refined, global_context])
-        return x_refined
+        global_context = QConv2D(filters, 1, padding='same', activation='sigmoid', name=f'{name}_context_fc',
+                                kernel_quantizer=kq, bias_quantizer=bq)(global_context)
     else:
-        global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
-        global_context = Dense(filters, activation='sigmoid', name=f'{name}_context_fc')(global_context)
-        global_context = Reshape((1, 1, filters), name=f'{name}_gap_reshape')(global_context)
-        x_refined = Conv2D(filters, 1, padding='same', name=f'{name}_conv')(x)
-        x_refined = Activation('relu', name=f'{name}_act')(x_refined)
-        x_refined = Multiply(name=f'{name}_mul')([x_refined, global_context])
-        return x_refined
+        global_context = Conv2D(filters, 1, padding='same', activation='sigmoid', name=f'{name}_context_fc')(global_context)
+    refined_x = Multiply()([x, global_context])
+    return refined_x
 
-# --- Encoder with CRU after enc4 ---
-def lmia_encoder(inputs, config=MODEL_CONFIG_LMIA, use_quantization=True):
-    # Use correct config keys for LMIA
+# Improved Flatten Transformer (IFT)
+def improved_flatten_transformer(inputs, num_heads=8, key_dim=64, dropout_rate=0.1):
+    """Improved Flatten Transformer"""
+    x = tf.reshape(inputs, [tf.shape(inputs)[0], -1, inputs.shape[-1]])
+    attention_output = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim)(x, x)
+    attention_output = Dropout(dropout_rate)(attention_output)
+    attention_output = Add()([x, attention_output])
+    attention_output = LayerNormalization()(attention_output)
+    return attention_output
+
+# Segmentation Head (SegHead)
+def seghead(inputs, num_classes, use_quantization=True):
+    """Segmentation Head with 1x1 Conv and Softmax"""
     if use_quantization:
-        x = QConv2D(config['mv2_init'], 3, strides=2, padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name='enc1_conv')(inputs)
-        x = QActivation(qr, name='enc1_act')(x)
-        x = lmia_lfib(x, config['mv2_init'], 'enc1_lfib', dropout=0.05, use_quantization=True)
-        enc1 = x
-        x = QConv2D(config['mv2_c1'], 3, strides=2, padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name='enc2_conv')(x)
-        x = QActivation(qr, name='enc2_act')(x)
-        x = lmia_lfib(x, config['mv2_c1'], 'enc2_lfib', dropout=0.05, use_quantization=True)
-        enc2 = x
-        x = QConv2D(config['mv2_c2'], 3, strides=2, padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name='enc3_conv')(x)
-        x = QActivation(qr, name='enc3_act')(x)
-        x = lmia_lfib(x, config['mv2_c2'], 'enc3_lfib', dropout=0.1, use_quantization=True)
-        enc3 = x
-        x = QConv2D(config['mv2_c3'], 3, strides=2, padding='same', use_bias=True,
-                    kernel_quantizer=kq, bias_quantizer=bq, name='enc4_conv')(x)
-        x = QActivation(qr, name='enc4_act')(x)
-        x = lmia_lfib(x, config['mv2_c3'], 'enc4_lfib', dropout=0.15, use_quantization=True)
-        # Apply CRU after last encoder stage
-        enc4 = cru_block(x, config['mv2_c4'], 'enc4_cru', use_quantization=True)
-        return enc1, enc2, enc3, enc4
+        x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        output = QActivation('softmax')(x)
     else:
-        x = Conv2D(config['mv2_init'], 3, strides=2, padding='same', use_bias=True, name='enc1_conv')(inputs)
-        x = Activation('relu', name='enc1_act')(x)
-        x = lmia_lfib(x, config['mv2_init'], 'enc1_lfib', dropout=0.05, use_quantization=False)
-        enc1 = x
-        x = Conv2D(config['mv2_c1'], 3, strides=2, padding='same', use_bias=True, name='enc2_conv')(x)
-        x = Activation('relu', name='enc2_act')(x)
-        x = lmia_lfib(x, config['mv2_c1'], 'enc2_lfib', dropout=0.05, use_quantization=False)
-        enc2 = x
-        x = Conv2D(config['mv2_c2'], 3, strides=2, padding='same', use_bias=True, name='enc3_conv')(x)
-        x = Activation('relu', name='enc3_act')(x)
-        x = lmia_lfib(x, config['mv2_c2'], 'enc3_lfib', dropout=0.1, use_quantization=False)
-        enc3 = x
-        x = Conv2D(config['mv2_c3'], 3, strides=2, padding='same', use_bias=True, name='enc4_conv')(x)
-        x = Activation('relu', name='enc4_act')(x)
-        x = lmia_lfib(x, config['mv2_c3'], 'enc4_lfib', dropout=0.15, use_quantization=False)
-        # Apply CRU after last encoder stage
-        enc4 = cru_block(x, config['mv2_c4'], 'enc4_cru', use_quantization=False)
-        return enc1, enc2, enc3, enc4
+        x = Conv2D(num_classes, 1, padding='same')(inputs)
+        output = Activation('softmax')(x)
+    return output
 
-def lmia_decoder(enc1, enc2, enc3, enc4, config=MODEL_CONFIG_LMIA, use_quantization=True, num_classes=NUM_CLASSES):
-    def gated_fuse(dec, skip, name):
-        if use_quantization:
-            z = Concatenate(name=f'{name}_cat')([dec, skip])
-            z = QActivation(qb, name=f'{name}_cat_rq')(z)
-            g = QConv2D(dec.shape[-1], 1, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_gate')(z)
-            g = QActivation(qr, name=f'{name}_gate_act')(g)
-            g = Activation('sigmoid', name=f'{name}_gate_sig')(g)
-            s1 = QConv2D(dec.shape[-1], 1, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_skip')(skip)
-            out = Add(name=f'{name}_fuse')([
-                Multiply()([g, s1]),
-                Multiply()([Lambda(lambda x: 1-x)(g), dec])
-            ])
-            out = QActivation(qr, name=f'{name}_fuse_act')(out)
-            return out
-        else:
-            z = Concatenate(name=f'{name}_cat')([dec, skip])
-            g = Conv2D(dec.shape[-1], 1, use_bias=True, name=f'{name}_gate')(z)
-            g = Activation('sigmoid', name=f'{name}_gate_sig')(g)
-            s1 = Conv2D(dec.shape[-1], 1, use_bias=True, name=f'{name}_skip')(skip)
-            out = Add(name=f'{name}_fuse')([
-                Multiply()([g, s1]),
-                Multiply()([Lambda(lambda x: 1-x)(g), dec])
-            ])
-            out = Activation('relu', name=f'{name}_fuse_act')(out)
-            return out
-    def sep_decoder_block(x, filters, name):
-        if use_quantization:
-            x = QDepthwiseConv2D(3, padding='same', use_bias=False, depthwise_quantizer=kq, name=f'{name}_dw')(x)
-            x = QConv2D(filters, 1, use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_pw')(x)
-            x = QActivation(qr, name=f'{name}_act')(x)
-            return x
-        else:
-            x = DepthwiseConv2D(3, padding='same', use_bias=False, name=f'{name}_dw')(x)
-            x = Conv2D(filters, 1, use_bias=True, name=f'{name}_pw')(x)
-            x = Activation('relu', name=f'{name}_act')(x)
-            return x
-    x = enc4
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec1_up')(x)
-    x = gated_fuse(x, enc3, 'dec1')
-    x = sep_decoder_block(x, config['dec1_filters'], 'dec1')
+# Encoder Block (initial block, downsampling, LFIB, FE)
+def encoder(inputs, filters, use_quantization=True):
+    """Encoder Block with LFIB and FE"""
     if use_quantization:
-        aux3 = QConv2D(num_classes, 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='aux3_logits')(enc3)
-        aux3 = QActivation(qr, name='aux3_relu')(aux3)
+        x = QConv2D(filters, (3, 3), strides=2, padding='same',
+                   kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        x = QActivation(qr)(x)
     else:
-        aux3 = Conv2D(num_classes, 1, padding='same', use_bias=True, name='aux3_logits')(enc3)
-        aux3 = Activation('relu', name='aux3_relu')(aux3)
-    aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up1')(aux3)
-    aux3 = UpSampling2D(size=(2,2), interpolation='bilinear', name='aux3_up2')(aux3)
-    aux3 = Activation('softmax', name='aux3_softmax')(aux3)
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec2_up')(x)
-    x = gated_fuse(x, enc2, 'dec2')
-    x = sep_decoder_block(x, config['dec2_filters'], 'dec2')
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='dec3_up')(x)
-    x = gated_fuse(x, enc1, 'dec3')
-    x = sep_decoder_block(x, config['dec3_filters'], 'dec3')
-    x = UpSampling2D(size=(2, 2), interpolation='bilinear', name='seghead_up')(x)
-    if use_quantization:
-        x = QConv2D(config['head_proj'], 3, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='seghead_conv')(x)
-        x = QActivation(qr, name='seghead_act')(x)
-        x = QConv2D(num_classes, 1, padding='same', use_bias=True, kernel_quantizer=kq, bias_quantizer=bq, name='output_logits')(x)
-        x = QActivation(qb, name='output_logits_rq')(x)
-    else:
-        x = Conv2D(config['head_proj'], 3, padding='same', use_bias=True, name='seghead_conv')(x)
-        x = Activation('relu', name='seghead_act')(x)
-        x = Conv2D(num_classes, 1, padding='same', use_bias=True, name='output_logits')(x)
-    x = Activation('softmax', name='output_softmax')(x)
-    return [x, aux3]
+        x = Conv2D(filters, (3, 3), strides=2, padding='same')(inputs)
+        x = Activation('relu')(x)
+    x = lfib(x, filters, 'enc_lfib', dropout=0.05, use_quantization=use_quantization)
+    x = feature_enhancement(x, filters, 'enc_fe', use_quantization=use_quantization)
+    return x
 
+# Decoder Block (upsampling, LFIB, FE)
+def decoder(inputs, filters, use_quantization=True):
+    """Decoder Block with LFIB and FE"""
+    x = UpSampling2D(size=(2, 2), interpolation='bilinear')(inputs)
+    x = lfib(x, filters, 'dec_lfib', dropout=0.1, use_quantization=use_quantization)
+    x = feature_enhancement(x, filters, 'dec_fe', use_quantization=use_quantization)
+    return x
 
-def create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA, use_quantization=True):
-    tf.keras.backend.clear_session()
+# LMIINet Model
+def create_lmiinet(input_shape=(256, 512, 3), num_classes=20, use_quantization=True, config=MODEL_CONFIG_LMIA):
     inputs = Input(shape=input_shape, name="input_image")
-    enc1, enc2, enc3, enc4 = lmia_encoder(inputs, config, use_quantization=use_quantization)
-    outputs = lmia_decoder(enc1, enc2, enc3, enc4, config, use_quantization=use_quantization, num_classes=num_classes)
-    model = tf.keras.Model(inputs=inputs, outputs=outputs, name="LMIA_CGRA4ML")
+    # Encoder
+    enc = inputs
+    for i, f in enumerate(config['encoder_filters']):
+        enc = encoder(enc, f, use_quantization)
+    # Transformer
+    transformer_output = improved_flatten_transformer(
+        enc,
+        num_heads=config.get('transformer_heads', 8),
+        key_dim=config.get('transformer_key_dim', 64),
+        dropout_rate=config.get('transformer_dropout', 0.1)
+    )
+    # Decoder
+    dec = transformer_output
+    for i, f in enumerate(config['decoder_filters']):
+        dec = decoder(dec, f, use_quantization)
+    # Segmentation Head
+    seg_output = seghead(dec, num_classes, use_quantization)
+    model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML")
     return model
+
 
 class CityscapesDataGenerator(tf.keras.utils.Sequence):
     """Data generator for Cityscapes dataset"""
@@ -819,8 +767,12 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
                         if isinstance(batch, tuple) and isinstance(batch[1], dict):
                             batch_images = batch[0]
                             batch_masks_dict = batch[1]
-                            batch_masks = batch_masks_dict['output_conv']
-                            # Optionally: batch_masks_aux = batch_masks_dict['aux3_softmax']
+                            # Use new output key for masks
+                            if 'output_softmax' in batch_masks_dict:
+                                batch_masks = batch_masks_dict['output_softmax']
+                            else:
+                                # fallback for legacy keys
+                                batch_masks = next(iter(batch_masks_dict.values()))
                             batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
                         elif len(batch) == 3:
                             batch_images, batch_masks, batch_weights = batch
@@ -1015,7 +967,7 @@ def create_callbacks(model_name, val_generator):
 def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA):
     """Convert a trained float32 model to QAT model by replacing layers and transferring weights."""
     print("Converting float32 model to QAT model...")
-    qat_model = create_lmia_segmentation_model(input_shape=float32_model.input_shape[1:], num_classes=MODEL_CONFIG_LMIA['num_classes'], config=MODEL_CONFIG_LMIA)
+    qat_model = create_lmiinet(input_shape=float32_model.input_shape[1:], num_classes=MODEL_CONFIG_LMIA['num_classes'], config=MODEL_CONFIG_LMIA)
     # Weight transfer logic (if needed) can be added here
     return qat_model
     f_layers = {l.name: l for l in float32_model.layers}
@@ -1090,11 +1042,11 @@ def main():
         print("\n[PHASE 1] Baseline float32 training mode.")
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             print(f"Loading baseline model weights from: {LOAD_MODEL_PATH}")
-            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             model.load_weights(LOAD_MODEL_PATH)
         else:
             print("Creating new baseline model.")
-            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
 
     # PHASE 2: QAT conversion and training
     elif TRAIN_QAT and not USE_AUTOKERAS:
@@ -1102,7 +1054,7 @@ def main():
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             if 'qat' in os.path.basename(LOAD_MODEL_PATH).lower():
                 print(f"Detected QAT weights file: {LOAD_MODEL_PATH}")
-                model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+                model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
                 try:
                     model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded QAT weights successfully.")
@@ -1110,7 +1062,7 @@ def main():
                     print(f"Error loading QAT weights: {e}")
             else:
                 print(f"Detected baseline weights file: {LOAD_MODEL_PATH}")
-                float32_model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+                float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
                 try:
                     float32_model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded baseline weights successfully. Converting to QAT model...")
@@ -1126,7 +1078,7 @@ def main():
                     print(f"Error loading baseline weights: {e}")
         else:
             print("Creating new QAT model (no weights found).")
-            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             # prevent later generic loader from re-loading float weights into QAT model
             checkpoint_loaded = True
             initial_epoch = 0
@@ -1146,7 +1098,7 @@ def main():
         qat_weights_loaded = False
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             print(f"Loading QAT model weights for tuner initialization from: {LOAD_MODEL_PATH}")
-            qat_model = create_lmia_segmentation_model(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            qat_model = create_lmiinet(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             try:
                 qat_model.load_weights(LOAD_MODEL_PATH)
                 print("Loaded QAT weights for tuner initialization.")
@@ -1184,7 +1136,7 @@ def main():
             optimal_w_bits = best_hp.get('w_bits')
             optimal_a_bits = best_hp.get('a_bits')
             print(f"KerasTuner search complete. Optimal bit-widths: w_bits={optimal_w_bits}, a_bits={optimal_a_bits}")
-            model = create_lmia_segmentation_model(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(target_h, target_w, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
             # Optionally, transfer weights from previous QAT model if shapes match
             if qat_weights_loaded:
                 try:
@@ -1194,7 +1146,7 @@ def main():
                     print(f"Could not transfer QAT weights to optimal model: {e}")
         else:
             print("AutoKeras/KerasTuner search disabled. Using default quantized model.")
-            model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
     checkpoint_loaded = locals().get('checkpoint_loaded', False)
     initial_epoch = locals().get('initial_epoch', 0)
 
@@ -1233,7 +1185,7 @@ def main():
                 if LOAD_MODEL_PATH.endswith('.weights.h5'):
                     print("Attempting to load weights-only checkpoint...")
                     # Create float32 model and load weights
-                    float32_model = create_lmia_segmentation_model(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
+                    float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, config=MODEL_CONFIG_LMIA)
                     float32_model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded weights successfully!")
                     if TRAIN_QAT:
@@ -1262,18 +1214,25 @@ def main():
         Masked categorical crossentropy for semantic segmentation with ignore index.
         Handles both integer and one-hot masks robustly.
         """
-        ignore_index = NUM_CLASSES
-        mask = tf.not_equal(y_true, ignore_index)
-        y_true = tf.where(mask, y_true, 0)
-        # Always one-hot encode if rank is 3
-        if tf.rank(y_true) == 3:
-            y_true = tf.cast(y_true, tf.int32)
-            y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)
-        else:
-            y_true_onehot = tf.cast(y_true, tf.float32)
+        ignore_index = NUM_CLASSES  # Set the ignore index to the number of classes
+
+        # Ensure y_true is integer and mask out ignore_index
+        mask = tf.not_equal(y_true, ignore_index)  # shape: (batch, H, W)
+        y_true = tf.where(mask, y_true, 0)         # set ignored pixels to background
+
+        # One-hot encode y_true to match y_pred shape
+        y_true = tf.cast(y_true, tf.int32)
+        y_true_onehot = tf.one_hot(y_true, NUM_CLASSES)  # shape: (batch, H, W, num_classes)
+        y_true_onehot = tf.cast(y_true_onehot, tf.float32)
+
+        # Compute categorical crossentropy loss
         loss = tf.keras.losses.categorical_crossentropy(y_true_onehot, y_pred)
+
+        # Apply mask (broadcast mask to match loss shape)
         mask = tf.cast(mask, tf.float32)
         loss = loss * mask
+
+        # Normalize by non-masked pixels
         return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-7)
 
     losses = {
