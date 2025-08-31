@@ -265,22 +265,59 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
 
 # Helper function for Feature Enhancement (FE) block
 def feature_enhancement(inputs, filters, name, use_quantization=True):
-    """Feature Enhancement Block"""
+    """Feature Enhancement Block as per the article's architecture."""
+    
+    # t.Mean: Apply Global Average Pooling (GAP)
     gap = GlobalAveragePooling2D()(inputs)
+    gap = tf.expand_dims(gap, axis=1)
+    gap = tf.expand_dims(gap, axis=1)
+
+    # t.Max: Apply Global Max Pooling (GMP)
     gmp = GlobalMaxPooling2D()(inputs)
+    gmp = tf.expand_dims(gmp, axis=1)
+    gmp = tf.expand_dims(gmp, axis=1)
 
-    gap = tf.expand_dims(gap, axis=2)
-
-    gmp = tf.expand_dims(gmp, axis=2)
+    # Concatenate GAP and GMP along the channel axis (axis=-1)
     x = Concatenate(axis=-1)([gap, gmp])
+
     if use_quantization:
-        x = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv',
-                   kernel_quantizer=kq, bias_quantizer=bq)(x)
-        x = QActivation(qr)(x)
+        # QAT branch
+        x = QConv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3', kernel_quantizer=kq, bias_quantizer=bq)(x)
+        x = QBatchNormalization(name=f'{name}_bn')(x)
+        a = QActivation('sigmoid', name=f'{name}_sigmoid')(x)
+
+        x2 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_1x1', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        a2 = QActivation('sigmoid', name=f'{name}_sigmoid_a2')(x2)
+
+        gap2 = GlobalAveragePooling2D()(inputs)
+        gap2 = tf.expand_dims(gap2, axis=1)
+        gap2 = tf.expand_dims(gap2, axis=1)
+        x3 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1', kernel_quantizer=kq, bias_quantizer=bq)(gap2)
+        x3 = QActivation('relu', name=f'{name}_relu2')(x3)
+        x3 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1_final', kernel_quantizer=kq, bias_quantizer=bq)(x3)
+        b = QActivation('sigmoid', name=f'{name}_sigmoid_b')(x3)
+        b2 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_b2', kernel_quantizer=kq, bias_quantizer=bq)(b)
+        output = Add()([a2, b2])
+        return output
     else:
-        x = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv')(x)
-        x = Activation('relu')(x)
-    return x
+        # Float32 branch
+        x = Conv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3')(x)
+        x = BatchNormalization(name=f'{name}_bn')(x)
+        a = Activation('sigmoid', name=f'{name}_sigmoid')(x)
+
+        x2 = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_1x1')(inputs)
+        a2 = Activation('sigmoid', name=f'{name}_sigmoid_a2')(x2)
+
+        gap2 = GlobalAveragePooling2D()(inputs)
+        gap2 = tf.expand_dims(gap2, axis=1)
+        gap2 = tf.expand_dims(gap2, axis=1)
+        x3 = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1')(gap2)
+        x3 = Activation('relu', name=f'{name}_relu2')(x3)
+        x3 = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1_final')(x3)
+        b = Activation('sigmoid', name=f'{name}_sigmoid_b')(x3)
+        b2 = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_b2')(b)
+        output = Add()([a2, b2])
+        return output
 
 # Helper function for Lightweight Feature Interaction Bottleneck (LFIB)
 def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
