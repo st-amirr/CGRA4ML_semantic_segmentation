@@ -285,6 +285,8 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
         x = QConv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3', kernel_quantizer=kq, bias_quantizer=bq)(x)
         x = QBatchNormalization(name=f'{name}_bn')(x)
         a = QActivation('sigmoid', name=f'{name}_sigmoid')(x)
+        if USE_DROPOUT_DURING_TRAINING:
+            a = Dropout(0.1)(a)
 
         x2 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_1x1', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
         a2 = QActivation('sigmoid', name=f'{name}_sigmoid_a2')(x2)
@@ -304,6 +306,8 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
         x = Conv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3')(x)
         x = BatchNormalization(name=f'{name}_bn')(x)
         a = Activation('sigmoid', name=f'{name}_sigmoid')(x)
+        if USE_DROPOUT_DURING_TRAINING:
+            a = Dropout(0.1)(a)
 
         x2 = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_1x1')(inputs)
         a2 = Activation('sigmoid', name=f'{name}_sigmoid_a2')(x2)
@@ -403,9 +407,13 @@ def encoder(inputs, filters, use_quantization=True, name="enc"):
     if use_quantization:
         x = QConv2D(filters, (3, 3), strides=2, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_conv')(inputs)
         x = QActivation(qr, name=f'{name}_act')(x)
+        if USE_DROPOUT_DURING_TRAINING:
+            x = Dropout(0.05)(x)
     else:
         x = Conv2D(filters, (3, 3), strides=2, padding='same', name=f'{name}_conv')(inputs)
         x = Activation('relu', name=f'{name}_act')(x)
+        if USE_DROPOUT_DURING_TRAINING:
+            x = Dropout(0.05)(x)
     x = lfib(x, filters, f'{name}_lfib', dropout=0.05, use_quantization=use_quantization)
     x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
     return x
@@ -414,6 +422,8 @@ def encoder(inputs, filters, use_quantization=True, name="enc"):
 def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec"):
     """Decoder Block with UpSampling, FE, and Skip Connections"""
     x = UpSampling2D(size=(2, 2), interpolation='bilinear', name=f'{name}_upsample')(inputs)
+    if USE_DROPOUT_DURING_TRAINING:
+        x = Dropout(0.05)(x)
     x_shape = tf.shape(x)
     skip_resized = tf.image.resize(skip_connection, (x_shape[1], x_shape[2]), method='bilinear', name=f'{name}_final_resize')
     x = Concatenate(axis=-1, name=f'{name}_concat')([x, skip_resized])
@@ -1070,13 +1080,19 @@ def main():
     # Model selection
     if not TRAIN_QAT:
         print("\n[PHASE 1] Baseline float32 training mode.")
-        if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
-            print(f"Loading baseline model weights from: {LOAD_MODEL_PATH}")
-            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
-            model.load_weights(LOAD_MODEL_PATH)
-        else:
-            print("Creating new baseline model.")
-            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
+        model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
+        if LOAD_MODEL_PATH:
+            try:
+                print(f"Attempting to load baseline model weights from: {LOAD_MODEL_PATH}")
+                model.load_weights(LOAD_MODEL_PATH)
+                print("Loaded baseline weights successfully.")
+                # Try to read epoch number from filename
+                m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
+                if m:
+                    initial_epoch = int(m.group(1))
+                    print(f"Resuming training from epoch {initial_epoch}.")
+            except Exception as e:
+                print(f"Warning: Could not load weights from {LOAD_MODEL_PATH}: {e}")
 
     # PHASE 2: QAT conversion and training
     elif TRAIN_QAT and not USE_AUTOKERAS:
