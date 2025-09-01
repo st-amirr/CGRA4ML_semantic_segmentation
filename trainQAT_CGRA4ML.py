@@ -57,7 +57,7 @@ Example commands:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=200 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --freeze_bn=True --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=200 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --freeze_bn=True --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=200 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --freeze_bn=True --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_05.weights.h5
  """
 
 import os
@@ -81,7 +81,7 @@ from tensorflow.keras.preprocessing.image import load_img
 from tensorflow.keras.layers import (
     Input, Conv2D, BatchNormalization, Activation, Dropout, Dense, 
     Add, DepthwiseConv2D, UpSampling2D, Concatenate, GlobalAveragePooling2D, 
-    Reshape, AveragePooling2D, MaxPooling2D, Multiply, Lambda, MultiHeadAttention, LayerNormalization, GlobalMaxPooling2D
+    Reshape, AveragePooling2D, MaxPooling2D, Multiply, Lambda, MultiHeadAttention, GlobalMaxPooling2D
 )
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 from qkeras.utils import model_save_quantized_weights
@@ -141,14 +141,24 @@ NUM_WORKERS = 6  # Fixed number of workers for data loading
 # and match the original LMIINet parameter count (~2.7M parameters)
 
 # LMIA/LMIINet-style config (~1M params, early encoder + late decoder focus)
+# MODEL_CONFIG_LMIA = {
+#     'encoder_filters': [16, 64, 128, 256],  # Encoder filters reduced to match parameter count
+#     'decoder_filters': [128, 64, 32, 16],  # Decoder filters reduced as well
+#     'transformer_heads': 4,                 # Reduced transformer heads for efficiency
+#     'transformer_key_dim': 64,              # Dimensionality of transformer keys
+#     'transformer_dropout': 0.1,             # Dropout for transformer
+#     'seghead_filters': 64,                  # Segmentation head filters
+#     'num_classes': 20                       # Number of output classes
+# }
+
 MODEL_CONFIG_LMIA = {
-    'encoder_filters': [32, 64, 128, 256],  # Encoder filters reduced to match parameter count
-    'decoder_filters': [128, 64, 32, 16],  # Decoder filters reduced as well
-    'transformer_heads': 4,                 # Reduced transformer heads for efficiency
-    'transformer_key_dim': 64,              # Dimensionality of transformer keys
-    'transformer_dropout': 0.1,             # Dropout for transformer
-    'seghead_filters': 64,                  # Segmentation head filters
-    'num_classes': 20                       # Number of output classes
+    'encoder_filters': [24, 48, 96, 128],   # go from 24 to 128
+    'decoder_filters': [128, 96, 48, 24],     # mirror down
+    'transformer_heads': 2,                 # fewer heads
+    'transformer_key_dim': 64,              # smaller projection
+    'transformer_dropout': 0.1,
+    'seghead_filters': 64,                  # lighter segmentation head
+    'num_classes': 20
 }
 
 # Data paths - Docker mounted paths
@@ -256,7 +266,8 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
     # Compile model
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     model.compile(optimizer=optimizer,
-                  loss='categorical_crossentropy',
+                  #loss='categorical_crossentropy',
+                  loss=dice_loss,
                   metrics=["accuracy", dice_loss, mean_iou])
 
     return model
@@ -412,14 +423,14 @@ def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1):
     batch, height, width, channels = shape[0], shape[1], shape[2], shape[3]
     # Flatten spatial dims for attention
     x = tf.reshape(inputs, [batch, height * width, channels])
-    # Local window attention: split into windows, apply attention per window
-    # For simplicity, use global attention (can be replaced with windowed logic)
-    attn = MultiHeadAttention(num_heads=num_heads, key_dim=key_dim)(x, x)
+    # Local window attention: use dilated Conv2D to simulate attention
+    channels = inputs.shape[-1]
+    attn = Conv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation='relu')(inputs)
     attn = Dropout(dropout_rate)(attn)
-    attn = Add()([x, attn])
-    attn = LayerNormalization()(attn)
+    attn = Add()([inputs, attn])
+    attn = BatchNormalization()(attn)
     # Reshape back to (batch, height, width, channels)
-    out = tf.reshape(attn, [batch, height, width, channels])
+    out = attn  # Already (batch, height, width, channels)
     return out
 
 def CAB(inputs, filters):
