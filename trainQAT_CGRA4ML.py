@@ -111,7 +111,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=3, help='Batch size for training')
     parser.add_argument('--use_dropout', type=str, default='True', help='Use dropout during training')
     parser.add_argument('--subset_ratio', type=float, default=0.9, help='Ratio of dataset to use (0.0-1.0)')
-    parser.add_argument('--LR', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--LR', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--load_model', type=str, default=None, help='Path to load existing model')
     parser.add_argument('--debug', type=str, default='False', help='Enable debug mode')
     parser.add_argument('--use_autokeras', type=str, default='False', help='Enable AutoKeras/KerasTuner search (True/False)')
@@ -133,32 +133,21 @@ FREEZE_BN = True if args.freeze_bn=='True' else False
 # Model constants
 INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
-NUM_CLASSES = 20
+NUM_CLASSES = 19  # Standard Cityscapes classes (0-18), following the paper
 NUM_WORKERS = 6  # Fixed number of workers for data loading
 
 # Model configuration for CGRA4ML-optimized LMIINet
 # This configuration is used throughout the model architecture to ensure consistency
-# and match the original LMIINet parameter count (~2.7M parameters)
 
-# LMIA/LMIINet-style config (~1M params, early encoder + late decoder focus)
-# MODEL_CONFIG_LMIA = {
-#     'encoder_filters': [16, 64, 128, 256],  # Encoder filters reduced to match parameter count
-#     'decoder_filters': [128, 64, 32, 16],  # Decoder filters reduced as well
-#     'transformer_heads': 4,                 # Reduced transformer heads for efficiency
-#     'transformer_key_dim': 64,              # Dimensionality of transformer keys
-#     'transformer_dropout': 0.1,             # Dropout for transformer
-#     'seghead_filters': 64,                  # Segmentation head filters
-#     'num_classes': 20                       # Number of output classes
-# }
 
 MODEL_CONFIG_LMIA = {
     'encoder_filters': [24, 48, 96, 128],   # go from 24 to 128
     'decoder_filters': [128, 96, 48, 24],     # mirror down
-    'transformer_heads': 2,                 # fewer heads
+    'transformer_heads': 8,                 # fewer heads
     'transformer_key_dim': 64,              # smaller projection
     'transformer_dropout': 0.1,
-    'seghead_filters': 64,                  # lighter segmentation head
-    'num_classes': 20
+    'seghead_filters': 64,                   # Same
+    'num_classes': 19                        # Correct Cityscapes classes
 }
 
 # Data paths - Docker mounted paths
@@ -268,7 +257,7 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
     model.compile(optimizer=optimizer,
                   #loss='categorical_crossentropy',
                   loss=dice_loss,
-                  metrics=["accuracy", dice_loss, mean_iou])
+                  metrics=[accuracy, dice_loss, mean_iou])
 
     return model
 
@@ -681,14 +670,34 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 # Already in correct format (0..18 with 255 ignore)
                 pass
             else:
-                # Map labelIds (34) to our 20-class scheme: 19 trainIds + void=19
-                lid_to_tid = {
-                    7: 0, 8: 1, 11: 2, 12: 3, 13: 4, 14: 4, 15: 2, 16: 2, 17: 5, 18: 5, 19: 6, 20: 7,
-                    21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14, 28: 15,
-                    31: 16, 32: 17, 33: 18, 29: 13, 30: 13,
+                # Standard Cityscapes label mapping (labelIds to trainIds) - follows official mapping
+                # This maps the 34-class labelIds to 19-class trainIds as per Cityscapes standard
+                CITYSCAPES_MAPPING = {
+                    7: 0,   # road
+                    8: 1,   # sidewalk  
+                    11: 2,  # building
+                    12: 3,  # wall
+                    13: 4,  # fence
+                    17: 5,  # pole
+                    19: 6,  # traffic light
+                    20: 7,  # traffic sign
+                    21: 8,  # vegetation
+                    22: 9,  # terrain
+                    23: 10, # sky
+                    24: 11, # person
+                    25: 12, # rider
+                    26: 13, # car
+                    27: 14, # truck
+                    28: 15, # bus
+                    31: 16, # train
+                    32: 17, # motorcycle
+                    33: 18, # bicycle
+                    # All other IDs map to ignore (255)
                 }
-                mapped = np.full_like(mask, 19, dtype=np.uint8)
-                for lid, tid in lid_to_tid.items():
+                
+                # Create mapped mask - default to ignore (255)
+                mapped = np.full_like(mask, 255, dtype=np.uint8)
+                for lid, tid in CITYSCAPES_MAPPING.items():
                     mapped[mask == lid] = tid
                 mask = mapped
 
@@ -713,10 +722,10 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
             # Normalize image
             image = image.astype(np.float32) / 255.0
 
-            # Ensure mask is int32 and ignore label 255 is mapped to ignore_index
-            ignore_index = NUM_CLASSES  # Use NUM_CLASSES as ignore index
+            # Ensure mask is int32 and ignore label 255 is kept as 255 (will be masked in loss)
+            ignore_index = 255  # Use standard ignore index (255)
             mask = mask.astype(np.int32)
-            mask[mask == 255] = ignore_index
+            # mask[mask == 255] already mapped to 255 above, keep as-is
             # Do NOT one-hot encode here; keep as int32 for masking in loss/metrics
             return image, mask
 
@@ -772,34 +781,78 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
 
 def dice_loss(y_true, y_pred, smooth=1e-7):
     """
-    Simple Dice loss for categorical segmentation.
+    Dice loss for categorical segmentation with ignore index support.
     """
-    y_true = tf.one_hot(tf.cast(y_true, tf.int32), NUM_CLASSES)
-    y_pred = tf.cast(y_pred, tf.float32)
-    intersection = tf.reduce_sum(y_true * y_pred)
-    union = tf.reduce_sum(y_true) + tf.reduce_sum(y_pred)
+    # Flatten spatial dimensions
+    y_true_flat = tf.reshape(y_true, [-1])
+    y_pred_flat = tf.reshape(y_pred, [-1, NUM_CLASSES])
+
+    # Mask out ignore pixels (255)
+    mask = tf.not_equal(y_true_flat, 255)
+    y_true_masked = tf.boolean_mask(y_true_flat, mask)
+    y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
+
+    # One-hot encode the valid pixels only
+    y_true_oh = tf.one_hot(tf.cast(y_true_masked, tf.int32), NUM_CLASSES)
+    y_pred_masked = tf.cast(y_pred_masked, tf.float32)
+
+    intersection = tf.reduce_sum(y_true_oh * y_pred_masked)
+    union = tf.reduce_sum(y_true_oh) + tf.reduce_sum(y_pred_masked)
     dice = (2. * intersection + smooth) / (union + smooth)
     return 1. - dice
 
 def mean_iou(y_true, y_pred):
     """
-    Mean IoU metric for semantic segmentation - only considers classes present in ground truth.
+    Mean IoU metric for semantic segmentation - ignores class 255.
     """
-    y_true = tf.cast(y_true, tf.int32)
-    y_pred = tf.argmax(y_pred, axis=-1)
+    # Mask out ignore pixels (255)
+    mask = tf.not_equal(y_true, 255)
+    y_true_masked = tf.boolean_mask(y_true, mask)
+    
+    y_pred_argmax = tf.argmax(y_pred, axis=-1)
+    y_pred_masked = tf.boolean_mask(y_pred_argmax, mask)
+    
+    y_true_masked = tf.cast(y_true_masked, tf.int32)
+    y_pred_masked = tf.cast(y_pred_masked, tf.int32)
+    
     ious = []
     for class_id in range(NUM_CLASSES):
-        true_mask = tf.equal(y_true, class_id)
-        pred_mask = tf.equal(y_pred, class_id)
+        true_mask = tf.equal(y_true_masked, class_id)
+        pred_mask = tf.equal(y_pred_masked, class_id)
+        
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, pred_mask), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(true_mask, pred_mask), tf.float32))
+        
+        # Only compute IoU if class is present in ground truth
         class_present = tf.reduce_sum(tf.cast(true_mask, tf.float32)) > 0
         iou = tf.where(tf.logical_and(union > 0, class_present), intersection / union, tf.constant(float('nan')))
         ious.append(iou)
+    
     ious = tf.stack(ious)
     valid_ious = tf.boolean_mask(ious, ~tf.math.is_nan(ious))
     result = tf.reduce_mean(valid_ious)
     return result
+
+def accuracy(y_true, y_pred):
+    """
+    Computes pixel-wise accuracy, ignoring pixels with label 255 (ignore class).
+    Args:
+        y_true: ground truth labels, shape (batch, height, width)
+        y_pred: predicted logits or probabilities, shape (batch, height, width, num_classes)
+    Returns:
+        Scalar accuracy value (float32)
+    """
+    # If y_pred is logits, convert to predicted class
+    y_pred = tf.argmax(y_pred, axis=-1)
+    y_true = tf.cast(y_true, tf.int64)
+    mask = tf.not_equal(y_true, 255)
+    matches = tf.equal(y_true, y_pred)
+    matches = tf.logical_and(matches, mask)
+    matches = tf.cast(matches, tf.float32)
+    mask = tf.cast(mask, tf.float32)
+    # Avoid division by zero
+    acc = tf.reduce_sum(matches) / (tf.reduce_sum(mask) + 1e-6)
+    return acc
 
 class BatchNormFreezeCallback(tf.keras.callbacks.Callback):
     def __init__(self, freeze_bn):
@@ -827,7 +880,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         self.save_frequency = save_frequency  # Save every N epochs
         os.makedirs(save_dir, exist_ok=True)
         
-        # Palette for official 19 trainIds (0..18); add 20th color for 'void'=19
+        # Palette for official 19 trainIds (0..18) following Cityscapes standard
         self.trainids_colors = [
             [128, 64, 128],   # 0: road
             [244, 35, 232],   # 1: sidewalk
@@ -848,7 +901,6 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
             [0, 80, 100],     # 16: train
             [0, 0, 230],      # 17: motorcycle
             [119, 11, 32],    # 18: bicycle
-            [0, 0, 0],        # 19: void
         ]
         self.ignore_color = [0, 0, 0]
     
@@ -1038,16 +1090,24 @@ def create_callbacks(model_name, val_generator):
     callbacks.append(checkpoint_callback)
 
     
-    # Learning rate reduction
+    # Learning rate reduction with polynomial decay (as mentioned in paper)
+    def poly_decay(epoch):
+        max_epochs = EPOCHS
+        return LEARNING_RATE * (1 - epoch / max_epochs) ** 0.9
+    
+    lr_scheduler = tf.keras.callbacks.LearningRateScheduler(poly_decay, verbose=1)
+    callbacks.append(lr_scheduler)
+    
+    # Alternative: reduce on plateau (backup)
     lr_reducer = ReduceLROnPlateau(
         monitor='val_mean_iou',
         factor=0.5,
-        patience=5,
+        patience=10,
         min_lr=1e-5,
-        min_delta=0.005,
+        min_delta=0.008,
         verbose=1
     )
-    callbacks.append(lr_reducer)
+    # callbacks.append(lr_reducer)  # Commented out since we're using polynomial decay
     
     # Prediction visualization callback
     viz_callback = PredictionVisualizationCallback(
@@ -1087,41 +1147,93 @@ def create_callbacks(model_name, val_generator):
     return callbacks
 
 def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA):
-    """Convert a trained float32 model to QAT model by replacing layers and transferring weights."""
-    print("Converting float32 model to QAT model...")
-    qat_model = create_lmiinet(input_shape=float32_model.input_shape[1:], num_classes=MODEL_CONFIG_LMIA['num_classes'], config=MODEL_CONFIG_LMIA)
+    """Convert a trained float32 model to QAT model by replacing layers and transferring weights.
+    This function is critical for CGRA4ML deployment as it ensures proper quantization-aware training.
+    """
+    print("Converting float32 model to QAT model for CGRA4ML...")
+    
+    # Create QAT model with quantization enabled (use_quantization=True for CGRA4ML)
+    qat_model = create_lmiinet(
+        input_shape=float32_model.input_shape[1:], 
+        num_classes=config['num_classes'], 
+        config=config, 
+        use_quantization=True  # This enables CGRA4ML-compatible quantized layers
+    )
 
     f_layers = {l.name: l for l in float32_model.layers}
-    copied, skipped = 0, []
+    copied, skipped, qat_converted = 0, [], 0
 
     for ql in qat_model.layers:
         fl = f_layers.get(ql.name)
         if not fl or not hasattr(ql, 'get_weights') or not hasattr(fl, 'get_weights'):
             continue
+        
         fw, qw = fl.get_weights(), ql.get_weights()
 
         try:
-            # exact match
-            if len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
-                ql.set_weights(fw); copied += 1; continue
+            # Handle Conv2D -> QConv2D conversion (CGRA4ML critical)
+            if 'conv2d' in ql.name.lower() or 'qconv2d' in ql.name.lower():
+                if len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
+                    ql.set_weights(fw)
+                    qat_converted += 1
+                    continue
+                elif len(fw) + 1 == len(qw):  # Float no-bias -> QAT with bias
+                    ql.set_weights(fw + [np.zeros_like(qw[-1])])
+                    qat_converted += 1
+                    continue
 
-            # float no-bias -> QAT bias (append zeros)
-            if len(fw) + 1 == len(qw) and all(fw[i].shape == qw[i].shape for i in range(len(fw))):
-                ql.set_weights(fw + [np.zeros_like(qw[-1])]); copied += 1; continue
+            # Handle DepthwiseConv2D -> QDepthwiseConv2D conversion (CGRA4ML critical)
+            elif 'depthwise' in ql.name.lower():
+                if len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
+                    ql.set_weights(fw)
+                    qat_converted += 1
+                    continue
+                elif len(fw) + 1 == len(qw):  # Float no-bias -> QAT with bias
+                    ql.set_weights(fw + [np.zeros_like(qw[-1])])
+                    qat_converted += 1
+                    continue
 
-            # BN renorm (float 7 tensors) -> QBN (4 tensors): take first 4 (gamma, beta, mean, var)
-            if ('bn' in ql.name.lower()) and len(fw) > len(qw):
-                base = fw[:len(qw)]
-                if all(b.shape == q.shape for b, q in zip(base, qw)):
-                    ql.set_weights(base); copied += 1; continue
+            # Handle BatchNormalization -> QBatchNormalization conversion (CGRA4ML critical)
+            elif 'bn' in ql.name.lower() or 'batchnorm' in ql.name.lower():
+                # BN renorm (float 7 tensors) -> QBN (4 tensors): take first 4 (gamma, beta, mean, var)
+                if len(fw) > len(qw):
+                    base = fw[:len(qw)]
+                    if all(b.shape == q.shape for b, q in zip(base, qw)):
+                        ql.set_weights(base)
+                        qat_converted += 1
+                        continue
+                elif len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
+                    ql.set_weights(fw)
+                    qat_converted += 1
+                    continue
 
+            # Handle exact matches for other layers
+            elif len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
+                ql.set_weights(fw)
+                copied += 1
+                continue
+
+            # Handle float no-bias -> QAT bias (append zeros)
+            elif len(fw) + 1 == len(qw) and all(fw[i].shape == qw[i].shape for i in range(len(fw))):
+                ql.set_weights(fw + [np.zeros_like(qw[-1])])
+                qat_converted += 1
+                continue
+
+            # If we get here, weights couldn't be transferred
             skipped.append((ql.name, [w.shape for w in fw], [w.shape for w in qw]))
+            
         except Exception as e:
             skipped.append((ql.name, str(e)))
 
-    print(f"Weight transfer coverage: {copied}/{len(qat_model.layers)}")
-    if skipped[:5]:
-        print("Examples of unmatched layers:", skipped[:5])
+    print(f"QAT Weight transfer: {copied} exact copies, {qat_converted} QAT conversions, {len(skipped)} skipped")
+    if skipped[:3]:
+        print("Examples of skipped layers:", skipped[:3])
+    
+    # Verify CGRA4ML compatibility
+    qat_layers = sum(1 for l in qat_model.layers if 'Q' in type(l).__name__)
+    total_layers = len([l for l in qat_model.layers if hasattr(l, 'get_weights') and l.get_weights()])
+    print(f"CGRA4ML QAT model: {qat_layers}/{total_layers} layers quantized")
+    
     return qat_model
 
 def main():
@@ -1167,8 +1279,16 @@ def main():
         if LOAD_MODEL_PATH:
             try:
                 print(f"Attempting to load baseline model weights from: {LOAD_MODEL_PATH}")
-                model.load_weights(LOAD_MODEL_PATH)
-                print("Loaded baseline weights successfully.")
+                # Check if this is a 20-class model that needs conversion
+                try:
+                    model.load_weights(LOAD_MODEL_PATH, by_name=True, skip_mismatch=True)
+                    print("Loaded baseline weights successfully (skipped mismatched layers).")
+                except:
+                    # If loading fails, try conversion from 20-class to 19-class
+                    print("Direct loading failed, attempting 20→19 class conversion...")
+                    model = convert_20class_to_19class_baseline(LOAD_MODEL_PATH, MODEL_CONFIG_LMIA)
+                    print("Successfully converted and loaded 20-class model to 19-class.")
+                
                 # Try to read epoch number from filename
                 m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH)
                 if m:
@@ -1177,12 +1297,13 @@ def main():
             except Exception as e:
                 print(f"Warning: Could not load weights from {LOAD_MODEL_PATH}: {e}")
 
-    # PHASE 2: QAT conversion and training
+    # PHASE 2: QAT conversion and training (CGRA4ML-ready)
     elif TRAIN_QAT and not USE_AUTOKERAS:
-        print("\n[PHASE 2] QAT conversion and training mode.")
+        print("\n[PHASE 2] QAT conversion and training mode for CGRA4ML.")
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             if 'qat' in os.path.basename(LOAD_MODEL_PATH).lower():
                 print(f"Detected QAT weights file: {LOAD_MODEL_PATH}")
+                # Create QAT model with quantization enabled for CGRA4ML
                 model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA)
                 try:
                     model.load_weights(LOAD_MODEL_PATH)
@@ -1191,33 +1312,36 @@ def main():
                     print(f"Error loading QAT weights: {e}")
             else:
                 print(f"Detected baseline weights file: {LOAD_MODEL_PATH}")
-                float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
+                # First convert 20-class baseline to 19-class if needed
                 try:
-                    float32_model.load_weights(LOAD_MODEL_PATH)
-                    print("Loaded baseline weights successfully. Converting to QAT model...")
-                    model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
-                    # prevent later generic loader from re-loading float weights into QAT model
-                    checkpoint_loaded = True
-                    m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
-                    if m:
-                        initial_epoch = int(m.group(1))
-                        print(f"Resuming QAT from baseline epoch {initial_epoch} (for logging only).")
-                except Exception as e:
-                    print(f"Error loading baseline weights: {e}")
+                    float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
+                    float32_model.load_weights(LOAD_MODEL_PATH, by_name=True, skip_mismatch=True)
+                    print("Loaded baseline weights successfully.")
+                except:
+                    print("Direct loading failed, attempting 20→19 class conversion...")
+                    float32_model = convert_20class_to_19class_baseline(LOAD_MODEL_PATH, MODEL_CONFIG_LMIA)
+                    print("Successfully converted 20-class baseline to 19-class.")
+                
+                print("Converting baseline to QAT model for CGRA4ML...")
+                model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
+                
+                # Try to read epoch number from filename
+                m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
+                if m:
+                    initial_epoch = int(m.group(1))
+                    print(f"Resuming QAT from baseline epoch {initial_epoch} (for logging only).")
         else:
-            print("Creating new QAT model (no weights found).")
+            print("Creating new QAT model (no weights found) for CGRA4ML.")
+            # Create QAT model with quantization enabled for CGRA4ML
             model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA)
-            # prevent later generic loader from re-loading float weights into QAT model
-            checkpoint_loaded = True
 
 
     print("\nCompiling model...")
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     model.compile(
         optimizer=optimizer,
-        loss='sparse_categorical_crossentropy',
-        # loss=dice_loss,
-        metrics=["accuracy", dice_loss, mean_iou]
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, ignore_class=255),
+        metrics=[accuracy, dice_loss, mean_iou]
     )
 
     # Print model summary
