@@ -1272,94 +1272,91 @@ def inspect_model_weights(weights_path):
         print(f"❌ Not compatible with current architecture: {str(e)[:100]}...")
         return False
 
-def convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA):
-    """Convert a trained float32 model to QAT model by replacing layers and transferring weights.
-    This function is critical for CGRA4ML deployment as it ensures proper quantization-aware training.
+def convert_float32_to_qat(float32_model, config=MODEL_CONFIG_LMIA):
     """
-    print("Converting float32 model to QAT model for CGRA4ML...")
-    
-    # Create QAT model with quantization enabled (use_quantization=True for CGRA4ML)
+    Convert a trained float32 model to a QAT model by folding BatchNormalization layers
+    into their preceding convolution layers for a more stable weight transfer.
+    """
+    print("Converting float32 model to QAT model with BatchNormalization folding...")
+
+    # Create a new QAT model instance
     qat_model = create_lmiinet(
-        input_shape=float32_model.input_shape[1:], 
-        num_classes=config['num_classes'], 
-        config=config, 
-        use_quantization=True  # This enables CGRA4ML-compatible quantized layers
+        input_shape=float32_model.input_shape[1:],
+        num_classes=config['num_classes'],
+        config=config,
+        use_quantization=True
     )
 
     f_layers = {l.name: l for l in float32_model.layers}
-    copied, skipped, qat_converted = 0, [], 0
+    q_layers = {l.name: l for l in qat_model.layers}
+    
+    # Store names of layers whose weights have been set
+    processed_layers = set()
+    print(f"Starting weight transfer for {len(float32_model.layers)} float layers -> {len(qat_model.layers)} QAT layers.")
 
-    for ql in qat_model.layers:
-        fl = f_layers.get(ql.name)
-        if not fl or not hasattr(ql, 'get_weights') or not hasattr(fl, 'get_weights'):
+    for i, layer in enumerate(float32_model.layers):
+        if layer.name in processed_layers:
             continue
+
+        # Check for Conv/DepthwiseConv followed by BatchNormalization
+        is_conv = isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))
         
-        fw, qw = fl.get_weights(), ql.get_weights()
-
-        try:
-            # Handle Conv2D -> QConv2D conversion (CGRA4ML critical)
-            if 'conv2d' in ql.name.lower() or 'qconv2d' in ql.name.lower():
-                if len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
-                    ql.set_weights(fw)
-                    qat_converted += 1
-                    continue
-                elif len(fw) + 1 == len(qw):  # Float no-bias -> QAT with bias
-                    ql.set_weights(fw + [np.zeros_like(qw[-1])])
-                    qat_converted += 1
-                    continue
-
-            # Handle DepthwiseConv2D -> QDepthwiseConv2D conversion (CGRA4ML critical)
-            elif 'depthwise' in ql.name.lower():
-                if len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
-                    ql.set_weights(fw)
-                    qat_converted += 1
-                    continue
-                elif len(fw) + 1 == len(qw):  # Float no-bias -> QAT with bias
-                    ql.set_weights(fw + [np.zeros_like(qw[-1])])
-                    qat_converted += 1
-                    continue
-
-            # Handle BatchNormalization -> QBatchNormalization conversion (CGRA4ML critical)
-            elif 'bn' in ql.name.lower() or 'batchnorm' in ql.name.lower():
-                # BN renorm (float 7 tensors) -> QBN (4 tensors): take first 4 (gamma, beta, mean, var)
-                if len(fw) > len(qw):
-                    base = fw[:len(qw)]
-                    if all(b.shape == q.shape for b, q in zip(base, qw)):
-                        ql.set_weights(base)
-                        qat_converted += 1
-                        continue
-                elif len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
-                    ql.set_weights(fw)
-                    qat_converted += 1
-                    continue
-
-            # Handle exact matches for other layers
-            elif len(fw) == len(qw) and all(f.shape == q.shape for f, q in zip(fw, qw)):
-                ql.set_weights(fw)
-                copied += 1
-                continue
-
-            # Handle float no-bias -> QAT bias (append zeros)
-            elif len(fw) + 1 == len(qw) and all(fw[i].shape == qw[i].shape for i in range(len(fw))):
-                ql.set_weights(fw + [np.zeros_like(qw[-1])])
-                qat_converted += 1
-                continue
-
-            # If we get here, weights couldn't be transferred
-            skipped.append((ql.name, [w.shape for w in fw], [w.shape for w in qw]))
+        if is_conv and i + 1 < len(float32_model.layers) and isinstance(float32_model.layers[i+1], tf.keras.layers.BatchNormalization):
+            conv_layer = layer
+            bn_layer = float32_model.layers[i+1]
             
-        except Exception as e:
-            skipped.append((ql.name, str(e)))
+            # Get corresponding Q-layers from the new QAT model
+            q_conv_layer = q_layers.get(conv_layer.name)
+            q_bn_layer = q_layers.get(bn_layer.name)
 
-    print(f"QAT Weight transfer: {copied} exact copies, {qat_converted} QAT conversions, {len(skipped)} skipped")
-    if skipped[:3]:
-        print("Examples of skipped layers:", skipped[:3])
-    
-    # Verify CGRA4ML compatibility
-    qat_layers = sum(1 for l in qat_model.layers if 'Q' in type(l).__name__)
-    total_layers = len([l for l in qat_model.layers if hasattr(l, 'get_weights') and l.get_weights()])
-    print(f"CGRA4ML QAT model: {qat_layers}/{total_layers} layers quantized")
-    
+            if not q_conv_layer or not q_bn_layer:
+                print(f"Warning: Could not find matching Q-layer for {conv_layer.name} or {bn_layer.name}. Skipping.")
+                continue
+
+            # Extract weights for folding
+            conv_weights = conv_layer.get_weights()
+            bn_weights = bn_layer.get_weights()
+
+            kernel = conv_weights[0]
+            bias = conv_weights[1] if len(conv_weights) > 1 else np.zeros(kernel.shape[-1])
+            
+            # BN weights: gamma, beta, moving_mean, moving_variance, (and renorm params if they exist)
+            gamma, beta, mean, variance = bn_weights[0], bn_weights[1], bn_weights[2], bn_weights[3]
+            epsilon = bn_layer.epsilon
+
+            # The core folding calculation
+            scale = gamma / np.sqrt(variance + epsilon)
+            folded_kernel = kernel * scale
+            folded_bias = (bias - mean) * scale + beta
+
+            # Set the folded weights on the QConv layer
+            q_conv_layer.set_weights([folded_kernel, folded_bias])
+
+            # Reset the QBN layer to be an identity-like transform for QAT fine-tuning
+            # This is critical because the normalization is now part of the convolution
+            q_bn_gamma = np.ones_like(gamma)
+            q_bn_beta = np.zeros_like(beta)
+            q_bn_mean = np.zeros_like(mean)
+            q_bn_variance = np.ones_like(variance)
+            q_bn_layer.set_weights([q_bn_gamma, q_bn_beta, q_bn_mean, q_bn_variance])
+
+            processed_layers.add(conv_layer.name)
+            processed_layers.add(bn_layer.name)
+            # print(f"Folded BN '{bn_layer.name}' into Conv '{conv_layer.name}'")
+
+        # Handle standalone layers (like Dense or Conv without a subsequent BN)
+        elif layer.name in q_layers:
+            q_layer = q_layers.get(layer.name)
+            if q_layer and len(layer.get_weights()) > 0:
+                try:
+                    q_layer.set_weights(layer.get_weights())
+                    processed_layers.add(layer.name)
+                    # print(f"Copied weights for standalone layer '{layer.name}'")
+                except ValueError as e:
+                    print(f"Skipping weight copy for {layer.name} due to shape mismatch: {e}")
+
+
+    print("Weight transfer with BN folding complete.")
     return qat_model
 
 def main():
@@ -1440,7 +1437,7 @@ def main():
                     print("Warning: Could not load baseline weights, converting from scratch.")
                 
                 print("Converting baseline to QAT model for CGRA4ML...")
-                model = convert_float32_to_qat(float32_model, w_bits=8, a_bits=8, config=MODEL_CONFIG_LMIA)
+                model = convert_float32_to_qat(float32_model, config=MODEL_CONFIG_LMIA)
                 
                 # Try to read epoch number from filename
                 m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
