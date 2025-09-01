@@ -364,9 +364,8 @@ def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
         # CC integration
         y = CC(y, filters)
         # Optional dropout
-        if dropout and dropout > 0.0:
-            y = Dropout(dropout)(y)
-        return y
+        if USE_DROPOUT_DURING_TRAINING:
+            y = Dropout(0.1)(y)
     else:
         # Asymmetric convs
         a = Conv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31')(inputs)
@@ -385,8 +384,8 @@ def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
         # CC integration
         y = CC(y, filters)
         # Optional dropout
-        if dropout and dropout > 0.0:
-            y = Dropout(dropout)(y)
+        if USE_DROPOUT_DURING_TRAINING:
+            y = Dropout(0.1)(y)
         return y
 
 # Combination Coefficient Learning (CC)
@@ -413,6 +412,8 @@ def cru_block(x, filters, name, use_quantization=True):
     else:
         global_context = Conv2D(filters, 1, padding='same', activation='sigmoid', name=f'{name}_context_fc')(global_context)
     refined_x = Multiply()([x, global_context])
+    if USE_DROPOUT_DURING_TRAINING:
+            refined_x = Dropout(0.1)(refined_x)
     return refined_x
 
 # Improved Flatten Transformer (IFT)
@@ -431,6 +432,8 @@ def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1):
     attn = BatchNormalization(renorm=True)(attn)
     # Reshape back to (batch, height, width, channels)
     out = attn  # Already (batch, height, width, channels)
+    if USE_DROPOUT_DURING_TRAINING:
+        out = Dropout(0.1)(out)
     return out
 
 def CAB(inputs, filters):
@@ -443,6 +446,8 @@ def CAB(inputs, filters):
     mix = Conv2D(filters, 1, padding='same', activation='sigmoid')(mix)
     # Broadcast and multiply
     out = Multiply()([inputs, mix])
+    if USE_DROPOUT_DURING_TRAINING:
+        out = Dropout(0.1)(out)
     return out
 
 def CC(inputs, filters):
@@ -1037,10 +1042,11 @@ def create_callbacks(model_name, val_generator):
     
     # Learning rate reduction
     lr_reducer = ReduceLROnPlateau(
-        monitor='val_accuracy',
+        monitor='val_mean_iou',
         factor=0.5,
         patience=5,
         min_lr=1e-5,
+        min_delta=0.005,
         verbose=1
     )
     callbacks.append(lr_reducer)
@@ -1212,6 +1218,7 @@ def main():
     model.compile(
         optimizer=optimizer,
         loss='sparse_categorical_crossentropy',
+        # loss=dice_loss,
         metrics=["accuracy", dice_loss, mean_iou]
     )
 
