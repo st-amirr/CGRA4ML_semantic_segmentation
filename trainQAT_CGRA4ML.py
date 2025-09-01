@@ -546,6 +546,17 @@ def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec")
         x = Concatenate(axis=-1, name=f'{name}_concat')([x, skip_connection])
 
     x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
+    # Spatial refinement (DW+PW) to smooth blocky upsampling artifacts
+    if use_quantization:
+        x = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_refine_dw', depthwise_quantizer=kq, bias_quantizer=bq)(x)
+        x = QActivation(qr, name=f'{name}_refine_dw_act')(x)
+        x = QConv2D(filters, 1, padding='same', name=f'{name}_refine_pw', kernel_quantizer=kq, bias_quantizer=bq)(x)
+        x = QActivation(qr, name=f'{name}_refine_pw_act')(x)
+    else:
+        x = DepthwiseConv2D((3, 3), padding='same', name=f'{name}_refine_dw')(x)
+        x = Activation('relu', name=f'{name}_refine_dw_act')(x)
+        x = Conv2D(filters, 1, padding='same', name=f'{name}_refine_pw')(x)
+        x = Activation('relu', name=f'{name}_refine_pw_act')(x)
 
     if USE_DROPOUT_DURING_TRAINING:
         x = Dropout(MODEL_CONFIG_LMIA['transformer_dropout'])(x)
