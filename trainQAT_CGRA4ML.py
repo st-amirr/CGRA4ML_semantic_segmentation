@@ -315,7 +315,7 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
     else:
         # Float32 branch
         x = Conv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3')(x)
-        x = BatchNormalization(name=f'{name}_bn')(x)
+        x = BatchNormalization(name=f'{name}_bn', renorm=True)(x)
         a = Activation('sigmoid', name=f'{name}_sigmoid')(x)
         if USE_DROPOUT_DURING_TRAINING:
             a = Dropout(0.1)(a)
@@ -428,7 +428,7 @@ def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1):
     attn = Conv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation='relu')(inputs)
     attn = Dropout(dropout_rate)(attn)
     attn = Add()([inputs, attn])
-    attn = BatchNormalization()(attn)
+    attn = BatchNormalization(renorm=True)(attn)
     # Reshape back to (batch, height, width, channels)
     out = attn  # Already (batch, height, width, channels)
     return out
@@ -1039,7 +1039,7 @@ def create_callbacks(model_name, val_generator):
     lr_reducer = ReduceLROnPlateau(
         monitor='val_accuracy',
         factor=0.5,
-        patience=7,
+        patience=5,
         min_lr=1e-5,
         verbose=1
     )
