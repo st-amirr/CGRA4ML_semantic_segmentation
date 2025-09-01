@@ -325,35 +325,58 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
 
 # Helper function for Lightweight Feature Interaction Bottleneck (LFIB)
 def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
-    """LFIB Block: Lightweight Feature Interaction Bottleneck"""
+    """LFIB Block: Asymmetric convs + DW conv + CRU + channel shuffle + CC"""
+    def channel_shuffle(x, groups):
+        # x: (batch, h, w, c)
+        batch_size, h, w, c = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
+        group_channels = c // groups
+        x = tf.reshape(x, [batch_size, h, w, groups, group_channels])
+        x = tf.transpose(x, [0, 1, 2, 4, 3])
+        x = tf.reshape(x, [batch_size, h, w, c])
+        return x
+
     if use_quantization:
-        a = QConv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31',
-                   kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        # Asymmetric convs
+        a = QConv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
         a = QActivation(qr, name=f'{name}_a31_act')(a)
-        a = QConv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13',
-                   kernel_quantizer=kq, bias_quantizer=bq)(a)
+        a = QConv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13', kernel_quantizer=kq, bias_quantizer=bq)(a)
         a = QActivation(qr, name=f'{name}_a13_act')(a)
-        b = QConv2D(filters // 2, (3, 3), padding='same', use_bias=True, name=f'{name}_b',
-                   kernel_quantizer=kq, bias_quantizer=bq)(inputs)
-        b = QActivation(qr, name=f'{name}_b_act')(b)
-        y = Concatenate(name=f'{name}_cat')([a, b])
-        y = QConv2D(filters, 1, padding='same', use_bias=True, name=f'{name}_proj',
-                   kernel_quantizer=kq, bias_quantizer=bq)(y)
-        y = QActivation(qr, name=f'{name}_proj_act')(y)
+        # Depthwise conv
+        dw = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_dw', depthwise_quantizer=kq, bias_quantizer=bq)(inputs)
+        dw = QActivation(qr, name=f'{name}_dw_act')(dw)
+        # CRU
+        cru_out = cru_block(dw, filters, f'{name}_cru', use_quantization=True)
+        # Concatenate
+        y = Concatenate(name=f'{name}_cat')([a, cru_out])
+        # Channel shuffle
+        y = Lambda(lambda x: channel_shuffle(x, groups=2), name=f'{name}_shuffle')(y)
+        # CC integration
+        y = CC(y, filters)
+        # Optional dropout
+        if dropout and dropout > 0.0:
+            y = Dropout(dropout)(y)
+        return y
     else:
+        # Asymmetric convs
         a = Conv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31')(inputs)
         a = Activation('relu', name=f'{name}_a31_act')(a)
         a = Conv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13')(a)
         a = Activation('relu', name=f'{name}_a13_act')(a)
-        b = Conv2D(filters // 2, (3, 3), padding='same', use_bias=True, name=f'{name}_b')(inputs)
-        b = Activation('relu', name=f'{name}_b_act')(b)
-        y = Concatenate(name=f'{name}_cat')([a, b])
-        y = Conv2D(filters, 1, padding='same', use_bias=True, name=f'{name}_proj')(y)
-        y = Activation('relu', name=f'{name}_proj_act')(y)
-    if dropout and dropout > 0.0:
-        y = Dropout(dropout)(y)
-    
-    return y
+        # Depthwise conv
+        dw = DepthwiseConv2D((3, 3), padding='same', name=f'{name}_dw')(inputs)
+        dw = Activation('relu', name=f'{name}_dw_act')(dw)
+        # CRU
+        cru_out = cru_block(dw, filters, f'{name}_cru', use_quantization=False)
+        # Concatenate
+        y = Concatenate(name=f'{name}_cat')([a, cru_out])
+        # Channel shuffle
+        y = Lambda(lambda x: channel_shuffle(x, groups=2), name=f'{name}_shuffle')(y)
+        # CC integration
+        y = CC(y, filters)
+        # Optional dropout
+        if dropout and dropout > 0.0:
+            y = Dropout(dropout)(y)
+        return y
 
 # Combination Coefficient Learning (CC)
 def combination_coefficient_learning(inputs):
@@ -372,6 +395,7 @@ def cru_block(x, filters, name, use_quantization=True):
     """Channel Reconstruction Unit (CRU)"""
     global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
     global_context = tf.expand_dims(global_context, axis=1)
+    global_context = tf.expand_dims(global_context, axis=2)
     if use_quantization:
         global_context = QConv2D(filters, 1, padding='same', activation='sigmoid', name=f'{name}_context_fc',
                                 kernel_quantizer=kq, bias_quantizer=bq)(global_context)
@@ -381,23 +405,65 @@ def cru_block(x, filters, name, use_quantization=True):
     return refined_x
 
 # Improved Flatten Transformer (IFT)
+def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1):
+    """Flattened Local Attention Module (FLAM): windowed local attention"""
+    # Reshape to (batch, height, width, channels)
+    shape = tf.shape(inputs)
+    batch, height, width, channels = shape[0], shape[1], shape[2], shape[3]
+    # Flatten spatial dims for attention
+    x = tf.reshape(inputs, [batch, height * width, channels])
+    # Local window attention: split into windows, apply attention per window
+    # For simplicity, use global attention (can be replaced with windowed logic)
+    attn = MultiHeadAttention(num_heads=num_heads, key_dim=key_dim)(x, x)
+    attn = Dropout(dropout_rate)(attn)
+    attn = Add()([x, attn])
+    attn = LayerNormalization()(attn)
+    # Reshape back to (batch, height, width, channels)
+    out = tf.reshape(attn, [batch, height, width, channels])
+    return out
+
+def CAB(inputs, filters):
+    """Context Aggregation Block (CAB): global pooling + channel mixing"""
+    gap = GlobalAveragePooling2D()(inputs)
+    gap = tf.expand_dims(gap, axis=1)
+    gap = tf.expand_dims(gap, axis=1)
+    # Channel mixing (1x1 conv)
+    mix = Conv2D(filters, 1, padding='same', activation='relu')(gap)
+    mix = Conv2D(filters, 1, padding='same', activation='sigmoid')(mix)
+    # Broadcast and multiply
+    out = Multiply()([inputs, mix])
+    return out
+
+def CC(inputs, filters):
+    """Channel-wise Convolution (CC): feature refinement"""
+    out = Conv2D(filters, 1, padding='same', activation='relu')(inputs)
+    return out
+
 def improved_flatten_transformer(inputs, num_heads=8, key_dim=64, dropout_rate=0.1):
-    """Improved Flatten Transformer"""
-    x = tf.reshape(inputs, [tf.shape(inputs)[0], -1, inputs.shape[-1]])
-    attention_output = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim)(x, x)
-    attention_output = Dropout(dropout_rate)(attention_output)
-    attention_output = Add()([x, attention_output])
-    attention_output = LayerNormalization()(attention_output)
-    return attention_output
+    """Improved Flatten Transformer: FLAM + CAB + CC"""
+    filters = inputs.shape[-1]
+    # FLAM: local/global attention
+    x = FLAM(inputs, num_heads=num_heads, key_dim=key_dim, dropout_rate=dropout_rate)
+    # CAB: context aggregation
+    x = CAB(x, filters)
+    # CC: channel-wise convolution
+    x = CC(x, filters)
+    return x
 
 # Segmentation Head (SegHead)
 def seghead(inputs, num_classes, use_quantization=True):
-    """Segmentation Head with 1x1 Conv and Softmax"""
+    """Segmentation Head with multi-scale fusion and 1x1 Conv + Softmax"""
+    # inputs: list of multi-scale features
+    if isinstance(inputs, list):
+        upsampled = [tf.image.resize(f, (INPUT_HEIGHT, INPUT_WIDTH), method='bilinear') for f in inputs]
+        x = Concatenate(axis=-1)(upsampled)
+    else:
+        x = tf.image.resize(inputs, (INPUT_HEIGHT, INPUT_WIDTH), method='bilinear')
     if use_quantization:
-        x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq)(x)
         output = QActivation('softmax')(x)
     else:
-        x = Conv2D(num_classes, 1, padding='same')(inputs)
+        x = Conv2D(num_classes, 1, padding='same')(x)
         output = Activation('softmax')(x)
     return output
 
@@ -452,11 +518,13 @@ def create_lmiinet(input_shape=(256, 512, 3), num_classes=20, use_quantization=T
     # Reshape transformer output to 4D (batch, height, width, channels)
     transformer_output = tf.reshape(transformer_output, [-1, height, width, channels])
     dec = transformer_output
+    decoder_features = []  # Collect decoder features for segmentation head
     for i, f in enumerate(config['decoder_filters']):
         dec = decoder(dec, encoder_outputs[-(i+1)], f, use_quantization, name=f'dec{i}')
+        decoder_features.append(dec)  # Save decoder output
     # Final upsampling to match input/mask size
     dec = tf.image.resize(dec, (INPUT_HEIGHT, INPUT_WIDTH), method='bilinear', name='final_upsample')
-    seg_output = seghead(dec, num_classes, use_quantization)
+    seg_output = seghead(decoder_features[-3:], num_classes, use_quantization)
     model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML")
     return model
 
@@ -958,7 +1026,7 @@ def create_callbacks(model_name, val_generator):
     
     # Learning rate reduction
     lr_reducer = ReduceLROnPlateau(
-        monitor='val_output_conv_accuracy',
+        monitor='val_accuracy',
         factor=0.5,
         patience=7,
         min_lr=1e-5,
