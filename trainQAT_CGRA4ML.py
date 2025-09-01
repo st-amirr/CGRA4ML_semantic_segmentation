@@ -263,20 +263,34 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
 
 # Replace manual quantization config with AutoQKeras scheduler in main training loop
 
+# CGRA4ML-Compatible Channel Shuffle Implementation
+def cgra4ml_channel_shuffle(inputs, groups=2, name="shuffle"):
+    """
+    CGRA4ML-compatible channel shuffle using only supported operations.
+    Simulates channel shuffle effect using slice and concatenate operations.
+    """
+   
+    # Split channels into groups using slicing (CGRA4ML compatible)
+    group_1 = inputs[:, :, :, :inputs.shape[-1] // groups]
+    group_2 = inputs[:, :, :, :inputs.shape[-1] // groups]
+    
+    # Interleave groups by concatenating in reverse order
+    # This creates a shuffle-like effect
+    shuffled = Concatenate(axis=-1, name=f'{name}_concat')([group_2, group_1])
+    
+    return shuffled
+
 # Helper function for Feature Enhancement (FE) block
 def feature_enhancement(inputs, filters, name, use_quantization=True):
     """CGRA4ML-Compatible Feature Enhancement Block"""
     
-    # CGRA4ML: Use static reshapes with known dimensions
-    channels = inputs.shape[-1]
-    
     # t.Mean: Apply Global Average Pooling (GAP)
     gap = GlobalAveragePooling2D()(inputs)
-    gap = Reshape((1, 1, channels))(gap)
+    gap = Reshape((1, 1, inputs.shape[-1]))(gap)
 
     # t.Max: Apply Global Max Pooling (GMP)
     gmp = GlobalMaxPooling2D()(inputs)
-    gmp = Reshape((1, 1, channels))(gmp)
+    gmp = Reshape((1, 1, inputs.shape[-1]))(gmp)
 
     # Concatenate GAP and GMP along the channel axis (axis=-1)
     x = Concatenate(axis=-1)([gap, gmp])
@@ -293,7 +307,7 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
         a2 = QActivation('sigmoid', name=f'{name}_sigmoid_a2')(x2)
 
         gap2 = GlobalAveragePooling2D()(inputs)
-        gap2 = Reshape((1, 1, channels))(gap2)
+        gap2 = Reshape((1, 1, inputs.shape[-1]))(gap2)
         x3 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1', kernel_quantizer=kq, bias_quantizer=bq)(gap2)
         x3 = QActivation('relu', name=f'{name}_relu2')(x3)
         x3 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1_final', kernel_quantizer=kq, bias_quantizer=bq)(x3)
@@ -313,7 +327,7 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
         a2 = Activation('sigmoid', name=f'{name}_sigmoid_a2')(x2)
 
         gap2 = GlobalAveragePooling2D()(inputs)
-        gap2 = Reshape((1, 1, channels))(gap2)
+        gap2 = Reshape((1, 1, inputs.shape[-1]))(gap2)
         x3 = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1')(gap2)
         x3 = Activation('relu', name=f'{name}_relu2')(x3)
         x3 = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1_final')(x3)
@@ -339,7 +353,9 @@ def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
         cru_out = cru_block(dw, filters, f'{name}_cru', use_quantization=True)
         # Concatenate
         y = Concatenate(name=f'{name}_cat')([a, cru_out])
-        # CGRA4ML: Replace channel shuffle with simple conv for channel mixing
+        # CGRA4ML: Use custom channel shuffle function (better than simple conv)
+        y = cgra4ml_channel_shuffle(y, groups=2, name=f'{name}_shuffle')
+        # Apply final channel mixing conv after shuffle
         y = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_channel_mix', kernel_quantizer=kq, bias_quantizer=bq)(y)
         # CC integration
         y = CC(y, filters)
@@ -360,7 +376,9 @@ def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
         cru_out = cru_block(dw, filters, f'{name}_cru', use_quantization=False)
         # Concatenate
         y = Concatenate(name=f'{name}_cat')([a, cru_out])
-        # CGRA4ML: Replace channel shuffle with simple conv for channel mixing
+        # CGRA4ML: Use custom channel shuffle function (better than simple conv)
+        y = cgra4ml_channel_shuffle(y, groups=2, name=f'{name}_shuffle')
+        # Apply final channel mixing conv after shuffle
         y = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_channel_mix')(y)
         # CC integration
         y = CC(y, filters)
@@ -384,9 +402,9 @@ def combination_coefficient_learning(inputs):
 # Channel Reconstruction Unit (CRU)
 def cru_block(x, filters, name, use_quantization=True):
     """CGRA4ML-Compatible Channel Reconstruction Unit (CRU)"""
-    channels = x.shape[-1]
+
     global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
-    global_context = Reshape((1, 1, channels))(global_context)
+    global_context = Reshape((1, 1, x.shape[-1]))(global_context)
     if use_quantization:
         global_context = QConv2D(filters, 1, padding='same', activation='sigmoid', name=f'{name}_context_fc',
                                 kernel_quantizer=kq, bias_quantizer=bq)(global_context)
@@ -398,10 +416,9 @@ def cru_block(x, filters, name, use_quantization=True):
 # Improved Flatten Transformer (IFT)
 def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1):
     """CGRA4ML-Compatible Flattened Local Attention Module (FLAM)"""
-    # CGRA4ML: Use static operations only, no tf.shape/tf.reshape
-    channels = inputs.shape[-1]
+
     # Simulate local attention with dilated convolution (CGRA4ML compatible)
-    attn = Conv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation='relu')(inputs)
+    attn = Conv2D(filters=inputs.shape[-1], kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation='relu')(inputs)
     attn = Dropout(dropout_rate)(attn)
     attn = Add()([inputs, attn])
     attn = BatchNormalization(renorm=True)(attn)
@@ -415,8 +432,7 @@ def CAB(inputs, filters):
     """CGRA4ML-Compatible Context Aggregation Block (CAB)"""
     gap = GlobalAveragePooling2D()(inputs)
     # CGRA4ML: Use static reshape with known dimensions
-    channels = inputs.shape[-1]
-    gap = Reshape((1, 1, channels))(gap)
+    gap = Reshape((1, 1, inputs.shape[-1]))(gap)
     # Channel mixing (1x1 conv)
     mix = Conv2D(filters, 1, padding='same', activation='relu')(gap)
     mix = Conv2D(filters, 1, padding='same', activation='sigmoid')(mix)
@@ -433,13 +449,13 @@ def CC(inputs, filters):
 
 def improved_flatten_transformer(inputs, num_heads=8, key_dim=64, dropout_rate=0.1):
     """Improved Flatten Transformer: FLAM + CAB + CC"""
-    filters = inputs.shape[-1]
+
     # FLAM: local/global attention
     x = FLAM(inputs, num_heads=num_heads, key_dim=key_dim, dropout_rate=dropout_rate)
     # CAB: context aggregation
-    x = CAB(x, filters)
+    x = CAB(x, inputs.shape[-1])
     # CC: channel-wise convolution
-    x = CC(x, filters)
+    x = CC(x, inputs.shape[-1])
     return x
 
 # Segmentation Head (SegHead)
@@ -1088,7 +1104,7 @@ def create_callbacks(model_name, val_generator):
     checkpoint_path = os.path.join(MODELS_DIR, f"{model_name}_checkpoint_epoch_{{epoch:02d}}.weights.h5")
     checkpoint_callback = ModelCheckpoint(
         filepath=checkpoint_path,
-        monitor='val_loss',
+        monitor='val_mean_iou',
         save_best_only=False,  # Save every epoch, not just best
         save_weights_only=True,  # Save weights only to avoid Keras format issues
         mode='min',
@@ -1386,7 +1402,8 @@ def main():
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     model.compile(
         optimizer=optimizer,
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, ignore_class=255),
+        # loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, ignore_class=255),
+        loss=dice_loss,
         metrics=[accuracy, dice_loss, mean_iou]
     )
 
