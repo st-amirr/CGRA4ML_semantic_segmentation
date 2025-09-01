@@ -412,8 +412,6 @@ def cru_block(x, filters, name, use_quantization=True):
     else:
         global_context = Conv2D(filters, 1, padding='same', activation='sigmoid', name=f'{name}_context_fc')(global_context)
     refined_x = Multiply()([x, global_context])
-    if USE_DROPOUT_DURING_TRAINING:
-            refined_x = Dropout(0.1)(refined_x)
     return refined_x
 
 # Improved Flatten Transformer (IFT)
