@@ -205,7 +205,7 @@ def safe_configure_tensorflow(debug_mode=False):
                 try:
                     tf.config.set_logical_device_configuration(
                         gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 9)],
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * 12)],
                     )
                 except RuntimeError:
                     pass
@@ -272,7 +272,7 @@ def cgra4ml_channel_shuffle(inputs, groups=2, name="shuffle"):
    
     # Split channels into groups using slicing (CGRA4ML compatible)
     group_1 = inputs[:, :, :, :inputs.shape[-1] // groups]
-    group_2 = inputs[:, :, :, :inputs.shape[-1] // groups]
+    group_2 = inputs[:, :, :, inputs.shape[-1] // groups:]
     
     # Interleave groups by concatenating in reverse order
     # This creates a shuffle-like effect
@@ -337,67 +337,82 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
         return output
 
 # Helper function for Lightweight Feature Interaction Bottleneck (LFIB)
-def lfib(inputs, filters, name, dropout=0.0, use_quantization=True):
-    """LFIB Block: Asymmetric convs + DW conv + CRU + channel mixing + CC"""
-
+def lfib(inputs, filters, name, use_quantization=True):
+    """Lightweight Feature Interaction Bottleneck (LFIB) - Paper Accurate"""
+    
+    # Initial 1x1 convolution
     if use_quantization:
-        # Asymmetric convs
-        a = QConv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
-        a = QActivation(qr, name=f'{name}_a31_act')(a)
-        a = QConv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13', kernel_quantizer=kq, bias_quantizer=bq)(a)
-        a = QActivation(qr, name=f'{name}_a13_act')(a)
-        # Depthwise conv
-        dw = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_dw', depthwise_quantizer=kq, bias_quantizer=bq)(inputs)
-        dw = QActivation(qr, name=f'{name}_dw_act')(dw)
-        # CRU
-        cru_out = cru_block(dw, filters, f'{name}_cru', use_quantization=True)
-        # Concatenate
-        y = Concatenate(name=f'{name}_cat')([a, cru_out])
-        # CGRA4ML: Use custom channel shuffle function (better than simple conv)
-        y = cgra4ml_channel_shuffle(y, groups=2, name=f'{name}_shuffle')
-        # Apply final channel mixing conv after shuffle
-        y = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_channel_mix', kernel_quantizer=kq, bias_quantizer=bq)(y)
-        # CC integration
-        y = CC(y, filters)
-        # Optional dropout
-        if USE_DROPOUT_DURING_TRAINING:
-            y = Dropout(0.1)(y)
-        return y
+        f1 = QConv2D(filters, 1, padding='same', name=f'{name}_f1_conv', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        f1 = QActivation(qr, name=f'{name}_f1_act')(f1)
     else:
-        # Asymmetric convs
-        a = Conv2D(filters // 2, (3, 1), padding='same', use_bias=True, name=f'{name}_a31')(inputs)
-        a = Activation('relu', name=f'{name}_a31_act')(a)
-        a = Conv2D(filters // 2, (1, 3), padding='same', use_bias=True, name=f'{name}_a13')(a)
-        a = Activation('relu', name=f'{name}_a13_act')(a)
-        # Depthwise conv
-        dw = DepthwiseConv2D((3, 3), padding='same', name=f'{name}_dw')(inputs)
-        dw = Activation('relu', name=f'{name}_dw_act')(dw)
-        # CRU
-        cru_out = cru_block(dw, filters, f'{name}_cru', use_quantization=False)
-        # Concatenate
-        y = Concatenate(name=f'{name}_cat')([a, cru_out])
-        # CGRA4ML: Use custom channel shuffle function (better than simple conv)
-        y = cgra4ml_channel_shuffle(y, groups=2, name=f'{name}_shuffle')
-        # Apply final channel mixing conv after shuffle
-        y = Conv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_channel_mix')(y)
-        # CC integration
-        y = CC(y, filters)
-        # Optional dropout
-        if USE_DROPOUT_DURING_TRAINING:
-            y = Dropout(0.1)(y)
-        return y
+        f1 = Conv2D(filters, 1, padding='same', name=f'{name}_f1_conv')(inputs)
+        f1 = Activation('relu', name=f'{name}_f1_act')(f1)
 
-# Combination Coefficient Learning (CC)
-def combination_coefficient_learning(inputs):
-    """Combination Coefficient Learning (CC) with GAP + SDP"""
-    gap = GlobalAveragePooling2D()(inputs)
-    sdp = GlobalAveragePooling2D()(inputs)  # Standard Deviation Pooling
-    gap = Activation('relu')(gap)
-    sdp = Activation('relu')(sdp)
-    gap = Activation('sigmoid')(gap)
-    sdp = Activation('sigmoid')(sdp)
-    combined = Multiply()([gap, sdp])
-    return combined
+    # Channel split
+    f21 = f1[:, :, :, :filters//2]
+    f22 = f1[:, :, :, filters//2:]
+
+    # CC modules
+    CC1 = CC(f22, filters // 2, name_prefix=f'{name}_CC1')
+    CC2 = CC(f21, filters // 2, name_prefix=f'{name}_CC2')
+
+    # Left branch
+    left_branch_input = Add(name=f'{name}_left_add')([f21, CC1])
+    if use_quantization:
+        left_out = QConv2D(filters // 2, (3, 1), padding='same', name=f'{name}_left_3x1', kernel_quantizer=kq, bias_quantizer=bq)(left_branch_input)
+        left_out = QActivation(qr, name=f'{name}_left_3x1_act')(left_out)
+        left_out = QConv2D(filters // 2, (1, 3), padding='same', name=f'{name}_left_1x3', kernel_quantizer=kq, bias_quantizer=bq)(left_out)
+        left_out = QActivation(qr, name=f'{name}_left_1x3_act')(left_out)
+    else:
+        left_out = Conv2D(filters // 2, (3, 1), padding='same', name=f'{name}_left_3x1')(left_branch_input)
+        left_out = Activation('relu', name=f'{name}_left_3x1_act')(left_out)
+        left_out = Conv2D(filters // 2, (1, 3), padding='same', name=f'{name}_left_1x3')(left_out)
+        left_out = Activation('relu', name=f'{name}_left_1x3_act')(left_out)
+
+    # Right branch
+    right_branch_input = Add(name=f'{name}_right_add')([f22, CC2])
+    if use_quantization:
+        right_out = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_right_dw', depthwise_quantizer=kq, bias_quantizer=bq)(right_branch_input)
+        right_out = QActivation(qr, name=f'{name}_right_dw_act')(right_out)
+        right_out = QConv2D(filters // 2, 1, padding='same', name=f'{name}_right_pw', kernel_quantizer=kq, bias_quantizer=bq)(right_out)
+        right_out = QActivation(qr, name=f'{name}_right_pw_act')(right_out)
+    else:
+        right_out = DepthwiseConv2D((3, 3), padding='same', name=f'{name}_right_dw')(right_branch_input)
+        right_out = Activation('relu', name=f'{name}_right_dw_act')(right_out)
+        right_out = Conv2D(filters // 2, 1, padding='same', name=f'{name}_right_pw')(right_out)
+        right_out = Activation('relu', name=f'{name}_right_pw_act')(right_out)
+
+    # Fusion
+    f2 = Concatenate(name=f'{name}_concat_branches')([left_out, right_out])
+    cru_out = cru_block(f1, filters, f'{name}_cru', use_quantization=use_quantization)
+    f2_plus_cru = Add(name=f'{name}_add_cru')([f2, cru_out])
+
+    # Residual connection
+    residual = Add(name=f'{name}_add_residual')([inputs, f2_plus_cru])
+
+    # Final DW Conv + Channel Shuffle
+    if use_quantization:
+        final_out = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_final_dw', depthwise_quantizer=kq, bias_quantizer=bq)(residual)
+        final_out = QActivation(qr, name=f'{name}_final_dw_act')(final_out)
+    else:
+        final_out = DepthwiseConv2D((3, 3), padding='same', name=f'{name}_final_dw')(residual)
+        final_out = Activation('relu', name=f'{name}_final_dw_act')(final_out)
+        
+    shuffled_out = cgra4ml_channel_shuffle(final_out, groups=2, name=f'{name}_shuffle')
+    
+    return shuffled_out
+
+def CC(inputs, filters, name_prefix):
+    """Combination Coefficient Learning (CC) - CGRA4ML Compatible"""
+    # Global Average Pooling
+    gap = GlobalAveragePooling2D(name=f'{name_prefix}_gap')(inputs)
+    gap = Reshape((1, 1, inputs.shape[-1]), name=f'{name_prefix}_gap_reshape')(gap)
+
+    # Use Dense layers to learn channel-wise attention
+    sdp = Dense(filters, activation='relu', name=f'{name_prefix}_sdp_dense1')(gap)
+    sdp = Dense(filters, activation='sigmoid', name=f'{name_prefix}_sdp_dense2')(sdp)
+
+    return Multiply(name=f'{name_prefix}_multiply')([inputs, sdp])
 
 # Channel Reconstruction Unit (CRU)
 def cru_block(x, filters, name, use_quantization=True):
@@ -414,65 +429,90 @@ def cru_block(x, filters, name, use_quantization=True):
     return refined_x
 
 # Improved Flatten Transformer (IFT)
-def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1):
+def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1, use_quantization=True):
     """CGRA4ML-Compatible Flattened Local Attention Module (FLAM)"""
-
-    # Simulate local attention with dilated convolution (CGRA4ML compatible)
-    attn = Conv2D(filters=inputs.shape[-1], kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation='relu')(inputs)
-    attn = Dropout(dropout_rate)(attn)
-    attn = Add()([inputs, attn])
-    attn = BatchNormalization(renorm=True)(attn)
-    # Reshape back to (batch, height, width, channels)
-    out = attn  # Already (batch, height, width, channels)
+    channels = inputs.shape[-1]
+    if use_quantization:
+        attn = QConv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation=qr, name="flam_attn_conv", kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        attn = Dropout(dropout_rate)(attn)
+        attn = Add()([inputs, attn])
+        attn = QBatchNormalization(name="flam_bn")(attn)
+    else:
+        attn = Conv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation='relu', name="flam_attn_conv")(inputs)
+        attn = Dropout(dropout_rate)(attn)
+        attn = Add()([inputs, attn])
+        attn = BatchNormalization(renorm=True, name="flam_bn")(attn)
+    out = attn
     if USE_DROPOUT_DURING_TRAINING:
         out = Dropout(0.1)(out)
     return out
 
-def CAB(inputs, filters):
+def CAB(inputs, filters, use_quantization=True):
     """CGRA4ML-Compatible Context Aggregation Block (CAB)"""
     gap = GlobalAveragePooling2D()(inputs)
-    # CGRA4ML: Use static reshape with known dimensions
     gap = Reshape((1, 1, inputs.shape[-1]))(gap)
-    # Channel mixing (1x1 conv)
-    mix = Conv2D(filters, 1, padding='same', activation='relu')(gap)
-    mix = Conv2D(filters, 1, padding='same', activation='sigmoid')(mix)
-    # Broadcast and multiply
+    if use_quantization:
+        mix = QConv2D(filters, 1, padding='same', activation=qr, name="cab_mix1", kernel_quantizer=kq, bias_quantizer=bq)(gap)
+        mix = QConv2D(filters, 1, padding='same', activation='sigmoid', name="cab_mix2", kernel_quantizer=kq, bias_quantizer=bq)(mix)
+    else:
+        mix = Conv2D(filters, 1, padding='same', activation='relu', name="cab_mix1")(gap)
+        mix = Conv2D(filters, 1, padding='same', activation='sigmoid', name="cab_mix2")(mix)
     out = Multiply()([inputs, mix])
     if USE_DROPOUT_DURING_TRAINING:
         out = Dropout(0.1)(out)
     return out
 
-def CC(inputs, filters):
-    """Channel-wise Convolution (CC): feature refinement"""
-    out = Conv2D(filters, 1, padding='same', activation='relu')(inputs)
-    return out
 
-def improved_flatten_transformer(inputs, num_heads=8, key_dim=64, dropout_rate=0.1):
+def improved_flatten_transformer(inputs, num_heads=8, key_dim=64, dropout_rate=0.1, use_quantization=True):
     """Improved Flatten Transformer: FLAM + CAB + CC"""
-
+    filters = inputs.shape[-1]
     # FLAM: local/global attention
-    x = FLAM(inputs, num_heads=num_heads, key_dim=key_dim, dropout_rate=dropout_rate)
+    x = FLAM(inputs, num_heads=num_heads, key_dim=key_dim, dropout_rate=dropout_rate, use_quantization=use_quantization)
     # CAB: context aggregation
-    x = CAB(x, inputs.shape[-1])
+    x = CAB(x, filters, use_quantization=use_quantization)
     # CC: channel-wise convolution
-    x = CC(x, inputs.shape[-1])
+    x = CC(x, filters, name_prefix="ift_cc")
     return x
 
 # Segmentation Head (SegHead)
-def seghead(inputs, num_classes, use_quantization=True):
-    """Segmentation Head with multi-scale fusion and 1x1 Conv + Softmax"""
-    # CGRA4ML: Simplified approach - assume final decoder output is already at correct resolution
-    if isinstance(inputs, list):
-        # Use the highest resolution feature (typically the last one)
-        x = inputs[-1]  # Take the final decoder output
-    else:
-        x = inputs
+def seghead(inputs, num_classes, use_quantization=True, config=MODEL_CONFIG_LMIA):
+    """Segmentation Head with multi-scale fusion, following the paper's design."""
+    # 1. Upsample and Concatenate features
+    high_res_feature = inputs[-1]
+    target_shape = high_res_feature.shape
+    target_height, target_width = target_shape[1], target_shape[2]
+
+    fused_features = []
+    for feature in inputs:
+        feature_shape = feature.shape
+        if feature_shape[1] != target_height or feature_shape[2] != target_width:
+            scale_height = target_height // feature_shape[1]
+            scale_width = target_width // feature_shape[2]
+            upsampled = UpSampling2D(size=(scale_height, scale_width), interpolation='nearest')(feature)
+            fused_features.append(upsampled)
+        else:
+            fused_features.append(feature)
+    
+    x = Concatenate(axis=-1)(fused_features)
+
+    # 2. Apply two convolution layers as per the paper
+    seghead_filters = config.get('seghead_filters', 64) # Get from config or default to 64
+
     if use_quantization:
-        x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq)(x)
-        output = QActivation('softmax')(x)
+        # First 1x1 convolution
+        x = QConv2D(seghead_filters, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="seghead_conv1")(x)
+        x = QActivation(qr, name="seghead_relu")(x)
+        # Second 1x1 convolution (classifier)
+        x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="seghead_conv2")(x)
+        output = Activation('softmax', name="output_softmax")(x)
     else:
-        x = Conv2D(num_classes, 1, padding='same')(x)
-        output = Activation('softmax')(x)
+        # First 1x1 convolution
+        x = Conv2D(seghead_filters, 1, padding='same', name="seghead_conv1")(x)
+        x = Activation('relu', name="seghead_relu")(x)
+        # Second 1x1 convolution (classifier)
+        x = Conv2D(num_classes, 1, padding='same', name="seghead_conv2")(x)
+        output = Activation('softmax', name="output_softmax")(x)
+        
     return output
 
 # Encoder Block (initial block, downsampling, LFIB, FE)
@@ -488,20 +528,23 @@ def encoder(inputs, filters, use_quantization=True, name="enc"):
         x = Activation('relu', name=f'{name}_act')(x)
         if USE_DROPOUT_DURING_TRAINING:
             x = Dropout(MODEL_CONFIG_LMIA['transformer_dropout'])(x)
-    x = lfib(x, filters, f'{name}_lfib', dropout=0.05, use_quantization=use_quantization)
+    x = lfib(x, filters, f'{name}_lfib', use_quantization=use_quantization)
     x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
     return x
 
 # Decoder Block (upsampling, LFIB, FE)
 def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec"):
-    """Decoder Block with UpSampling, FE, and Skip Connections"""
+    """Decoder Block with UpSampling, optional skip concat, and FE.
+
+    Expects skip_connection to have same HxW as upsampled inputs. If None, skips concat.
+    """
     # First upsample the decoder input
     x = UpSampling2D(size=(2, 2), interpolation='nearest', name=f'{name}_upsample')(inputs)
-    
-    # Skip connection should already have matching spatial dimensions with upsampled x
-    # If there's still a mismatch, it means the encoder-decoder flow is wrong
-    # Let's concatenate directly without additional upsampling
-    x = Concatenate(axis=-1, name=f'{name}_concat')([x, skip_connection])
+
+    # Concatenate with skip if provided
+    if skip_connection is not None:
+        x = Concatenate(axis=-1, name=f'{name}_concat')([x, skip_connection])
+
     x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
 
     if USE_DROPOUT_DURING_TRAINING:
@@ -509,49 +552,50 @@ def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec")
     return x
 
 # LMIINet Model
-def create_lmiinet(input_shape=(256, 512, 3), num_classes=20, use_quantization=True, config=MODEL_CONFIG_LMIA):
+def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=True, config=MODEL_CONFIG_LMIA):
     inputs = Input(shape=input_shape, name="input_image")
-    enc = inputs
-    encoder_outputs = []
-    for idx, f in enumerate(config['encoder_filters']):
-        enc = encoder(enc, f, use_quantization, name=f'enc{idx}')
+
+    # Initial downsampling stem
+    if use_quantization:
+        stem = QConv2D(config['encoder_filters'][0], (3, 3), strides=2, padding='same', name='stem_conv', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+        stem = QActivation(qr, name='stem_act')(stem)
+    else:
+        stem = Conv2D(config['encoder_filters'][0], (3, 3), strides=2, padding='same', name='stem_conv')(inputs)
+        stem = Activation('relu', name='stem_act')(stem)
+
+    # Encoder
+    enc = stem
+    encoder_outputs = [enc] # Start with stem output
+    for i, f in enumerate(config['encoder_filters'][1:]): # Start from the second filter size
+        enc = encoder(enc, f, use_quantization, name=f'enc{i+1}')
         encoder_outputs.append(enc)
-    # CGRA4ML: Simplified transformer without tf.shape/tf.reshape
+
+    # Transformer
     transformer_output = improved_flatten_transformer(
         enc,
         num_heads=config.get('transformer_heads', 8),
         key_dim=config.get('transformer_key_dim', 64),
-        dropout_rate=config.get('transformer_dropout', 0.1)
+        dropout_rate=config.get('transformer_dropout', 0.1),
+        use_quantization=use_quantization
     )
-    # Transformer output is already in correct 4D format
-    dec = transformer_output
-    decoder_features = []  # Collect decoder features for segmentation head
-    
-    for i, f in enumerate(config['decoder_filters']):
-        # Correct skip connection indexing:
-        # dec0: upsample transformer (32,64) -> (64,128) + skip from enc2 (64,128)
-        # dec1: upsample dec0 (64,128) -> (128,256) + skip from enc1 (128,256)  
-        # dec2: upsample dec1 (128,256) -> (256,512) + skip from enc0 (256,512)
-        # dec3: upsample dec2 (256,512) -> final output
-        
-        if i < len(encoder_outputs) - 1:  # Only use skip connections for first 3 decoders
-            skip_idx = -(i+2)  # -2, -3, -4 (skip enc3, use enc2, enc1, enc0)
-            skip_connection = encoder_outputs[skip_idx]
-        else:
-            skip_connection = None # no skip connection (final decoder)
 
-        if skip_connection is not None:
-            dec = decoder(dec, skip_connection, f, use_quantization, name=f'dec{i}')
-        else:
-            
-            dec = UpSampling2D(size=(2, 2), interpolation='nearest', name=f'dec{i}_upsample')(dec) # Final decoder without skip connection
-            dec = feature_enhancement(dec, f, f'dec{i}_fe', use_quantization=use_quantization)
-            
-        decoder_features.append(dec)  # Save decoder output
-    # CGRA4ML: Remove final upsampling - assume decoder output is at correct resolution
-    # dec = tf.image.resize(dec, (INPUT_HEIGHT, INPUT_WIDTH), method='bilinear', name='final_upsample')
-    seg_output = seghead(decoder_features[-3:], num_classes, use_quantization)
-    model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML")
+    # Decoder
+    dec = transformer_output
+    decoder_features = []
+    for i, f in enumerate(config['decoder_filters']):
+        # Align skip connections to the spatial size AFTER upsampling:
+        # dec (1/16) -> upsample (1/8) should use encoder 1/8 (index -2), etc.
+        skip_idx = -(i + 2)
+        skip_connection = encoder_outputs[skip_idx] if abs(skip_idx) <= len(encoder_outputs) else None
+        dec = decoder(dec, skip_connection, f, use_quantization, name=f'dec{i}')
+        decoder_features.append(dec)
+
+    # SegHead
+    # The paper mentions using features from 1/2, 1/4, and 1/8 scales.
+    # In our setup, this corresponds to the outputs of the last three decoder blocks.
+    seg_output = seghead(decoder_features[-3:], num_classes, use_quantization, config=config)
+    
+    model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML_Paper_Accurate")
     return model
 
 
@@ -1402,8 +1446,8 @@ def main():
     optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     model.compile(
         optimizer=optimizer,
-        # loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, ignore_class=255),
-        loss=dice_loss,
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, ignore_class=255),
+        # loss=dice_loss,
         metrics=[accuracy, dice_loss, mean_iou]
     )
 
