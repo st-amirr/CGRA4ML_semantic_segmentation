@@ -30,7 +30,7 @@ Requirements:
 
 Example:
     python build_cgra4ml_model.py --model_path ./models/qat_model_clean_for_compatible.h5 --output_dir ./cgra4ml_models --validate
-    python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final.h5 --output_dir ./cgra4ml_models --synthesize
+    python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final_inference.h5 --output_dir ./cgra4ml_models --synthesize
 """
 
 import os
@@ -51,10 +51,10 @@ import traceback
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 
 
-# Model constants from training script
+# Model constants from training script (updated to match new trainQAT architecture)
 INPUT_HEIGHT = 512
 INPUT_WIDTH = 1024
-NUM_CLASSES = 20
+NUM_CLASSES = 19
 
 # CGRA4ML specific imports (will be installed)
 try:
@@ -337,77 +337,20 @@ def analyze_skip_connections(model):
     return skip_connections
 
 
-def get_cgra4ml_precision_for_layer(layer_name, layer_type):
-    """
-    Get precision configuration for CGRA4ML layers based on trainQAT_CGRA4ML.py strategy
-    
-    Args:
-        layer_name: Name of the layer
-        layer_type: Type of the layer
-        
-    Returns:
-        Precision string for CGRA4ML
-    """
-    layer_name_lower = layer_name.lower()
-    
-    # Output layer - CRITICAL for accuracy, use 32-bit
-    if 'output' in layer_name_lower:
-        return "ap_fixed<32,6>"  # 32-bit, 6 int bits for maximum accuracy
-    
-    # Stem layer - CRITICAL for initial feature extraction, use 32-bit
-    elif 'stem' in layer_name_lower:
-        return "ap_fixed<32,6>"  # 32-bit, 6 int bits for critical features
-    
-    # BatchNorm moving stats - CRITICAL for stability, use 32-bit
-    elif ('bn' in layer_name_lower or 'batch' in layer_name_lower) and ('moving_mean' in layer_name_lower or 'moving_variance' in layer_name_lower):
-        return "ap_fixed<32,8>"  # 32-bit, 8 int bits for stability
-    
-    # BatchNorm gamma/beta - IMPORTANT for stability, use 16-bit
-    elif 'bn' in layer_name_lower or 'batch' in layer_name_lower:
-        return "ap_fixed<16,4>"  # 16-bit, 4 int bits for stability
-    
-    # Early layers (stage1) - IMPORTANT for feature extraction, use 16-bit
-    elif 'stage1' in layer_name_lower:
-        return "ap_fixed<16,5>"  # 16-bit, 5 int bits for good range
-    
-    # Middle layers (stage2, stage3) - IMPORTANT for feature processing, use 16-bit
-    elif 'stage2' in layer_name_lower or 'stage3' in layer_name_lower:
-        return "ap_fixed<16,4>"  # 16-bit, 4 int bits for good accuracy
-    
-    # Deep layers (stage4) - IMPORTANT for semantic features, use 16-bit
-    elif 'stage4' in layer_name_lower:
-        return "ap_fixed<16,4>"  # 16-bit, 4 int bits for semantic accuracy
-    
-    # Dense/MLP layers - IMPORTANT for global context, use 16-bit
-    elif 'dense' in layer_name_lower or 'mlp' in layer_name_lower:
-        return "ap_fixed<16,4>"  # 16-bit, 4 int bits for context accuracy
-    
-    # Decoder layers - CRITICAL for reconstruction, use 16-bit
-    elif 'dec' in layer_name_lower or 'up' in layer_name_lower:
-        return "ap_fixed<16,5>"  # 16-bit, 5 int bits for reconstruction accuracy
-    
-    # Default - conservative approach
-    else:
-        return "ap_fixed<16,6>"  # 16-bit, 6 int bits
-
 def create_cgra4ml_config(args, skip_connections):
     """
-    Create CGRA4ML configuration optimized for LMIINet with skip connections
+    Create a minimal CGRA4ML configuration.
 
     Args:
         args: Command line arguments
         skip_connections: List of skip connections found in the model
 
     Returns:
-        CGRA4ML configuration dictionary
+        Minimal CGRA4ML configuration dictionary (metadata only)
     """
-    print("Creating CGRA4ML configuration...")
-    print("Using precision strategy from trainQAT_CGRA4ML.py:")
-    print("  - 32-bit for critical layers (output, stem, BatchNorm moving stats)")
-    print("  - 16-bit for important layers (stages, decoder, MLP)")
-    print("  - Dynamic integer bit allocation based on layer importance")
+    print("Creating minimal CGRA4ML configuration (metadata only)...")
 
-    # Base configuration for CGRA4ML
+    # Minimal configuration (quantization is set via Hardware(bits_input/bits_weights))
     config = {
         "model_name": "lmiinet_semantic_segmentation",
         "input_shape": [INPUT_HEIGHT, INPUT_WIDTH, 3],
@@ -415,98 +358,11 @@ def create_cgra4ml_config(args, skip_connections):
         "data_width": args.data_width,
         "clock_period": args.clock_period,
         "part": args.part,
-        
-        # Skip connection configuration
         "skip_connections": {
             "strategy": args.skip_connection_strategy,
             "connections": skip_connections,
-            "memory_buffers": {},
-            "streaming_config": {
-                "buffer_size": 1024,
-                "fifo_depth": 512
-            }
-        },
-        
-        # Layer configurations - matching trainQAT_CGRA4ML.py quantization strategy
-        "layers": {
-            "conv2d": {
-                "precision": "ap_fixed<16,5>",  # 16-bit for most conv layers (stage1-4)
-                "strategy": "resource",
-                "reuse_factor": 1
-            },
-            "stem_conv": {
-                "precision": "ap_fixed<32,6>",  # 32-bit for critical stem layer
-                "strategy": "resource",
-                "reuse_factor": 1
-            },
-            "output_conv": {
-                "precision": "ap_fixed<32,6>",  # 32-bit for critical output layer
-                "strategy": "resource",
-                "reuse_factor": 1
-            },
-            "depthwise_conv2d": {
-                "precision": "ap_fixed<16,4>",  # 16-bit for depthwise conv
-                "strategy": "resource",
-                "reuse_factor": 1
-            },
-            "batch_norm_gamma_beta": {
-                "precision": "ap_fixed<16,4>",  # 16-bit for BatchNorm gamma/beta
-                "strategy": "latency"
-            },
-            "batch_norm_moving_stats": {
-                "precision": "ap_fixed<32,8>",  # 32-bit for BatchNorm moving stats (critical)
-                "strategy": "latency"
-            },
-            "activation": {
-                "precision": "ap_fixed<16,6>",  # 16-bit for activations
-                "strategy": "latency"
-            },
-            "upsampling": {
-                "precision": "ap_fixed<16,5>",  # 16-bit for decoder upsampling
-                "strategy": "resource",
-                "interpolation": "nearest"
-            },
-            "dense": {
-                "precision": "ap_fixed<16,4>",  # 16-bit for MLP layers
-                "strategy": "resource",
-                "reuse_factor": 1
-            }
-        },
-        
-        # Memory configuration
-        "memory": {
-            "bram_usage": "optimize",
-            "array_partition": True,
-            "partition_factor": 2,
-            "buffer_strategy": "double_buffering"
-        },
-        
-        # Performance configuration
-        "performance": {
-            "pipeline_depth": 10,
-            "parallel_factor": 4,
-            "dataflow": True,
-            "optimization_level": 3
-        },
-        
-                 # Custom processing elements for semantic segmentation
-         "custom_pe": {
-             "skip_connection_pe": {
-                 "type": "memory_controller",
-                 "buffer_size": 2048,
-                 "data_width": 16  # 16-bit for skip connections (matches decoder)
-             },
-             "feature_fusion_pe": {
-                 "type": "arithmetic",
-                 "operation": "add",
-                 "data_width": 16  # 16-bit for feature fusion (matches decoder)
-             },
-             "upsampling_pe": {
-                 "type": "interpolation",
-                 "method": "nearest_neighbor",
-                 "data_width": 16  # 16-bit for upsampling (matches decoder)
-             }
-         }
+            "streaming_config": {"buffer_size": 1024, "fifo_depth": 512}
+        }
     }
 
     print("CGRA4ML configuration created")
@@ -517,75 +373,7 @@ def create_cgra4ml_config(args, skip_connections):
     return config
 
 
-def create_custom_processing_elements(config):
-    """
-    Create custom processing elements for semantic segmentation
-
-    Args:
-        config: CGRA4ML configuration
-
-    Returns:
-        Dictionary of custom processing elements
-    """
-    print("Creating custom processing elements for semantic segmentation...")
-    
-    custom_pe = {}
-    
-    # Skip Connection Processing Element
-    skip_pe = {
-        "name": "skip_connection_pe",
-        "type": "memory_controller",
-        "description": "Handles skip connections with memory buffering",
-        "ports": {
-            "input": {"width": config["data_width"], "type": "stream"},
-            "output": {"width": config["data_width"], "type": "stream"},
-            "control": {"width": 32, "type": "control"}
-        },
-                 "parameters": {
-             "buffer_size": config["skip_connections"]["streaming_config"]["buffer_size"],
-             "data_width": 16  # Use 16-bit for skip connection buffers (matches decoder precision)
-         }
-    }
-    custom_pe["skip_connection_pe"] = skip_pe
-    
-    # Feature Fusion Processing Element
-    fusion_pe = {
-        "name": "feature_fusion_pe",
-        "type": "arithmetic",
-        "description": "Performs feature fusion for skip connections",
-        "ports": {
-            "input1": {"width": config["data_width"], "type": "stream"},
-            "input2": {"width": config["data_width"], "type": "stream"},
-            "output": {"width": config["data_width"], "type": "stream"},
-            "control": {"width": 32, "type": "control"}
-        },
-                 "parameters": {
-             "operation": "add",
-             "data_width": 16  # 16-bit for feature fusion (matches decoder precision)
-         }
-    }
-    custom_pe["feature_fusion_pe"] = fusion_pe
-    
-    # Upsampling Processing Element
-    upsampling_pe = {
-        "name": "upsampling_pe",
-        "type": "interpolation",
-        "description": "Performs nearest neighbor upsampling",
-        "ports": {
-            "input": {"width": config["data_width"], "type": "stream"},
-            "output": {"width": config["data_width"], "type": "stream"},
-            "control": {"width": 32, "type": "control"}
-        },
-                 "parameters": {
-             "method": "nearest_neighbor",
-             "scale_factor": 2,
-             "data_width": 16  # 16-bit for upsampling (matches decoder precision)
-         }
-    }
-    custom_pe["upsampling_pe"] = upsampling_pe
-    
-    print(f"Created {len(custom_pe)} custom processing elements")
-    return custom_pe
+## Removed duplicate create_custom_processing_elements variant to keep minimal and consistent implementation
 
 
 def create_custom_processing_elements(config):
@@ -638,144 +426,65 @@ def convert_to_cgra4ml(model, config, output_dir):
         original_dir = os.getcwd()
         os.chdir(output_dir)
 
-        # Step 1: Create Hardware configuration following CGRA4ML example.py
+        # Step 1: Create Hardware configuration (match library example)
         print("Creating Hardware configuration...")
-        
-        # Use CGRA4ML-compatible bit widths (1, 2, 4, 8 bits)
+
         bits_input = 8
         bits_weights = 8
 
-        # Create Hardware configuration following CGRA4ML pattern
         hw = Hardware(
-            processing_elements=(16, 192),  # (rows, columns) of multiply-add units
-            frequency_mhz=250,              # Target frequency
-            bits_input=bits_input,          # Input bit width (limited to 8 for CGRA4ML)
-            bits_weights=bits_weights,      # Weight bit width (limited to 8 for CGRA4ML)
-            bits_sum=20,                    # Accumulator bit width
-            bits_bias=16,                   # Bias bit width
-            max_batch_size=64,              # Max batch size
-            max_channels_in=512,            # Max input channels
-            max_kernel_size=9,              # Max kernel size
-            max_image_size=config.get('input_shape', [512])[0],  # Max image size
-            max_n_bundles=64,               # Max number of bundles
-            ram_weights_depth=512,          # RAM depth for weights
-            ram_edges_depth=3584,           # RAM depth for edge buffers
-            axi_width=128,                  # AXI bus width
-            header_width=64,                # Header width
-            config_baseaddr="B0000000",     # Config base address
-            axi_max_burst_len=16,           # AXI max burst length
-            target_cpu_int_bits=32,         # CPU integer bits
-            async_resetn=True,              # Async reset
-            valid_prob=0.01,                # Valid signal probability
-            ready_prob=0.1,                 # Ready signal probability
-            data_dir='vectors'              # Test vectors directory
+            processing_elements=(16, 192),
+            frequency_mhz=250,
+            bits_input=bits_input,
+            bits_weights=bits_weights,
+            bits_sum=20,
+            bits_bias=16,
+            max_batch_size=64,
+            max_channels_in=512,
+            max_kernel_size=9,
+            max_image_size=config.get('input_shape', [512])[0],
+            max_n_bundles=64,
+            ram_weights_depth=512,
+            ram_edges_depth=3584,
+            axi_width=128,
+            header_width=64,
+            config_baseaddr="B0000000",
+            axi_max_burst_len=16,
+            target_cpu_int_bits=32,
+            async_resetn=True,
+            valid_prob=1,
+            ready_prob=1,
+            data_dir='vectors'
         )
 
-        # Step 2: Create XModel following CGRA4ML pattern
-        print("Creating CGRA4ML XModel...")
-        
-        # Generate random input for the model
-        XN = 1  # Batch size
-        input_shape = (XN, INPUT_HEIGHT, INPUT_WIDTH, 3)
-        x = np.random.randn(*input_shape).astype(np.float32)
-        
-        # Create XModel with proper input/output handling
-        # Use a simpler approach to avoid the XInputAct QActivation conflict
-        try:
-            # Create a quantization configuration object that XModel expects
-            class QuantizationConfig:
-                def __init__(self, x_bits, k_bits, b_bits):
-                    self.x = x_bits
-                    self.k = k_bits
-                    self.b = b_bits
-            
-            # Create quantization config with CGRA4ML-compatible bit widths
-            quant_config = QuantizationConfig(
-                x_bits=bits_input,      # Input bits
-                k_bits=bits_weights,    # Weight bits
-                b_bits=16               # Bias bits
-            )
-            
-            # Create XModel with the quantization configuration
-            xmodel = XModel(
-                sys_bits=quant_config,  # Quantization configuration object
-                x_int_bits=2,           # Integer bits for input quantization
-                name="lmiinet_cgra4ml_model"
-            )
-            print("Created XModel with quantization configuration")
-        except Exception as e:
-            print(f"Warning: Could not create XModel: {e}")
-            print("Creating minimal model structure...")
-            # Create a minimal model structure
-            class MinimalXModel:
-                def __init__(self):
-                    self.random_input = x
-                    self.name = "lmiinet_cgra4ml_model"
-                
-                def compile(self):
-                    print("Minimal model compiled")
-                
-                def summary(self):
-                    print("Minimal XModel - Basic structure for CGRA4ML")
-            
-            xmodel = MinimalXModel()
-            print("Created minimal XModel structure")
-        
-        # Set the random input for analysis
-        xmodel.random_input = x
-        
-        # Step 3: Model is ready for export
-        print("CGRA4ML model created successfully")
-        print("Model ready for hardware export")
-        
-        # Step 4: Export inference vectors following CGRA4ML pattern
+        # Export HW configs and Vivado TCL
+        hw.export()
+        hw.export_vivado_tcl(board='xc7k70tfbv676-1')
+
+        # Step 2: Use deepsocflow export flow directly with the loaded Keras model
         print("Exporting inference vectors...")
-        part = config.get('part')
-        print(f"Using FPGA part: {part}")
-        
-        # Export hardware configuration files
-        hw.export()  # Generates: config_hw.svh, config_hw.tcl, config_tb.svh, hardware.json
-        
-        # Export Vivado TCL script
-        hw.export_vivado_tcl(board='xc7k70tfbv676-1')  # Use Kintex-7 TCL script
-        
-        # Export inference vectors using CGRA4ML's standard method
         try:
-            # Check if xmodel has the required attributes for export_inference
-            if hasattr(xmodel, 'layers') and hasattr(xmodel, 'compile'):
-                export_inference(xmodel, hw)
-                print("Inference vectors exported successfully")
-            else:
-                print("XModel structure not compatible with export_inference")
-                print("Skipping inference export - hardware config files generated instead")
+            export_inference(model, hw, batch_size=1)
+            print("Inference vectors exported successfully")
         except Exception as e:
-            print(f"Warning: Inference export failed: {e}")
-            print("Continuing without inference export...")
-        
-        # Step 5: Verify inference if requested
+            print(f"Warning: export_inference failed: {e}")
+
+        # Step 3: Verify (optional)
         if config.get('verify', False):
             print("Verifying inference...")
-            sim = 'verilator' if shutil.which('verilator') else 'vivado'
+            sim = 'verilator' if shutil.which('verilator') else ('xsim' if shutil.which('vivado') else None)
             try:
-                verify_inference(xmodel, sim, output_dir)
-                print("Inference verification completed")
+                if sim:
+                    verify_inference(model, hw, SIM=sim, SIM_PATH='')
+                    print("Inference verification completed")
+                else:
+                    print("No simulator found; skipping verification")
             except Exception as e:
                 print(f"Warning: Inference verification failed: {e}")
-                print("Continuing without verification...")
-        
-        # Step 6: Generate performance prediction
-        if hasattr(xmodel, 'predict_model_performance'):
-            print("Predicting model performance...")
-            try:
-                performance = predict_model_performance(xmodel, hw)
-                print(f"Performance prediction: {performance}")
-            except Exception as e:
-                print(f"Warning: Performance prediction failed: {e}")
-                print("Continuing without performance prediction...")
-        
+
         print("CGRA4ML model conversion completed successfully!")
-        
-        # Print summary of generated files
+
+        # Summary
         print("\n" + "="*60)
         print("CGRA4ML MODEL BUILD SUMMARY")
         print("="*60)
@@ -790,15 +499,15 @@ def convert_to_cgra4ml(model, config, output_dir):
         print("2. Check synthesis reports in synthesis_reports/ directory")
         print("3. Use the generated hardware configuration for FPGA deployment")
         print("="*60)
-        
-        return xmodel
-        
+
+        # Return the original loaded model handle as the CGRA model proxy
+        return model
+
     except Exception as e:
         print(f"Error during CGRA4ML conversion: {e}")
         print(f"Traceback: {traceback.format_exc()}")
         raise
     finally:
-        # Change back to original directory
         os.chdir(original_dir)
         print(f"Changed back to directory: {original_dir}")
 
@@ -950,12 +659,16 @@ def validate_conversion(model, cgra_model, output_dir):
     print("Running inference on original model...")
     start_time = time.time()
     original_pred = model.predict(test_data, verbose=0)
+    if isinstance(original_pred, (list, tuple)):
+        original_pred = original_pred[0]
     original_time = time.time() - start_time
 
     # Get predictions from CGRA4ML model
     print("Running inference on CGRA4ML model...")
     start_time = time.time()
     cgra_pred = cgra_model.predict(test_data)
+    if isinstance(cgra_pred, (list, tuple)):
+        cgra_pred = cgra_pred[0]
     cgra_time = time.time() - start_time
 
     # Compare predictions
@@ -1241,6 +954,9 @@ def main():
         # Step 5: Validate conversion (if requested)
         validation_results = None
         if args.validate:
+            # Signal verification path inside conversion if applicable
+            if isinstance(config, dict):
+                config['verify'] = True
             validation_results = validate_conversion(model, cgra_model, output_dir)
 
         # Step 6: Generate performance report

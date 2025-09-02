@@ -1355,7 +1355,7 @@ def create_callbacks(model_name, val_generator):
     viz_callback = PredictionVisualizationCallback(
         val_generator=val_generator,
         save_dir=viz_dir,
-        num_samples=6,
+        num_samples=12,
         save_frequency=5
     )
     callbacks.append(viz_callback)
