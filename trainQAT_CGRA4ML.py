@@ -587,7 +587,7 @@ def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec")
     return x
 
 # LMIINet Model
-def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True):
+def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True, inference_mode=False):
     inputs = Input(shape=input_shape, name="input_image")
 
     # Initial downsampling stem
@@ -990,9 +990,9 @@ def combined_loss(y_true, y_pred):
         y_true_masked = tf.boolean_mask(y_true_flat, mask)
         y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
         ce_main = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
-        ce_main = tf.reduce_mean(ce_main)
-        loss_main = dice_main + ce_main
-        
+        # ce_main = tf.reduce_mean(ce_main)
+        loss_main =  ce_main #dice 
+
         # Auxiliary loss
         aux_loss = auxiliary_loss(y_true_aux, y_pred_aux, lambda_weight=0.3)
         
@@ -1010,8 +1010,8 @@ def combined_loss(y_true, y_pred):
         y_true_masked = tf.boolean_mask(y_true_flat, mask)
         y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
         ce = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
-        ce = tf.reduce_mean(ce)
-        loss_main = dice + ce
+        # ce = tf.reduce_mean(ce)
+        loss_main =  ce #dice 
         return loss_main
 
 def mean_iou(y_true, y_pred):
@@ -1528,12 +1528,14 @@ def convert_float32_to_qat(float32_model, config=MODEL_CONFIG_LMIA):
 
 def main():
     """Main training function"""
+
     print("=" * 60)
     print("CGRA4ML LMIINet Semantic Segmentation Training")
     print("=" * 60)
     print(f"Training with QAT: {TRAIN_QAT}")
 
     initial_epoch = 0  # Ensure initial_epoch is always defined
+    global USE_DROPOUT_DURING_TRAINING
 
     # Initialize data generators
     train_generator = CityscapesDataGenerator(
@@ -1586,9 +1588,13 @@ def main():
         if LOAD_MODEL_PATH and os.path.exists(LOAD_MODEL_PATH):
             m = re.search(r'_epoch_(\d+)\.weights\.h5$', LOAD_MODEL_PATH or '')
             if 'qat' in os.path.basename(LOAD_MODEL_PATH).lower():
+
                 print(f"Detected QAT weights file: {LOAD_MODEL_PATH}")
-                # Create QAT model with quantization enabled for CGRA4ML
-                model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True)
+                if 'final' in os.path.basename(LOAD_MODEL_PATH).lower():
+                    model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=False)
+                else:                    
+                    # Create QAT model with quantization enabled for CGRA4ML
+                    model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True)
                 try:
                     model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded QAT weights successfully.")
@@ -1662,21 +1668,66 @@ def main():
         max_queue_size=max(8, NUM_WORKERS * 2)
     )
 
+    # Create final inference model (no dropout, no auxiliary output)
+    print("\nCreating final inference model (no dropout, no auxiliary output)...")
+    
+    # Temporarily disable dropout for inference model creation
+    original_dropout_setting = USE_DROPOUT_DURING_TRAINING
+    USE_DROPOUT_DURING_TRAINING = False
+    
+    # Create a new model with the same configuration but for inference
+    final_model = create_lmiinet(
+        input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), 
+        num_classes=NUM_CLASSES, 
+        use_quantization=TRAIN_QAT, 
+        config=MODEL_CONFIG_LMIA,
+        aux_out=False,  # Disable auxiliary output for inference
+        inference_mode=True
+    )
+    
+    # Restore original dropout setting
+    USE_DROPOUT_DURING_TRAINING = original_dropout_setting
+    
+    # Transfer weights from trained model to final model (excluding aux layers)
+    print("Transferring weights to inference model...")
+    for layer in final_model.layers:
+        try:
+            # Find corresponding layer in trained model
+            trained_layer = None
+            for tl in model.layers:
+                if tl.name == layer.name:
+                    trained_layer = tl
+                    break
+            
+            if trained_layer is not None and len(trained_layer.get_weights()) > 0:
+                layer.set_weights(trained_layer.get_weights())
+                print(f"Transferred weights for layer: {layer.name}")
+        except Exception as e:
+            print(f"Could not transfer weights for layer {layer.name}: {e}")
+    
+    # Compile the final model for inference
+    optimizer = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE, momentum=0.9, nesterov=True)
+    final_model.compile(
+        optimizer=optimizer,
+        loss=combined_loss,
+        metrics=[accuracy, dice_loss, mean_iou]
+    )
+
     # Save final model
     final_model_path = os.path.join(MODELS_DIR, f"{model_name}_final.h5")
-    print(f"\nSaving final model to: {final_model_path}")
+    print(f"\nSaving final inference model to: {final_model_path}")
     try:
-        model.save(final_model_path, save_format='h5')
-        print("Full model saved successfully!")
+        final_model.save(final_model_path, save_format='h5')
+        print("Final inference model saved successfully!")
     except Exception as e:
-        print(f"Warning: Could not save full model: {e}")
+        print(f"Warning: Could not save full inference model: {e}")
         print("Saving weights only as fallback...")
         try:
-            model.save_weights(final_model_path.replace('_final.h5', '_weights.h5'))
-            print("Weights saved successfully!")
+            final_model.save_weights(final_model_path.replace('_final.h5', '_inference_weights.h5'))
+            print("Inference weights saved successfully!")
         except Exception as e2:
-            print(f"Error saving weights: {e2}")
-
+            print(f"Error saving inference weights: {e2}")
+    
     print("\nTraining completed successfully!")
     print("=" * 60)
 
