@@ -187,12 +187,12 @@ qr = f"quantized_relu({X_BITS},{QINT_BITS},negative_slope=0)"      # ReLU
 qb = f"quantized_bits({X_BITS},{QINT_BITS},False,False,1)"         # requant (identity/clip)
 
 # Configure TensorFlow for optimal performance
-tf.config.optimizer.set_experimental_options({
-    'layout_optimizer': False,
-    'constant_folding': True,
-    'shape_optimization': True,
-    'remapping': True,
-})
+# tf.config.optimizer.set_experimental_options({
+#     'layout_optimizer': False,
+#     'constant_folding': True,
+#     'shape_optimization': True,
+#     'remapping': True,
+# })
 
 def safe_configure_tensorflow(debug_mode=False):
     """Safely configure TF threading and GPU options if not already initialized."""
@@ -1158,7 +1158,7 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         return colored_mask
 
     def on_epoch_begin(self, epoch, logs=None):
-        print(f"AUGMENTATION argument: {AUGMENTATION}") 
+        print(f"AUGMENTATION: {AUGMENTATION}") 
         
     def on_epoch_end(self, epoch, logs=None):
         # Save every epoch for the first 5 epochs, then follow save_frequency
@@ -1619,7 +1619,7 @@ def main():
 
 
     print("\nCompiling model...")
-    optimizer = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE, momentum=0.9, nesterov=True)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
     
     # Check if model has multiple outputs (main + auxiliary)
     if isinstance(model.output, list):
