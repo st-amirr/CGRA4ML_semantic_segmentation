@@ -260,7 +260,7 @@ def build_q_model(hp, input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NU
         input_shape=input_shape,
         num_classes=num_classes,
         config=MODEL_CONFIG_LMIA,
-        use_auxiliary_loss=True
+        aux_out=True
     )
 
     # Compile model
@@ -627,16 +627,25 @@ def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=
 
     # Main SegHead
     seg_output = seghead(decoder_features[-3:], num_classes, use_quantization, config=config)
+    
     # Auxiliary segmentation head applied to encoder output (enc)
-    if use_quantization:
-        aux_conv = QConv2D(config.get('seghead_filters', 64), 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="aux_seghead_conv1")(enc)
-        aux_conv = QActivation(qr, name="aux_seghead_relu")(aux_conv)
-        aux_conv = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="aux_seghead_conv2")(aux_conv)
-        aux_output = Activation('softmax', name="aux_output_softmax")(aux_conv)
+    if aux_out:
+        if use_quantization:
+            aux_conv = QConv2D(config.get('seghead_filters', 64), 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="aux_seghead_conv1")(enc)
+            aux_conv = QActivation(qr, name="aux_seghead_relu")(aux_conv)
+            aux_conv = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="aux_seghead_conv2")(aux_conv)
+            aux_output = Activation('softmax', name="aux_output_softmax")(aux_conv)
+        else:
+            aux_conv = Conv2D(config.get('seghead_filters', 64), 1, padding='same', name="aux_seghead_conv1")(enc)
+            aux_conv = Activation('relu', name="aux_seghead_relu")(aux_conv)
+            aux_conv = Conv2D(num_classes, 1, padding='same', name="aux_seghead_conv2")(aux_conv)
+            aux_output = Activation('softmax', name="aux_output_softmax")(aux_conv)
+        
         model = Model(inputs=inputs, outputs=[seg_output, aux_output], name="LMIINet_CGRA4ML_Paper_Accurate_With_Aux")
     else:
-        # Return both main and auxiliary outputs
+        # Single output model (no auxiliary loss)
         model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML_Paper_Accurate")
+    
     return model
 
 
@@ -900,6 +909,10 @@ def dice_loss(y_true, y_pred, smooth=1e-7):
     """
     Dice loss for categorical segmentation with ignore index support.
     """
+    # Handle case where y_true is a list from generator
+    if isinstance(y_true, list):
+        y_true = y_true[0]  # Use main ground truth for metrics
+        
     # Flatten spatial dimensions
     y_true_flat = tf.reshape(y_true, [-1])
     y_pred_flat = tf.reshape(y_pred, [-1, NUM_CLASSES])
@@ -959,30 +972,56 @@ def combined_loss(y_true, y_pred):
     both single output (main only) and multiple outputs (main + auxiliary).
     
     Args:
-        y_true: Ground truth labels
-        y_pred: Model predictions (can be single output or list of outputs)
+        y_true: Ground truth labels - always [y_true_main, y_true_aux] from generator
+        y_pred: Model predictions (for multi-output: [y_pred_main, y_pred_aux])
     """
-    # Always single output: main prediction only
-    dice = dice_loss(y_true, y_pred)
-    y_true_flat = tf.reshape(y_true, [-1])
-    y_pred_flat = tf.reshape(y_pred, [-1, NUM_CLASSES])
-    mask = tf.not_equal(y_true_flat, 255)
-    y_true_masked = tf.boolean_mask(y_true_flat, mask)
-    y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
-    ce = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
-    ce = tf.reduce_mean(ce)
-    loss_main = dice + ce
-    # Auxiliary supervision using encoder output (if available)
-    aux_loss = tf.constant(0.0, dtype=tf.float32)
-    # Try to get encoder output from model (Keras does not pass model to loss, so workaround needed)
-    # This requires a custom training loop or subclassed model to access encoder output
-    # For standard Keras fit, you must use a custom training loop to access model._encoder_aux_output
-    return loss_main  # For now, only main loss is used in standard fit
+    # Check if we have multiple outputs (main + auxiliary)
+    if isinstance(y_pred, list) and len(y_pred) == 2:
+        # Multi-output case: main + auxiliary
+        y_pred_main, y_pred_aux = y_pred
+        # y_true is always a list from the generator: [y_true_main, y_true_aux]
+        y_true_main, y_true_aux = y_true
+        
+        # Main loss
+        dice_main = dice_loss(y_true_main, y_pred_main)
+        y_true_flat = tf.reshape(y_true_main, [-1])
+        y_pred_flat = tf.reshape(y_pred_main, [-1, NUM_CLASSES])
+        mask = tf.not_equal(y_true_flat, 255)
+        y_true_masked = tf.boolean_mask(y_true_flat, mask)
+        y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
+        ce_main = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
+        ce_main = tf.reduce_mean(ce_main)
+        loss_main = dice_main + ce_main
+        
+        # Auxiliary loss
+        aux_loss = auxiliary_loss(y_true_aux, y_pred_aux, lambda_weight=0.3)
+        
+        return loss_main + aux_loss
+    else:
+        # Single output case: main prediction only
+        # In this case, y_true might still be a list from generator, so take first element
+        if isinstance(y_true, list):
+            y_true = y_true[0]  # Use main ground truth
+            
+        dice = dice_loss(y_true, y_pred)
+        y_true_flat = tf.reshape(y_true, [-1])
+        y_pred_flat = tf.reshape(y_pred, [-1, NUM_CLASSES])
+        mask = tf.not_equal(y_true_flat, 255)
+        y_true_masked = tf.boolean_mask(y_true_flat, mask)
+        y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
+        ce = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
+        ce = tf.reduce_mean(ce)
+        loss_main = dice + ce
+        return loss_main
 
 def mean_iou(y_true, y_pred):
     """
     Mean IoU metric for semantic segmentation - ignores class 255.
     """
+    # Handle case where y_true is a list from generator
+    if isinstance(y_true, list):
+        y_true = y_true[0]  # Use main ground truth for metrics
+        
     # Mask out ignore pixels (255)
     mask = tf.not_equal(y_true, 255)
     y_true_masked = tf.boolean_mask(y_true, mask)
@@ -1015,11 +1054,15 @@ def accuracy(y_true, y_pred):
     """
     Computes pixel-wise accuracy, ignoring pixels with label 255 (ignore class).
     Args:
-        y_true: ground truth labels, shape (batch, height, width)
+        y_true: ground truth labels, shape (batch, height, width) or list from generator
         y_pred: predicted logits or probabilities, shape (batch, height, width, num_classes)
     Returns:
         Scalar accuracy value (float32)
     """
+    # Handle case where y_true is a list from generator
+    if isinstance(y_true, list):
+        y_true = y_true[0]  # Use main ground truth for metrics
+        
     # If y_pred is logits, convert to predicted class
     y_pred = tf.argmax(y_pred, axis=-1)
     y_true = tf.cast(y_true, tf.int64)
@@ -1522,7 +1565,7 @@ def main():
     # Model selection
     if not TRAIN_QAT:
         print("\n[PHASE 1] Baseline float32 training mode.")
-        model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
+        model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA, aux_out=True)
         if LOAD_MODEL_PATH:
             print(f"Attempting to load baseline model weights from: {LOAD_MODEL_PATH}")
             # Use improved weight loading with automatic conversion
@@ -1545,7 +1588,7 @@ def main():
             if 'qat' in os.path.basename(LOAD_MODEL_PATH).lower():
                 print(f"Detected QAT weights file: {LOAD_MODEL_PATH}")
                 # Create QAT model with quantization enabled for CGRA4ML
-                model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA)
+                model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True)
                 try:
                     model.load_weights(LOAD_MODEL_PATH)
                     print("Loaded QAT weights successfully.")
@@ -1558,7 +1601,7 @@ def main():
             else:
                 print(f"Detected baseline weights file: {LOAD_MODEL_PATH}")
                 # Create baseline model and load weights with compatibility
-                float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA)
+                float32_model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=False, config=MODEL_CONFIG_LMIA, aux_out=True)
                 if load_compatible_weights(float32_model, LOAD_MODEL_PATH, skip_mismatched=True):
                     print("Loaded baseline weights successfully.")
                 else:
@@ -1572,7 +1615,7 @@ def main():
         else:
             print("Creating new QAT model (no weights found) for CGRA4ML.")
             # Create QAT model with quantization enabled for CGRA4ML
-            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA)
+            model = create_lmiinet(input_shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), num_classes=NUM_CLASSES, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True)
 
 
     print("\nCompiling model...")
