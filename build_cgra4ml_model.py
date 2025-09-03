@@ -1,6 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Report Cell Usage: 
++------+----------+-------+
+|      |Cell      |Count  |
++------+----------+-------+
+|1     |BUFG      |      1|
+|2     |CARRY4    |  54257|
+|3     |LUT1      |    744|
+|4     |LUT2      |  78450|
+|5     |LUT3      | 155981|
+|6     |LUT4      |  85608|
+|7     |LUT5      |  38308|
+|8     |LUT6      | 162827|
+|9     |MUXF7     |   2761|
+|10    |RAM256X1S |   2080|
+|11    |RAMB18E1  |    254|
+|12    |RAMB36E1  |      8|
+|13    |FDCE      | 355058|
+|14    |FDPE      |    606|
+|15    |FDRE      |  19924|
+|16    |FDSE      |      5|
+|17    |IBUF      |    368|
+|18    |OBUF      |    370|
++------+----------+-------+
+This build used ROWS=16, COLS=192 
+
 CGRA4ML Model Builder for LMIINet Semantic Segmentation
 =======================================================
 
