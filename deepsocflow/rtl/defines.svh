@@ -2,26 +2,22 @@
 `define DEEPSOCFLOW_DEFINES_SVH
 
 // Auto-updated by the builder to the latest generated config_hw.svh
-`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756904304/config_hw.svh"
-// Fallback define for BITS_KW2 if not provided by config
+`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756910962/config_hw.svh"
+// Provide a safe fallback if BITS_KW2 wasn't defined by config_hw.svh
 `ifndef BITS_KW2
-    `ifdef KW_MAX
-        `define BITS_KW2 $clog2(`KW_MAX)
-    `else
-        `define BITS_KW2 4
-    `endif
+`define BITS_KW2 4
 `endif
 
 `ifndef VERILOG
-`ifndef STRUCT 
+`ifndef STRUCT
 `define STRUCT
 typedef struct packed {
-        logic [`BITS_KW2-1:0] kw2;
-        logic                 is_config;
-        logic                 is_cin_last;
-        logic                 is_w_first_clk;
-        logic                 is_w_first_kw2;
-        logic                 is_w_last;
+    logic [`BITS_KW2-1:0] kw2;
+    logic                 is_config;
+    logic                 is_cin_last;
+    logic                 is_w_first_clk;
+    logic                 is_w_first_kw2;
+    logic                 is_w_last;
 } tuser_st;
 `endif
 `endif

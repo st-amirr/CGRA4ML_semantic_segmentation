@@ -56,6 +56,8 @@ Requirements:
 Example:
     python build_cgra4ml_model.py --model_path ./models/qat_model_clean_for_compatible.h5 --output_dir ./cgra4ml_models --validate
     python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final.h5 --output_dir ./cgra4ml_models --synthesize
+    python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final.h5 --output_dir ./cgra4ml_models --synthesize --pe_rows 16 --pe_cols 96
+    
 """
 
 import os
@@ -201,6 +203,24 @@ def parse_arguments():
         type=float, 
         default=5.0, 
         help="Clock period in nanoseconds"
+    )
+    parser.add_argument(
+        "--freq_mhz",
+        type=int,
+        default=200,
+        help="Target clock frequency in MHz for hardware (default: 200 for ZCU104)",
+    )
+    parser.add_argument(
+        "--pe_rows",
+        type=int,
+        default=16,
+        help="Number of PE rows (default: 16)",
+    )
+    parser.add_argument(
+        "--pe_cols",
+        type=int,
+        default=64,
+        help="Number of PE columns (default: 64; reduced from 192 to better fit ZCU104)",
     )
     parser.add_argument(
         "--data_width",
@@ -383,6 +403,9 @@ def create_cgra4ml_config(args, skip_connections):
         "output_shape": [INPUT_HEIGHT, INPUT_WIDTH, NUM_CLASSES],
         "data_width": args.data_width,
         "clock_period": args.clock_period,
+    "frequency_mhz": args.freq_mhz,
+    "pe_rows": args.pe_rows,
+    "pe_cols": args.pe_cols,
         "part": args.part,
         "skip_connections": {
             "strategy": args.skip_connection_strategy,
@@ -455,10 +478,13 @@ def convert_to_cgra4ml(model, config, output_dir):
         print("Creating Hardware configuration...")
         bits_input = 8
         bits_weights = 8
+        rows = int(config.get('pe_rows', 16))
+        cols = int(config.get('pe_cols', 64))
+        freq = int(config.get('frequency_mhz', 200))
 
         hw = Hardware(
-            processing_elements=(16, 192),
-            frequency_mhz=250,
+            processing_elements=(rows, cols),
+            frequency_mhz=freq,
             bits_input=bits_input,
             bits_weights=bits_weights,
             bits_sum=20,
