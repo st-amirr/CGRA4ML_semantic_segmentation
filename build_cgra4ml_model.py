@@ -154,7 +154,8 @@ def setup_cgra4ml_environment():
     
     # Set CGRA4ML environment variables
     os.environ['CGRA4ML_BACKEND'] = 'Vivado'
-    os.environ['CGRA4ML_PART'] = 'xc7k70tfbv676-1'
+    # Default to ZCU104 (Zynq UltraScale+ xczu7ev-ffvc1156-2-e)
+    os.environ['CGRA4ML_PART'] = 'xczu7ev-ffvc1156-2-e'
     
     # Check for required tools
     required_tools = ['verilator', 'vivado']
@@ -192,8 +193,8 @@ def parse_arguments():
     parser.add_argument(
         "--part",
         type=str,
-        default="xc7k70tfbv676-1",
-        help="FPGA part number (default: xc7k70tfbv676-1)",
+    default="xczu7ev-ffvc1156-2-e",
+    help="FPGA part number (default: xczu7ev-ffvc1156-2-e for ZCU104)",
     )
     parser.add_argument(
         "--clock_period", 
@@ -430,8 +431,7 @@ def create_custom_processing_elements(config):
 
 def convert_to_cgra4ml(model, config, output_dir):
     """
-    Convert Keras model to CGRA4ML format using proper deepsocflow approach
-    Following the CGRA4ML example.py pattern
+    Convert Keras model to CGRA4ML format using DeepSoCFlow APIs.
 
     Args:
         model: Keras model
@@ -439,21 +439,20 @@ def convert_to_cgra4ml(model, config, output_dir):
         output_dir: Output directory
 
     Returns:
-        CGRA4ML model
+        CGRA4ML model (proxy: returns the original model handle)
     """
     print("Converting model to CGRA4ML format...")
 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
 
+    original_dir = os.getcwd()
     try:
         # Change to output directory for file generation
-        original_dir = os.getcwd()
         os.chdir(output_dir)
 
-        # Step 1: Create Hardware configuration (match library example)
+        # Step 1: Create Hardware configuration
         print("Creating Hardware configuration...")
-
         bits_input = 8
         bits_weights = 8
 
@@ -482,11 +481,11 @@ def convert_to_cgra4ml(model, config, output_dir):
             data_dir='vectors'
         )
 
-        # Export HW configs and Vivado TCL
+        # Export HW configs and Vivado TCL for ZCU104
         hw.export()
-        hw.export_vivado_tcl(board='xc7k70tfbv676-1')
+        hw.export_vivado_tcl(board='zcu104')
 
-        # Step 2: Use deepsocflow export flow directly with the loaded Keras model
+        # Step 2: Export inference vectors (best-effort)
         print("Exporting inference vectors...")
         try:
             export_inference(model, hw, batch_size=1)
@@ -514,11 +513,11 @@ def convert_to_cgra4ml(model, config, output_dir):
         print("CGRA4ML MODEL BUILD SUMMARY")
         print("="*60)
         print(f"Output directory: {output_dir}")
-        print(f"Hardware configuration: config_hw.svh, config_hw.tcl, config_tb.svh")
-        print(f"Vivado synthesis script: vivado_flow.tcl")
-        print(f"Sources list: sources.txt")
-        print(f"Performance report: cgra4ml_performance_report.json")
-        print(f"Deployment guide: CGRA4ML_DEPLOYMENT_GUIDE.md")
+        print("Hardware configuration: config_hw.svh, config_hw.tcl, config_tb.svh")
+        print("Vivado synthesis script: vivado_flow.tcl")
+        print("Sources list: sources.txt")
+        print("Performance report: cgra4ml_performance_report.json")
+        print("Deployment guide: CGRA4ML_DEPLOYMENT_GUIDE.md")
         print("\nNext steps:")
         print("1. Run synthesis: cd {output_dir} && vivado -mode batch -source vivado_flow.tcl")
         print("2. Check synthesis reports in synthesis_reports/ directory")
@@ -938,8 +937,8 @@ def main():
                 new_lines.append(line)
         with open(defines_path, "w") as f:
             f.writelines(new_lines)
-    # Automatically update TCL script with latest model directory
-    tcl_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "tcl", "fpga", "xc7k70tfbv676-1.tcl")
+    # Automatically update TCL script with latest model directory (ZCU104)
+    tcl_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "tcl", "fpga", "zcu104.tcl")
     if os.path.exists(tcl_path):
         with open(tcl_path, "r") as f:
             tcl_lines = f.readlines()
