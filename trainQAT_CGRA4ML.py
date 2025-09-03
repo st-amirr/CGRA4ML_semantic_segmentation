@@ -694,7 +694,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     A.RandomCrop(
                         width=self.target_width, height=self.target_height, p=0.1
                     ),
-                    A.HorizontalFlip(p=0.4),
+                    A.HorizontalFlip(p=0.3),
                     A.Rotate(limit=5, p=0.2, border_mode=cv2.BORDER_CONSTANT),
                     A.Affine(
                         scale=(0.8, 1.2),
@@ -704,10 +704,10 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     ),
                     # Color and contrast augmentations - enhanced for lighting variations
                     A.RandomBrightnessContrast(
-                        brightness_limit=0.3, contrast_limit=0.2, p=0.3
+                        brightness_limit=0.3, contrast_limit=0.2, p=0.2
                     ),
                     A.ColorJitter(
-                        brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.3
+                        brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2, p=0.2
                     ),
                     A.HueSaturationValue(
                         hue_shift_limit=30,
@@ -715,11 +715,11 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                         val_shift_limit=30,
                         p=0.1,
                     ),
-                    A.RandomGamma(gamma_limit=(80, 120), p=0.2),
+                    A.RandomGamma(gamma_limit=(80, 120), p=0.1),
                     # Noise and blur augmentations
                     A.GaussNoise(std_range=(0.05, 0.2), mean_range=(0, 0), per_channel=False, p=0.2),
                     A.GaussianBlur(blur_limit=(3, 7), p=0.15),
-                    A.MotionBlur(blur_limit=3, p=0.15),
+                    # A.MotionBlur(blur_limit=3, p=0.15),
                     # Weather and lighting effects
                     A.RandomRain(
                         drop_length=20,
@@ -728,7 +728,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                         blur_value=3,
                         brightness_coefficient=0.7,
                         rain_type="drizzle",
-                        p=0.1,
+                        p=0.05,
                     ),
                     A.RandomShadow(
                         shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.1
@@ -736,8 +736,8 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     # Occlusion and masking
                     A.CoarseDropout(
                         num_holes_range=(1, 8),
-                        hole_height_range=(4, 16),
-                        hole_width_range=(4, 16),
+                        hole_height_range=(2, 16),
+                        hole_width_range=(2, 16),
                         fill=0,
                         fill_mask=0,
                         p=0.1,
@@ -1727,6 +1727,26 @@ def main():
             print("Inference weights saved successfully!")
         except Exception as e2:
             print(f"Error saving inference weights: {e2}")
+    
+    # Generate visual predictions using the final inference model
+    try:
+        viz_dir_final = os.path.join(MODELS_DIR, 'visualizations_final')
+        os.makedirs(viz_dir_final, exist_ok=True)
+        final_viz_cb = PredictionVisualizationCallback(
+            val_generator=val_generator,
+            save_dir=viz_dir_final,
+            num_samples=12,
+            save_frequency=1
+        )
+        # Attach the final model to the callback and trigger once
+        if hasattr(final_viz_cb, 'set_model'):
+            final_viz_cb.set_model(final_model)
+        else:
+            final_viz_cb.model = final_model
+        final_viz_cb.on_epoch_end(epoch=EPOCHS)
+        print(f"Saved final model visualizations to: {viz_dir_final}")
+    except Exception as e:
+        print(f"Warning: Could not generate final model visualizations: {e}")
     
     print("\nTraining completed successfully!")
     print("=" * 60)

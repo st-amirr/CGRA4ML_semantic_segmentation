@@ -1,6 +1,8 @@
-`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756308838/config_hw.svh"
-`define BITS_KW2  $clog2((`KW_MAX+1)/2)
-
+`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756866341/config_hw.svh"
+`ifndef BITS_KW2
+    // Number of bits needed to represent KW/2 (0..KW_MAX/2)
+    `define BITS_KW2 $clog2((`KW_MAX+1)/2)
+`endif
 `ifndef VERILOG
 `ifndef STRUCT 
 `define STRUCT
