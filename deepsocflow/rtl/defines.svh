@@ -2,11 +2,7 @@
 `define DEEPSOCFLOW_DEFINES_SVH
 
 // Auto-updated by the builder to the latest generated config_hw.svh
-`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756910962/config_hw.svh"
-// Provide a safe fallback if BITS_KW2 wasn't defined by config_hw.svh
-`ifndef BITS_KW2
-`define BITS_KW2 4
-`endif
+`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756979846/config_hw.svh"
 
 `ifndef VERILOG
 `ifndef STRUCT
