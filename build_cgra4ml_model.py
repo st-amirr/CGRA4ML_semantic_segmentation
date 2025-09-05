@@ -53,6 +53,7 @@ Requirements:
 - verilator or vivado (for simulation/synthesis)
 - C/C++ development tools
 
+
 Example:
     python build_cgra4ml_model.py --model_path ./models/qat_model_clean_for_compatible.h5 --output_dir ./cgra4ml_models --simulate
     python build_cgra4ml_model.py --model_path ./models/cgra4ml_lmiinet_qat_final.h5 --output_dir ./cgra4ml_models --synthesize --pe_rows 16 --pe_cols 96 --freq_mhz 200
@@ -534,39 +535,14 @@ def convert_to_cgra4ml(model, config, output_dir):
         # Step 3: Verify (optional)
         if config.get('verify', False):
             print("Verifying inference...")
-            # Prefer Verilator; fallback to XSim if available
-            sim = 'verilator' if shutil.which('verilator') else ('xsim' if (shutil.which('xsc') or shutil.which('vivado')) else None)
-
-            # Resolve simulator binary directory for prefixing commands
-            def _resolve_sim_path(selected):
-                bin_dir = ''
-                if selected == 'xsim':
-                    xsc = shutil.which('xsc')
-                    if xsc:
-                        bin_dir = os.path.dirname(xsc)
-                    else:
-                        viv = shutil.which('vivado')
-                        if viv:
-                            bin_dir = os.path.dirname(viv)
-                elif selected == 'verilator':
-                    ver = shutil.which('verilator')
-                    if ver:
-                        bin_dir = os.path.dirname(ver)
-                if bin_dir and not bin_dir.endswith(os.sep):
-                    bin_dir += os.sep
-                return bin_dir
-
-            sim_path = _resolve_sim_path(sim) if sim else ''
-
-            # Ensure GCC include path can see CGRA4ML headers (config_fw.h)
-            cgra_headers = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cgra4ml', 'run', 'work'))
-            prev_cinc = os.environ.get('C_INCLUDE_PATH')
-            os.environ['C_INCLUDE_PATH'] = cgra_headers + (os.pathsep + prev_cinc if prev_cinc else '')
-
+            sim = 'verilator' if shutil.which('verilator') else ('xsim' if shutil.which('vivado') else None)
+            # Point simulator to CGRA4ML's generated headers (config_fw.h, etc.)
+            sim_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cgra4ml', 'run', 'work'))
             try:
                 if sim:
-                    print(f"SIM={sim}, SIM_PATH={sim_path or '<PATH>'}")
+                    print(f"SIM={sim}, SIM_PATH={sim_path}")
                     verify_inference(model, hw, SIM=sim, SIM_PATH=sim_path)
+
                     print("Inference verification completed")
                 else:
                     print("No simulator found; skipping verification")
@@ -757,57 +733,27 @@ def run_cgra4ml_simulation(output_dir, args):
         print(f"ERROR: Failed to load model for simulation: {e}")
         sys.exit(1)
 
-    # Pick a simulator (prefer Verilator; fallback to XSim if xsc/vivado exist)
-    sim = 'verilator' if shutil.which('verilator') else ('xsim' if (shutil.which('xsc') or shutil.which('vivado')) else None)
+    # Pick a simulator
+    sim = 'verilator' if shutil.which('verilator') else ('xsim' if shutil.which('vivado') else None)
     if not sim:
         print("ERROR: No simulator found in PATH (need Verilator or Vivado)")
         sys.exit(1)
 
-    # Resolve simulator binary directory for prefixing commands
-    def _resolve_sim_path(selected):
-        bin_dir = ''
-        if selected == 'xsim':
-            xsc = shutil.which('xsc')
-            if xsc:
-                bin_dir = os.path.dirname(xsc)
-            else:
-                viv = shutil.which('vivado')
-                if viv:
-                    bin_dir = os.path.dirname(viv)
-        elif selected == 'verilator':
-            ver = shutil.which('verilator')
-            if ver:
-                bin_dir = os.path.dirname(ver)
-        if bin_dir and not bin_dir.endswith(os.sep):
-            bin_dir += os.sep
-        return bin_dir
+    # Point simulator to CGRA4ML's generated headers (config_fw.h, etc.)
+    sim_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cgra4ml', 'run', 'work'))
 
-    sim_path = _resolve_sim_path(sim)
-
-    # Run from the CGRA output directory where sources.txt/configs live
-    original_dir = os.getcwd()
     try:
-        os.chdir(output_dir)
+        export_inference(model, hw, batch_size=1)
+    except Exception as e:
+        print(f"Warning: export_inference during simulation prep failed: {e}")
 
-        # Ensure GCC include path can see CGRA4ML headers (config_fw.h)
-        cgra_headers = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cgra4ml', 'run', 'work'))
-        prev_cinc = os.environ.get('C_INCLUDE_PATH')
-        os.environ['C_INCLUDE_PATH'] = cgra_headers + (os.pathsep + prev_cinc if prev_cinc else '')
-
-        try:
-            export_inference(model, hw, batch_size=1)
-        except Exception as e:
-            print(f"Warning: export_inference during simulation prep failed: {e}")
-
-        try:
-            print(f"SIM={sim}, SIM_PATH={sim_path or '<PATH>'}")
-            verify_inference(model, hw, SIM=sim, SIM_PATH=sim_path)
-            print("CGRA4ML simulation/verification completed successfully")
-        except Exception as e:
-            print(f"ERROR: Verification failed: {e}")
-            sys.exit(1)
-    finally:
-        os.chdir(original_dir)
+    try:
+        print(f"SIM={sim}, SIM_PATH={sim_path}")
+        verify_inference(model, hw, SIM=sim, SIM_PATH=sim_path)
+        print("CGRA4ML simulation/verification completed successfully")
+    except Exception as e:
+        print(f"ERROR: Verification failed: {e}")
+        sys.exit(1)
 
 def validate_conversion(model, cgra_model, output_dir):
     """
@@ -1053,15 +999,35 @@ def main():
     output_dir = os.path.join(args.output_dir, f"lmiinet_cgra4ml_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Ensure defines.svh includes config_hw.svh (keep relative include)
+    # Update the include path for config_hw.svh in defines.svh to the latest model directory
     defines_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "rtl", "defines.svh")
+    config_hw_path = os.path.abspath(os.path.join(output_dir, "config_hw.svh")).replace('\\', '/')
     if os.path.exists(defines_path):
         with open(defines_path, "r") as f:
-            text = f.read()
-        if 'include "config_hw.svh"' not in text:
-            text = text.replace('`define DEEPSOCFLOW_DEFINES_SVH', '`define DEEPSOCFLOW_DEFINES_SVH\n`include "config_hw.svh"')
-            with open(defines_path, "w") as f:
-                f.write(text)
+            lines = f.readlines()
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("`include") and "config_hw.svh" in line:
+                new_lines.append(f'`include "{config_hw_path}"')
+            else:
+                new_lines.append(line)
+        with open(defines_path, "w") as f:
+            f.writelines(new_lines)
+
+    # Update the include path for config_hw.svh in defines.svh to the latest model directory
+    defines_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "rtl", "defines.svh")
+    config_hw_path = os.path.abspath(os.path.join(output_dir, "config_hw.svh")).replace('\\', '/')
+    if os.path.exists(defines_path):
+        with open(defines_path, "r") as f:
+            lines = f.readlines()
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("`include") and "config_hw.svh" in line:
+                new_lines.append(f'`include "{config_hw_path}"\n')
+            else:
+                new_lines.append(line)
+        with open(defines_path, "w") as f:
+            f.writelines(new_lines)
     # Automatically update TCL script with latest model directory (ZCU104)
     tcl_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "tcl", "fpga", "zcu104.tcl")
     if os.path.exists(tcl_path):

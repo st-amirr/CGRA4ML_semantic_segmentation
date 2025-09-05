@@ -8,6 +8,8 @@ if {![info exists TOP]} { set TOP axi_cgra4ml }
 
 create_project ${PROJECT_NAME} ${PROJECT_NAME} -part ${PART} -force
 set_property board_part xilinx.com:zcu104:part0:1.1 [current_project]
+# Avoid auto top switching; use manual compile order
+set_property source_mgmt_mode None [current_project]
 
 # Provide defaults for freq/AXI width
 if {![info exists FREQ]} { set FREQ 200 }
@@ -40,6 +42,21 @@ if {$has_ps_ip > 0} {
 			CONFIG.PSU__SAXIGP2__DATA_WIDTH $AXI_WIDTH \
 		] [get_bd_cells zynq_ultra_ps_e_0]
 
+		# Connect PL clock to PS AXI interface clocks to satisfy BD clocking
+		if {[llength [get_bd_pins zynq_ultra_ps_e_0/pl_clk0 -quiet]]} {
+			foreach aclk {maxihpm1_fpd_aclk saxihpc0_fpd_aclk saxihpc1_fpd_aclk saxihp0_fpd_aclk} {
+				if {[llength [get_bd_pins zynq_ultra_ps_e_0/$aclk -quiet]]} {
+					catch {connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins zynq_ultra_ps_e_0/$aclk]}
+				}
+			}
+		}
+
+		# Validate and save BD so HDL can be generated cleanly
+		if {[catch {validate_bd_design} bd_val_err]} {
+			puts "WARNING: BD validation reported: $bd_val_err"
+		}
+		save_bd_design
+
 		set PS_IRQ           "zynq_ultra_ps_e_0/pl_ps_irq0"
 		set PS_M_AXI_LITE    "/zynq_ultra_ps_e_0/M_AXI_HPM1_FPD"
 		set PS_S_AXI_OUTPUT  "/zynq_ultra_ps_e_0/S_AXI_HPC0_FPD"
@@ -51,15 +68,24 @@ if {$has_ps_ip > 0} {
 	puts "WARNING: MPSoC PS IP not installed. Skipping PS BD creation."
 }
 
-# Sources (builder will rewrite MODEL_DIR and config_hw.svh path)
+# Sources (builder will rewrite MODEL_DIR if provided). Ensure include_dirs covers MODEL_DIR and RTL roots
 if {![info exists MODEL_DIR]} { set MODEL_DIR ./cgra4ml_models/latest }
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/*.sv]
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/*.v]
-add_files "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1756981720/config_hw.svh"
+add_files "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1757068077/config_hw.svh"
+# Ensure axis_register is present (used by pipeline)
+add_files "C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/alex_axis_register.v"
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/*.sv]
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/*.v]
 
+# Make preprocessor search path include the model dir and rtl roots for relative includes
+set srcset [get_filesets sources_1]
+set_property include_dirs [list $MODEL_DIR C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext] $srcset
+
 set_property top $TOP [current_fileset]
+
+# Recompute compile order now that sources are added
+update_compile_order -fileset sources_1
 
 reset_run synth_1
 launch_runs synth_1
