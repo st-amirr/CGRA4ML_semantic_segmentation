@@ -3,7 +3,7 @@
 
 // Auto-updated by the builder to the latest generated config_hw.svh
 // Include hardware config; builder may rewrite the path, or include_dirs may resolve it
-`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1757189386/config_hw.svh"
+`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1757197506/config_hw.svh"
 typedef struct packed {
     logic [`BITS_KW2-1:0] kw2;
     logic                 is_config;
