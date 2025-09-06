@@ -72,7 +72,7 @@ if {$has_ps_ip > 0} {
 if {![info exists MODEL_DIR]} { set MODEL_DIR ./cgra4ml_models/latest }
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/*.sv]
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/*.v]
-add_files "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1757176095/config_hw.svh"
+add_files "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1757189386/config_hw.svh"
 # Ensure axis_register is present (used by pipeline)
 add_files "C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/alex_axis_register.v"
 add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/*.sv]
@@ -82,7 +82,12 @@ add_files [glob C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext/*.v]
 set srcset [get_filesets sources_1]
 set_property include_dirs [list $MODEL_DIR C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl C:/Users/stamir/Desktop/hls4ml_SS/deepsocflow/rtl/ext] $srcset
 
-set_property top $TOP [current_fileset]
+# Only set top to axi_cgra4ml if no block design wrapper exists
+if {![file exists ${PROJECT_NAME}/${PROJECT_NAME}.srcs/sources_1/bd/design_1/hdl/design_1_wrapper.v]} {
+    set_property top $TOP [current_fileset]
+} else {
+    puts "INFO: Using block design wrapper as top module"
+}
 
 # Recompute compile order now that sources are added
 update_compile_order -fileset sources_1

@@ -74,6 +74,7 @@ import platform
 import glob
 import shutil
 import traceback
+import re
 from qkeras import QActivation, QConv2D, QBatchNormalization, quantized_bits, quantized_relu, QDense, QDepthwiseConv2D
 
 
@@ -495,17 +496,17 @@ def convert_to_cgra4ml(model, config, output_dir):
             bits_weights=bits_weights,
             bits_sum=20,
             bits_bias=16,
-            max_batch_size=2,  # Limits parallel batch processing to reduce I/O pins
-            max_channels_in=128,  # Reduces channel parallelism to save I/O bandwidth
-            max_kernel_size=9,  # Limits kernel size to reduce memory I/O requirements
+            max_batch_size=32,      # Limits parallel batch processing to reduce I/O pins
+            max_channels_in=256,    # Reduces channel parallelism to save I/O bandwidth
+            max_kernel_size=9,      # Limits kernel size to reduce memory I/O requirements
             max_image_size=config.get('input_shape', [512])[0],
-            max_n_bundles=64,
-            ram_weights_depth=512,
-            ram_edges_depth=3584,
-            axi_width=128,
-            header_width=64,
+            max_n_bundles=32,       # Reduces bundle count to limit I/O complexity
+            ram_weights_depth=256,  # Smaller weight RAM reduces I/O address pins
+            ram_edges_depth=1792,   # Smaller edge RAM reduces I/O address pins
+            axi_width=128,           # Narrower AXI bus reduces I/O pin count by half
+            header_width=32,        # Smaller header reduces control I/O pins
             config_baseaddr="B0000000",
-            axi_max_burst_len=16,
+            axi_max_burst_len=8,    # Shorter bursts reduce I/O buffer requirements
             target_cpu_int_bits=32,
             async_resetn=True,
             valid_prob=1,
@@ -836,15 +837,15 @@ def run_cgra4ml_simulation(output_dir, args):
             bits_weights=8,
             bits_sum=20,
             bits_bias=16,
-            max_batch_size=16,      # Limits parallel batch processing to reduce I/O pins
-            max_channels_in=128,    # Reduces channel parallelism to save I/O bandwidth
+            max_batch_size=32,      # Limits parallel batch processing to reduce I/O pins
+            max_channels_in=256,    # Reduces channel parallelism to save I/O bandwidth
             max_kernel_size=9,      # Limits kernel size to reduce memory I/O requirements
             max_image_size=cfg.get('input_shape', [512])[0],
-            max_n_bundles=64,
-            ram_weights_depth=512,
-            ram_edges_depth=3584,
-            axi_width=128,
-            header_width=64,
+            max_n_bundles=32,       # Reduces bundle count to limit I/O complexity
+            ram_weights_depth=256,  # Smaller weight RAM reduces I/O address pins
+            ram_edges_depth=1792,   # Smaller edge RAM reduces I/O address pins
+            axi_width=128,           # Narrower AXI bus reduces I/O pin count by half
+            header_width=32,        # Smaller header reduces control I/O pins
             config_baseaddr="B0000000",
             axi_max_burst_len=16,
             target_cpu_int_bits=32,
@@ -1192,30 +1193,38 @@ def main():
     config_hw_path = os.path.abspath(os.path.join(output_dir, "config_hw.svh")).replace('\\', '/')
     if os.path.exists(defines_path):
         with open(defines_path, "r") as f:
-            lines = f.readlines()
-        new_lines = []
-        for line in lines:
-            if line.strip().startswith("`include") and "config_hw.svh" in line:
-                new_lines.append(f'`include "{config_hw_path}"')
-            else:
+            content = f.read()
+        
+        # Pattern to match the include line
+        include_pattern = r'`include\s+"[^"]*config_hw\.svh"[^\n]*'
+        new_include = f'`include "{config_hw_path}"'
+        
+        # Replace the include line
+        new_content = re.sub(include_pattern, new_include, content)
+        
+        # Ensure typedef struct is present after the include
+        if 'typedef struct packed {' not in new_content:
+            # Find the include line and add typedef struct after it
+            lines = new_content.split('\n')
+            new_lines = []
+            for i, line in enumerate(lines):
                 new_lines.append(line)
+                if line.strip().startswith('`include') and 'config_hw.svh' in line:
+                    # Add typedef struct after the include
+                    new_lines.append('')
+                    new_lines.append('typedef struct packed {')
+                    new_lines.append('    logic [`BITS_KW2-1:0] kw2;')
+                    new_lines.append('    logic                 is_config;')
+                    new_lines.append('    logic                 is_cin_last;')
+                    new_lines.append('    logic                 is_w_first_clk;')
+                    new_lines.append('    logic                 is_w_first_kw2;')
+                    new_lines.append('    logic                 is_w_last;')
+                    new_lines.append('} tuser_st;')
+                    new_lines.append('')
+            new_content = '\n'.join(new_lines)
+        
         with open(defines_path, "w") as f:
-            f.writelines(new_lines)
-
-    # Update the include path for config_hw.svh in defines.svh to the latest model directory
-    defines_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "rtl", "defines.svh")
-    config_hw_path = os.path.abspath(os.path.join(output_dir, "config_hw.svh")).replace('\\', '/')
-    if os.path.exists(defines_path):
-        with open(defines_path, "r") as f:
-            lines = f.readlines()
-        new_lines = []
-        for line in lines:
-            if line.strip().startswith("`include") and "config_hw.svh" in line:
-                new_lines.append(f'`include "{config_hw_path}"\n')
-            else:
-                new_lines.append(line)
-        with open(defines_path, "w") as f:
-            f.writelines(new_lines)
+            f.write(new_content)
     # Automatically update TCL script with latest model directory (ZCU104)
     tcl_path = os.path.join(os.path.dirname(__file__), "deepsocflow", "tcl", "fpga", "zcu104.tcl")
     if os.path.exists(tcl_path):
