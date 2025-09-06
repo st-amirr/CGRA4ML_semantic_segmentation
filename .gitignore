@@ -27,3 +27,4 @@ cgra4ml_models/**
 cgra4ml_models/**/*
 tune_qkeras/**
 tune_qkeras/**/*
+deepsocflow/rtl/defines.svh
