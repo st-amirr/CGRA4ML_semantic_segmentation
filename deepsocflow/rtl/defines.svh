@@ -3,11 +3,7 @@
 
 // Auto-updated by the builder to the latest generated config_hw.svh
 // Include hardware config; builder may rewrite the path, or include_dirs may resolve it
-`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1757068077/config_hw.svh"
-// Fallback define to avoid undefined macro errors if not provided by config_hw.svh
-`ifndef BITS_KW2
-`define BITS_KW2 8
-`endif
+`include "C:/Users/stamir/Desktop/hls4ml_SS/cgra4ml_models/lmiinet_cgra4ml_1757163094/config_hw.svh"
 
 typedef struct packed {
     logic [`BITS_KW2-1:0] kw2;

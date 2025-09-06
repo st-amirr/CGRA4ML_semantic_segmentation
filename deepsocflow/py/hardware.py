@@ -184,6 +184,10 @@ class Hardware:
 `define HEADER_WIDTH        {self.HEADER_WIDTH       :<10}
 `define AXI_MAX_BURST_LEN   {self.AXI_MAX_BURST_LEN  :<10}
 `define CONFIG_BASEADDR     40'h{self.CONFIG_BASEADDR:<10}
+
+`define BITS_KW2            {self.BITS_KW2           :<10}  // ceil(log2((KW_MAX+1)/2))
+`define BITS_KH2            {self.BITS_KH2           :<10}  // ceil(log2((KH_MAX+1)/2))
+`define BITS_CIN_MAX        {self.BITS_CIN_MAX       :<10}  // ceil(log2(CI_MAX))
 ''')
 
 
