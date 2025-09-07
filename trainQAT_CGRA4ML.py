@@ -518,25 +518,15 @@ def seghead(inputs, num_classes, use_quantization=True, config=MODEL_CONFIG_LMIA
             fused_features.append(feature)
     
     x = Concatenate(axis=-1)(fused_features)
-
-    # 2. Apply two convolution layers as per the paper
-    seghead_filters = config.get('seghead_filters', 64) # Get from config or default to 64
-
+    
+    # Final 1x1 convolution to map concatenated features to num_classes
     if use_quantization:
-        # First 1x1 convolution
-        x = QConv2D(seghead_filters, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="seghead_conv1")(x)
-        x = QActivation(qr, name="seghead_relu")(x)
-        # Second 1x1 convolution (classifier)
-        x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="seghead_conv2")(x)
+        x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="seghead_final_conv")(x)
         output = Activation('softmax', name="output_softmax")(x)
     else:
-        # First 1x1 convolution
-        x = Conv2D(seghead_filters, 1, padding='same', name="seghead_conv1")(x)
-        x = Activation('relu', name="seghead_relu")(x)
-        # Second 1x1 convolution (classifier)
-        x = Conv2D(num_classes, 1, padding='same', name="seghead_conv2")(x)
+        x = Conv2D(num_classes, 1, padding='same', name="seghead_final_conv")(x)
         output = Activation('softmax', name="output_softmax")(x)
-        
+    
     return output
 
 # Encoder Block (initial block, downsampling, LFIB, FE)
@@ -991,7 +981,7 @@ def combined_loss(y_true, y_pred):
         y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
         ce_main = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
         # ce_main = tf.reduce_mean(ce_main)
-        loss_main =  ce_main #dice 
+        loss_main =  ce_main + dice_main 
 
         # Auxiliary loss
         aux_loss = auxiliary_loss(y_true_aux, y_pred_aux, lambda_weight=0.3)
@@ -1011,7 +1001,7 @@ def combined_loss(y_true, y_pred):
         y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
         ce = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
         # ce = tf.reduce_mean(ce)
-        loss_main =  ce #dice 
+        loss_main =  ce + dice 
         return loss_main
 
 def mean_iou(y_true, y_pred):
