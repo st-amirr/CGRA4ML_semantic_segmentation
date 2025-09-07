@@ -64,8 +64,9 @@ Example commands:
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=False --epochs=100 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
 
 Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=200 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --freeze_bn=True --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_81.weights.h5
-Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=200 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --LR=1e-4 --freeze_bn=True --load_model /workspace/models/cgra4ml_lmiinet_baseline_checkpoint_epoch_05.weights.h5
- """
+Set-Location -Path "C:/Users/stamir/Desktop/hls4ml_SS"; docker-compose exec hls4ml-training python3 /workspace/trainQAT_CGRA4ML.py --trainQAT=True --epochs=200 --batch_size=2 --use_dropout=True --subset_ratio=0.9 --load_model /workspace/models/cgra4ml_lmiinet_qat_checkpoint_epoch_62.weights.h5 --freeze_dec=True
+
+"""
 
 import os
 import numpy as np
@@ -1076,7 +1077,7 @@ class DecoderFreezeCallback(tf.keras.callbacks.Callback):
             # Determine if we should freeze or unfreeze based on the cycle
             # Epochs 0-4: freeze, Epochs 5-9: unfreeze, Epochs 10-14: freeze, etc.
             cycle_position = epoch % self.cycle_length
-            should_freeze = cycle_position < 5  # First 7 epochs of each cycle are frozen
+            should_freeze = cycle_position < 7  # First 7 epochs of each cycle are frozen
             
             # Only freeze decoder and layers after transformer_output
             decoder_prefixes = [
