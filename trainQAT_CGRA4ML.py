@@ -1069,9 +1069,15 @@ class DecoderFreezeCallback(tf.keras.callbacks.Callback):
     def __init__(self, freeze_dec):
         super().__init__()
         self.freeze_dec = freeze_dec
+        self.cycle_length = 10  # 5 epochs freeze + 5 epochs unfreeze = 10 epoch cycle
 
     def on_epoch_begin(self, epoch, logs=None):
         if self.freeze_dec:
+            # Determine if we should freeze or unfreeze based on the cycle
+            # Epochs 0-4: freeze, Epochs 5-9: unfreeze, Epochs 10-14: freeze, etc.
+            cycle_position = epoch % self.cycle_length
+            should_freeze = cycle_position < 5  # First 7 epochs of each cycle are frozen
+            
             # Only freeze decoder and layers after transformer_output
             decoder_prefixes = [
                 'dec', 'seghead_', 'output_softmax'
@@ -1081,8 +1087,12 @@ class DecoderFreezeCallback(tf.keras.callbacks.Callback):
                 if layer.name.startswith('input_image') or layer.name.startswith('stem') or layer.name.startswith('enc'):
                     continue
                 if any(layer.name.startswith(prefix) for prefix in decoder_prefixes):
-                    layer.trainable = False
-            print(f"Decoder and all layers after transformer_output frozen for epoch {epoch+1}")
+                    layer.trainable = not should_freeze
+            
+            if should_freeze:
+                print(f"Decoder and all layers after transformer_output FROZEN for epoch {epoch+1} (cycle position {cycle_position+1}/10)")
+            else:
+                print(f"Decoder and all layers after transformer_output UNFROZEN for epoch {epoch+1} (cycle position {cycle_position+1}/10)")
 
 class BatchNormFreezeCallback(tf.keras.callbacks.Callback):
     def __init__(self, freeze_bn):
