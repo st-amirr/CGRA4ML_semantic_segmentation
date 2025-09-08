@@ -96,6 +96,7 @@ from qkeras.utils import model_save_quantized_weights
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
 from tensorflow.keras.metrics import MeanIoU
 import albumentations as A
+from albumentations.core.transforms_interface import DualTransform
 from PIL import Image
 import cv2
 from pathlib import Path
@@ -239,6 +240,168 @@ def safe_configure_tensorflow(debug_mode=False):
 
 # Call safe TF configuration early
 safe_configure_tensorflow(DEBUG_MODE)
+
+class ZoomToSignsAndLights(DualTransform):
+    """
+    Custom augmentation that zooms to areas containing traffic signs and traffic lights.
+    Works on full resolution images (2048x1024) and crops to target size (1024x512).
+    This helps the model focus on these important small objects during training.
+    """
+    
+    def __init__(
+        self,
+        target_classes=[4, 5, 6, 7, 11],  # fence, pole, traffic light, traffic sign, person
+        zoom_scale=2.0,  # Fixed zoom scale (2048/1024 = 2.0)
+        min_object_size=5,  # Minimum size of objects to consider for zooming
+        target_size=(1024, 512),  # Target size to crop to (width, height)
+        p=0.20,  # Probability of applying this augmentation
+        always_apply=False,
+    ):
+        super(ZoomToSignsAndLights, self).__init__(always_apply, p)
+        self.target_classes = target_classes
+        self.zoom_scale = zoom_scale  # Fixed zoom scale
+        self.min_object_size = min_object_size
+        self.target_size = target_size  # (width, height)
+    
+    def apply(self, img, center_x=0, center_y=0, **params):
+        """Apply fixed zoom transformation to image and crop to target size"""
+        h, w = img.shape[:2]
+        target_w, target_h = self.target_size
+        
+        # Calculate crop size based on fixed zoom scale
+        crop_w = int(target_w * self.zoom_scale)
+        crop_h = int(target_h * self.zoom_scale)
+        
+        # Calculate crop boundaries centered on the target
+        x1 = max(0, center_x - crop_w // 2)
+        y1 = max(0, center_y - crop_h // 2)
+        x2 = min(w, x1 + crop_w)
+        y2 = min(h, y1 + crop_h)
+        
+        # Adjust if we hit boundaries
+        if x2 - x1 < crop_w:
+            x1 = max(0, x2 - crop_w)
+        if y2 - y1 < crop_h:
+            y1 = max(0, y2 - crop_h)
+        
+        # Crop the image
+        cropped = img[y1:y2, x1:x2]
+        
+        # Resize to target size
+        resized = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        
+        return resized
+    
+    def apply_to_mask(self, mask, center_x=0, center_y=0, **params):
+        """Apply the same transformation to mask"""
+        h, w = mask.shape[:2]
+        target_w, target_h = self.target_size
+        
+        # Calculate crop size based on fixed zoom scale
+        crop_w = int(target_w * self.zoom_scale)
+        crop_h = int(target_h * self.zoom_scale)
+        
+        # Calculate crop boundaries centered on the target
+        x1 = max(0, center_x - crop_w // 2)
+        y1 = max(0, center_y - crop_h // 2)
+        x2 = min(w, x1 + crop_w)
+        y2 = min(h, y1 + crop_h)
+        
+        # Adjust if we hit boundaries
+        if x2 - x1 < crop_w:
+            x1 = max(0, x2 - crop_w)
+        if y2 - y1 < crop_h:
+            y1 = max(0, y2 - crop_h)
+        
+        # Crop the mask
+        cropped = mask[y1:y2, x1:x2]
+        
+        # Resize to target size
+        resized = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+        
+        return resized
+    
+    def get_params(self):
+        """Get random parameters for the transformation"""
+        return {
+            "center_x": 0,  # Will be set in apply_detection
+            "center_y": 0,  # Will be set in apply_detection
+        }
+    
+    def apply_detection(self, img, mask, **params):
+        """Find target objects and apply zoom centered on them"""
+        # Find objects of target classes
+        target_objects = []
+        
+        for class_id in self.target_classes:
+            # Find pixels belonging to this class
+            class_mask = (mask == class_id)
+            
+            if np.any(class_mask):
+                # Find connected components
+                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+                    class_mask.astype(np.uint8), connectivity=8
+                )
+                
+                # Check each component
+                for i in range(1, num_labels):  # Skip background (label 0)
+                    area = stats[i, cv2.CC_STAT_AREA]
+                    if area >= self.min_object_size:
+                        center_x = int(centroids[i][0])
+                        center_y = int(centroids[i][1])
+                        target_objects.append((center_x, center_y, area))
+        
+        if not target_objects:
+            # No target objects found, return center crop of original size
+            h, w = img.shape[:2]
+            target_w, target_h = self.target_size
+            
+            # Center crop to target size
+            x1 = (w - target_w) // 2
+            y1 = (h - target_h) // 2
+            x2 = x1 + target_w
+            y2 = y1 + target_h
+            
+            img_cropped = img[y1:y2, x1:x2]
+            mask_cropped = mask[y1:y2, x1:x2]
+            
+            return img_cropped, mask_cropped
+        
+        # Select a random target object
+        center_x, center_y, area = target_objects[np.random.randint(len(target_objects))]
+        
+        # Apply fixed zoom to image
+        img_zoomed = self.apply(img, center_x=center_x, center_y=center_y)
+        
+        # Apply fixed zoom to mask
+        mask_zoomed = self.apply_to_mask(mask, center_x=center_x, center_y=center_y)
+        
+        return img_zoomed, mask_zoomed
+    
+    def __call__(self, force_apply=False, **kwargs):
+        """Override the call method to use our custom detection logic"""
+        if self.replay_mode:
+            raise NotImplementedError("Replay mode is not supported for this transform")
+        
+        if force_apply or self.apply_with_params(self.params, **kwargs):
+            # Use our custom detection-based zoom
+            if 'image' in kwargs and 'mask' in kwargs:
+                kwargs['image'], kwargs['mask'] = self.apply_detection(kwargs['image'], kwargs['mask'])
+            else:
+                # Fallback to center crop if no mask provided
+                img = kwargs['image']
+                h, w = img.shape[:2]
+                target_w, target_h = self.target_size
+                
+                # Center crop to target size
+                x1 = (w - target_w) // 2
+                y1 = (h - target_h) // 2
+                x2 = x1 + target_w
+                y2 = y1 + target_h
+                
+                kwargs['image'] = img[y1:y2, x1:x2]
+        
+        return kwargs
 
 
 # We'll use KerasTuner to search quantizer bit-widths for weights and activations.
@@ -680,7 +843,15 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         # Create balanced augmentation pipeline with reduced probabilities
         if self.augment:
             self.transform = A.Compose(
-                [
+                [   
+                    #Custom zoom augmentation for signs and traffic lights
+                    ZoomToSignsAndLights(
+                        target_classes=[4, 5, 6, 7, 11],  # fence, pole, traffic light, traffic sign, person
+                        zoom_scale=2.0,  # Fixed zoom scale (2048/1024 = 2.0)
+                        min_object_size=5,  # Minimum object size to consider
+                        target_size=(self.target_width, self.target_height),  # Crop to model input size
+                        p=0.20,  # 20% chance of applying this augmentation
+                    ),
                     # Geometric augmentations - more aggressive for robustness
                     A.RandomCrop(
                         width=self.target_width, height=self.target_height, p=0.1
@@ -733,13 +904,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                         fill_mask=0,
                         p=0.1,
                     ),
-                    # # Random zoom (resized crop) - new augmentation
-                    # A.RandomResizedCrop(
-                    #     size=(self.target_height, self.target_width),
-                    #     scale=(0.5, 1.0),  # Random zoom between 100% and 300%
-                    #     ratio=(0.8, 1.2),
-                    #     p=0.1
-                    # ),
                 ]
             )
         else:
@@ -810,7 +974,14 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     mapped[mask == lid] = tid
                 mask = mapped
 
-            # Resize image and mask
+
+            # Apply augmentations on full resolution images
+            if self.transform:
+                augmented = self.transform(image=image, mask=mask)
+                image = augmented["image"]
+                mask = augmented["mask"]
+
+            # After augmentation, resize to target model input size
             image = cv2.resize(
                 image,
                 (self.target_width, self.target_height),
@@ -821,12 +992,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                 (self.target_width, self.target_height),
                 interpolation=cv2.INTER_NEAREST,
             )
-
-            # Apply augmentations
-            if self.transform:
-                augmented = self.transform(image=image, mask=mask)
-                image = augmented["image"]
-                mask = augmented["mask"]
 
             # Normalize image
             image = image.astype(np.float32) / 255.0
