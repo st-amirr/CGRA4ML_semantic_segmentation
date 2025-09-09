@@ -32,8 +32,11 @@ void Vcgra4ml_lmiinet_qat_final_fallback_tb::_initial__TOP__1(Vcgra4ml_lmiinet_q
     VL_DEBUG_IF(VL_DBG_MSGF("+    Vcgra4ml_lmiinet_qat_final_fallback_tb::_initial__TOP__1\n"); );
     Vcgra4ml_lmiinet_qat_final_fallback_tb* const __restrict vlTOPp VL_ATTR_UNUSED = vlSymsp->TOPp;
     // Body
-    VL_WRITEF("=== CGRA4ML_LMIINET_QAT_FINAL FALLBACK SIMULATION ===\nModel has 37 conv layers, 826,395 parameters\n=== SIMULATION COMPLETE ===\nEstimated performance based on model analysis\n");
+    VL_WRITEF("=== CGRA4ML_LMIINET_QAT_FINAL FALLBACK SIMULATION ===\nModel has 37 conv layers, 826,395 parameters\n");
+    vlTOPp->cgra4ml_lmiinet_qat_final_fallback_tb__DOT__rst_n = 1U;
+    VL_WRITEF("=== SIMULATION COMPLETE ===\nEstimated performance based on model analysis\n");
     VL_FINISH_MT("cgra4ml_lmiinet_qat_final_fallback_tb.sv", 24, "");
+    vlTOPp->cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk = 0U;
 }
 
 void Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval_initial(Vcgra4ml_lmiinet_qat_final_fallback_tb__Syms* __restrict vlSymsp) {
@@ -41,6 +44,7 @@ void Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval_initial(Vcgra4ml_lmiinet_qat_
     Vcgra4ml_lmiinet_qat_final_fallback_tb* const __restrict vlTOPp VL_ATTR_UNUSED = vlSymsp->TOPp;
     // Body
     vlTOPp->_initial__TOP__1(vlSymsp);
+    vlTOPp->__Vm_traceActivity[0U] = 1U;
 }
 
 void Vcgra4ml_lmiinet_qat_final_fallback_tb::final() {
@@ -53,8 +57,17 @@ void Vcgra4ml_lmiinet_qat_final_fallback_tb::final() {
 void Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval_settle(Vcgra4ml_lmiinet_qat_final_fallback_tb__Syms* __restrict vlSymsp) {
     VL_DEBUG_IF(VL_DBG_MSGF("+    Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval_settle\n"); );
     Vcgra4ml_lmiinet_qat_final_fallback_tb* const __restrict vlTOPp VL_ATTR_UNUSED = vlSymsp->TOPp;
+    // Body
+    vlTOPp->_combo__TOP__2(vlSymsp);
 }
 
 void Vcgra4ml_lmiinet_qat_final_fallback_tb::_ctor_var_reset() {
     VL_DEBUG_IF(VL_DBG_MSGF("+    Vcgra4ml_lmiinet_qat_final_fallback_tb::_ctor_var_reset\n"); );
+    // Body
+    cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk = VL_RAND_RESET_I(1);
+    cgra4ml_lmiinet_qat_final_fallback_tb__DOT__rst_n = VL_RAND_RESET_I(1);
+    __Vchglast__TOP__cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk = VL_RAND_RESET_I(1);
+    { int __Vi0=0; for (; __Vi0<1; ++__Vi0) {
+            __Vm_traceActivity[__Vi0] = VL_RAND_RESET_I(1);
+    }}
 }

@@ -22,6 +22,7 @@ void Vcgra4ml_lmiinet_qat_final_fallback_tb::eval_step() {
     QData __Vchange = 1;
     do {
         VL_DEBUG_IF(VL_DBG_MSGF("+ Clock loop\n"););
+        vlSymsp->__Vm_activity = true;
         _eval(vlSymsp);
         if (VL_UNLIKELY(++__VclockLoop > 100)) {
             // About to fail, so enable debug to see what's not settling.
@@ -42,6 +43,7 @@ void Vcgra4ml_lmiinet_qat_final_fallback_tb::eval_step() {
 void Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval_initial_loop(Vcgra4ml_lmiinet_qat_final_fallback_tb__Syms* __restrict vlSymsp) {
     vlSymsp->__Vm_didInit = true;
     _eval_initial(vlSymsp);
+    vlSymsp->__Vm_activity = true;
     // Evaluate till stable
     int __VclockLoop = 0;
     QData __Vchange = 1;
@@ -64,9 +66,19 @@ void Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval_initial_loop(Vcgra4ml_lmiinet
     } while (VL_UNLIKELY(__Vchange));
 }
 
+VL_INLINE_OPT void Vcgra4ml_lmiinet_qat_final_fallback_tb::_combo__TOP__2(Vcgra4ml_lmiinet_qat_final_fallback_tb__Syms* __restrict vlSymsp) {
+    VL_DEBUG_IF(VL_DBG_MSGF("+    Vcgra4ml_lmiinet_qat_final_fallback_tb::_combo__TOP__2\n"); );
+    Vcgra4ml_lmiinet_qat_final_fallback_tb* const __restrict vlTOPp VL_ATTR_UNUSED = vlSymsp->TOPp;
+    // Body
+    vlTOPp->cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk 
+        = (1U & (~ (IData)(vlTOPp->cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk)));
+}
+
 void Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval(Vcgra4ml_lmiinet_qat_final_fallback_tb__Syms* __restrict vlSymsp) {
     VL_DEBUG_IF(VL_DBG_MSGF("+    Vcgra4ml_lmiinet_qat_final_fallback_tb::_eval\n"); );
     Vcgra4ml_lmiinet_qat_final_fallback_tb* const __restrict vlTOPp VL_ATTR_UNUSED = vlSymsp->TOPp;
+    // Body
+    vlTOPp->_combo__TOP__2(vlSymsp);
 }
 
 VL_INLINE_OPT QData Vcgra4ml_lmiinet_qat_final_fallback_tb::_change_request(Vcgra4ml_lmiinet_qat_final_fallback_tb__Syms* __restrict vlSymsp) {
@@ -82,6 +94,11 @@ VL_INLINE_OPT QData Vcgra4ml_lmiinet_qat_final_fallback_tb::_change_request_1(Vc
     // Body
     // Change detection
     QData __req = false;  // Logically a bool
+    __req |= ((vlTOPp->cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk ^ vlTOPp->__Vchglast__TOP__cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk));
+    VL_DEBUG_IF( if(__req && ((vlTOPp->cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk ^ vlTOPp->__Vchglast__TOP__cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk))) VL_DBG_MSGF("        CHANGE: cgra4ml_lmiinet_qat_final_fallback_tb.sv:6: cgra4ml_lmiinet_qat_final_fallback_tb.clk\n"); );
+    // Final
+    vlTOPp->__Vchglast__TOP__cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk 
+        = vlTOPp->cgra4ml_lmiinet_qat_final_fallback_tb__DOT__clk;
     return __req;
 }
 

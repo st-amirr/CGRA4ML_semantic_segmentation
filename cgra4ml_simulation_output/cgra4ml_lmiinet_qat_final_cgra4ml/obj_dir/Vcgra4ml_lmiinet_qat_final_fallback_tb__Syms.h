@@ -18,6 +18,8 @@ class Vcgra4ml_lmiinet_qat_final_fallback_tb__Syms : public VerilatedSyms {
     
     // LOCAL STATE
     const char* __Vm_namep;
+    bool __Vm_activity;  ///< Used by trace routines to determine change occurred
+    uint32_t __Vm_baseCode;  ///< Used by trace routines when tracing multiple models
     bool __Vm_didInit;
     
     // SUBCELL STATE
