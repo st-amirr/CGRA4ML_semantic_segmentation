@@ -1055,6 +1055,7 @@ def generate_performance_report(cgra_model, output_dir, args, performance_predic
         except Exception as e:
             print(f"Could not generate model summary: {e}")
 
+
         # Try to get resource estimates if available
         try:
             if hasattr(cgra_model, "get_resource_usage"):
