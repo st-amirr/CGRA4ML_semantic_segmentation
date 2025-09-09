@@ -5,7 +5,7 @@ FROM tensorflow/tensorflow:2.14.0-gpu
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_VISIBLE_DEVICES=0
 
-# Install additional system dependencies
+# Install additional system dependencies including Verilator
 RUN apt-get update && apt-get install -y \
     git \
     wget \
@@ -18,6 +18,16 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
+    verilator \
+    make \
+    g++ \
+    autoconf \
+    flex \
+    bison \
+    ccache \
+    libgoogle-perftools-dev \
+    numactl \
+    perl-doc \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip
@@ -31,11 +41,21 @@ RUN pip install scikit-learn==1.3.2 --only-binary=scikit-learn --no-cache-dir
 
 # Install additional dependencies
 COPY requirements.txt .
+COPY requirements_cgra4ml.txt .
 RUN pip install -r requirements.txt
+RUN pip install -r requirements_cgra4ml.txt
 
 # Install HLS4ML separately to avoid dependency conflicts
 RUN pip install hls4ml[profiling] --no-deps
 RUN pip install pydantic>=2.0.0
+
+# Note: CGRA4ML will be mounted from the host workspace
+# Skip installing CGRA4ML in Docker since it requires Python 3.11.5 exactly
+# and we'll use the version from the mounted workspace
+
+# Set up Verilator environment
+ENV VERILATOR_ROOT=/usr/share/verilator
+ENV PATH=$PATH:$VERILATOR_ROOT/bin
 
 # Set working directory
 WORKDIR /workspace
