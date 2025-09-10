@@ -622,12 +622,10 @@ def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1, use_q
     channels = inputs.shape[-1]
     if use_quantization:
         attn = QConv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation=qr, name="flam_attn_conv", kernel_quantizer=kq, bias_quantizer=bq)(inputs)
-        attn = Dropout(dropout_rate)(attn)
         attn = Add()([inputs, attn])
         attn = QBatchNormalization(name="flam_bn")(attn)
     else:
         attn = Conv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation='relu', name="flam_attn_conv")(inputs)
-        attn = Dropout(dropout_rate)(attn)
         attn = Add()([inputs, attn])
         attn = BatchNormalization(renorm=True, name="flam_bn")(attn)
     out = attn

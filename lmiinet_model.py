@@ -1,12 +1,21 @@
 """
-LMIINet model architecture extraction from trainQAT_CGRA4ML.py
-This module contains only the model creation functions without command line parsing
+LMIINet model architecture for CGRA4ML - QAT version only
+This module contains only the QAT model creation functions without dropout
 """
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.layers import *
-from qkeras import *
+from tensorflow.keras.layers import (
+    Input, BatchNormalization, Activation, 
+    GlobalAveragePooling2D, GlobalMaxPooling2D, Reshape, Dense, Add, 
+    Multiply, Concatenate, UpSampling2D
+)
+from tensorflow.keras.models import Model
+
+from qkeras import (
+    QConv2D, QDepthwiseConv2D, QBatchNormalization, QActivation, QDense,
+    quantized_bits, quantized_relu
+)
 import os
 
 # Model configuration
@@ -31,184 +40,261 @@ bq = f"quantized_bits({B_BITS},{QINT_BITS},False,True,1)"          # bias
 qr = f"quantized_relu({X_BITS},{QINT_BITS},negative_slope=0)"      # ReLU
 qb = f"quantized_bits({X_BITS},{QINT_BITS},False,False,1)"         # requant (identity/clip)
 
-def improved_flatten_transformer(x, config, use_quantization=True, name="transformer"):
-    """Enhanced transformer block with proper scaling for flat features"""
-    with tf.name_scope(name):
-        # Get the input shape for calculations
-        _, h, w, c = x.shape
-        seq_len = h * w
-        
-        # Flatten spatial dimensions: (B, H, W, C) -> (B, H*W, C)
-        x_flat = tf.reshape(x, [-1, seq_len, c])
-        
-        # Multi-head self-attention with proper scaling
-        mha = MultiHeadAttention(
-            num_heads=config['transformer_heads'],
-            key_dim=config['transformer_key_dim'],
-            name=f"{name}_mha"
-        )
-        attn_output = mha(x_flat, x_flat)
-        
-        # Residual connection and layer norm
-        x_flat = x_flat + attn_output
-        x_flat = LayerNormalization(name=f"{name}_ln1")(x_flat)
-        
-        # Feed-forward network
-        if use_quantization:
-            ff = QDense(c, kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_ff1")(x_flat)
-            ff = QActivation(qr, name=f"{name}_ff1_act")(ff)
-            ff = QDense(c, kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_ff2")(ff)
-        else:
-            ff = Dense(c, name=f"{name}_ff1")(x_flat)
-            ff = Activation('relu', name=f"{name}_ff1_act")(ff)
-            ff = Dense(c, name=f"{name}_ff2")(ff)
-        
-        # Second residual connection and layer norm
-        x_flat = x_flat + ff
-        x_flat = LayerNormalization(name=f"{name}_ln2")(x_flat)
-        
-        # Reshape back to spatial dimensions: (B, H*W, C) -> (B, H, W, C)
-        output = tf.reshape(x_flat, [-1, h, w, c])
-        
-        return output
+def cgra4ml_channel_shuffle(inputs, groups=2, name="shuffle"):
+    """
+    CGRA4ML-compatible channel shuffle using only supported operations.
+    Simulates channel shuffle effect using slice and concatenate operations.
+    """
+   
+    # Split channels into groups using slicing (CGRA4ML compatible)
+    group_1 = inputs[:, :, :, :inputs.shape[-1] // groups]
+    group_2 = inputs[:, :, :, inputs.shape[-1] // groups:]
+    
+    # Interleave groups by concatenating in reverse order
+    # This creates a shuffle-like effect
+    shuffled = Concatenate(axis=-1, name=f'{name}_concat')([group_2, group_1])
+    
+    return shuffled
 
-def encoder(x, filters, use_quantization=True, name="encoder"):
-    """Enhanced encoder block with skip connections"""
-    with tf.name_scope(name):
-        # Main path
-        if use_quantization:
-            conv1 = QConv2D(filters, 3, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_conv1")(x)
-            conv1 = QActivation(qr, name=f"{name}_act1")(conv1)
-            conv2 = QConv2D(filters, 3, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_conv2")(conv1)
-            conv2 = QActivation(qr, name=f"{name}_act2")(conv2)
-        else:
-            conv1 = Conv2D(filters, 3, padding='same', name=f"{name}_conv1")(x)
-            conv1 = Activation('relu', name=f"{name}_act1")(conv1)
-            conv2 = Conv2D(filters, 3, padding='same', name=f"{name}_conv2")(conv1)
-            conv2 = Activation('relu', name=f"{name}_act2")(conv2)
-        
-        # Skip connection if dimensions match
-        if x.shape[-1] == filters:
-            skip = x
-        else:
-            if use_quantization:
-                skip = QConv2D(filters, 1, kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_skip")(x)
-            else:
-                skip = Conv2D(filters, 1, name=f"{name}_skip")(x)
-        
-        # Combine skip and main path
-        combined = Add(name=f"{name}_add")([conv2, skip])
-        
-        # Downsample
-        if use_quantization:
-            output = QConv2D(filters, 3, strides=2, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_down")(combined)
-            output = QActivation(qr, name=f"{name}_down_act")(output)
-        else:
-            output = Conv2D(filters, 3, strides=2, padding='same', name=f"{name}_down")(combined)
-            output = Activation('relu', name=f"{name}_down_act")(output)
-        
-        return output
+# Helper function for Feature Enhancement (FE) block
+def feature_enhancement(inputs, filters, name):
+    """CGRA4ML-Compatible Feature Enhancement Block - QAT version only"""
+    
+    # t.Mean: Apply Global Average Pooling (GAP)
+    gap = GlobalAveragePooling2D()(inputs)
+    gap = Reshape((1, 1, inputs.shape[-1]))(gap)
 
-def decoder(x, skip, filters, use_quantization=True, name="decoder"):
-    """Enhanced decoder block with skip connections"""
-    with tf.name_scope(name):
-        # Upsample
-        if use_quantization:
-            up = QConv2DTranspose(filters, 3, strides=2, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_up")(x)
-            up = QActivation(qr, name=f"{name}_up_act")(up)
-        else:
-            up = Conv2DTranspose(filters, 3, strides=2, padding='same', name=f"{name}_up")(x)
-            up = Activation('relu', name=f"{name}_up_act")(up)
-        
-        # Concatenate with skip connection
-        concat = Concatenate(name=f"{name}_concat")([up, skip])
-        
-        # Refine features
-        if use_quantization:
-            conv1 = QConv2D(filters, 3, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_conv1")(concat)
-            conv1 = QActivation(qr, name=f"{name}_act1")(conv1)
-            conv2 = QConv2D(filters, 3, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_conv2")(conv1)
-            conv2 = QActivation(qr, name=f"{name}_act2")(conv2)
-        else:
-            conv1 = Conv2D(filters, 3, padding='same', name=f"{name}_conv1")(concat)
-            conv1 = Activation('relu', name=f"{name}_act1")(conv1)
-            conv2 = Conv2D(filters, 3, padding='same', name=f"{name}_conv2")(conv1)
-            conv2 = Activation('relu', name=f"{name}_act2")(conv2)
-        
-        return conv2
+    # t.Max: Apply Global Max Pooling (GMP)
+    gmp = GlobalMaxPooling2D()(inputs)
+    gmp = Reshape((1, 1, inputs.shape[-1]))(gmp)
 
-def segmentation_head(x, num_classes, use_quantization=True, name="seg_head"):
-    """Segmentation head for final output"""
-    with tf.name_scope(name):
-        if use_quantization:
-            conv = QConv2D(64, 3, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f"{name}_conv")(x)
-            conv = QActivation(qr, name=f"{name}_act")(conv)
-            # Final layer without quantization for better accuracy
-            output = Conv2D(num_classes, 1, padding='same', name=f"{name}_output")(conv)
-        else:
-            conv = Conv2D(64, 3, padding='same', name=f"{name}_conv")(x)
-            conv = Activation('relu', name=f"{name}_act")(conv)
-            output = Conv2D(num_classes, 1, padding='same', name=f"{name}_output")(conv)
-        
-        return output
+    # Concatenate GAP and GMP along the channel axis (axis=-1)
+    x = Concatenate(axis=-1)([gap, gmp])
 
-def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True, inference_mode=False):
-    """Create LMIINet model with the exact architecture from trainQAT_CGRA4ML.py"""
+    # QAT branch only
+    x = QConv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3', kernel_quantizer=kq, bias_quantizer=bq)(x)
+    x = QBatchNormalization(name=f'{name}_bn')(x)
+    a = QActivation('sigmoid', name=f'{name}_sigmoid')(x)
+
+    x2 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_1x1', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+    a2 = QActivation('sigmoid', name=f'{name}_sigmoid_a2')(x2)
+
+    gap2 = GlobalAveragePooling2D()(inputs)
+    gap2 = Reshape((1, 1, inputs.shape[-1]))(gap2)
+    x3 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1', kernel_quantizer=kq, bias_quantizer=bq)(gap2)
+    x3 = QActivation('relu', name=f'{name}_relu2')(x3)
+    x3 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv2_1x1_final', kernel_quantizer=kq, bias_quantizer=bq)(x3)
+    b = QActivation('sigmoid', name=f'{name}_sigmoid_b')(x3)
+    b2 = QConv2D(filters, (1, 1), padding='same', use_bias=True, name=f'{name}_conv_b2', kernel_quantizer=kq, bias_quantizer=bq)(b)
+    output = Add()([a2, b2])
+    return output
+
+# Helper function for Lightweight Feature Interaction Bottleneck (LFIB)
+def lfib(inputs, filters, name):
+    """Lightweight Feature Interaction Bottleneck (LFIB) - Paper Accurate"""
+
+    f1 = QConv2D(filters, 1, padding='same', name=f'{name}_f1_conv', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+    f1 = QActivation(qr, name=f'{name}_f1_act')(f1)
+
+    # Channel split
+    f21 = f1[:, :, :, :filters//2]
+    f22 = f1[:, :, :, filters//2:]
+
+    # CC modules
+    CC1 = CC(f22, filters // 2, name_prefix=f'{name}_CC1')
+    CC2 = CC(f21, filters // 2, name_prefix=f'{name}_CC2')
+
+    # Left branch
+    left_branch_input = Add(name=f'{name}_left_add')([f21, CC1])
+
+    left_out = QConv2D(filters // 2, (3, 1), padding='same', name=f'{name}_left_3x1', kernel_quantizer=kq, bias_quantizer=bq)(left_branch_input)
+    left_out = QActivation(qr, name=f'{name}_left_3x1_act')(left_out)
+    left_out = QConv2D(filters // 2, (1, 3), padding='same', name=f'{name}_left_1x3', kernel_quantizer=kq, bias_quantizer=bq)(left_out)
+    left_out = QActivation(qr, name=f'{name}_left_1x3_act')(left_out)
+
+
+    # Right branch
+    right_branch_input = Add(name=f'{name}_right_add')([f22, CC2])
+
+    right_out = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_right_dw', depthwise_quantizer=kq, bias_quantizer=bq)(right_branch_input)
+    right_out = QActivation(qr, name=f'{name}_right_dw_act')(right_out)
+    right_out = QConv2D(filters // 2, 1, padding='same', name=f'{name}_right_pw', kernel_quantizer=kq, bias_quantizer=bq)(right_out)
+    right_out = QActivation(qr, name=f'{name}_right_pw_act')(right_out)
+
+
+    # Fusion
+    f2 = Concatenate(name=f'{name}_concat_branches')([left_out, right_out])
+    cru_out = cru_block(f1, filters, f'{name}_cru')
+    f2_plus_cru = Add(name=f'{name}_add_cru')([f2, cru_out])
+
+    # Residual connection
+    residual = Add(name=f'{name}_add_residual')([inputs, f2_plus_cru])
+
+    # Final DW Conv + Channel Shuffle
+    final_out = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_final_dw', depthwise_quantizer=kq, bias_quantizer=bq)(residual)
+    final_out = QActivation(qr, name=f'{name}_final_dw_act')(final_out)
+
+        
+    shuffled_out = cgra4ml_channel_shuffle(final_out, groups=2, name=f'{name}_shuffle')
+    
+    return shuffled_out
+
+def CC(inputs, filters, name_prefix):
+    """Combination Coefficient Learning (CC) - CGRA4ML Compatible - QAT version only"""
+    # Global Average Pooling
+    gap = GlobalAveragePooling2D(name=f'{name_prefix}_gap')(inputs)
+    gap = Reshape((1, 1, inputs.shape[-1]), name=f'{name_prefix}_gap_reshape')(gap)
+
+    # Use Dense layers to learn channel-wise attention
+    sdp = Dense(filters, activation='relu', name=f'{name_prefix}_sdp_dense1')(gap)
+    sdp = Dense(filters, activation='sigmoid', name=f'{name_prefix}_sdp_dense2')(sdp)
+
+    return Multiply(name=f'{name_prefix}_multiply')([inputs, sdp])
+
+# Channel Reconstruction Unit (CRU)
+def cru_block(x, filters, name):
+    """CGRA4ML-Compatible Channel Reconstruction Unit (CRU) - QAT version only"""
+
+    global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
+    global_context = Reshape((1, 1, x.shape[-1]))(global_context)
+    global_context = QConv2D(filters, 1, padding='same', activation='sigmoid', name=f'{name}_context_fc',
+                                kernel_quantizer=kq, bias_quantizer=bq)(global_context)
+    refined_x = Multiply()([x, global_context])
+    return refined_x
+
+# Improved Flatten Transformer (IFT)
+def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1):
+    """CGRA4ML-Compatible Flattened Local Attention Module (FLAM) - QAT version only"""
+    channels = inputs.shape[-1]
+    attn = QConv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation=qr, name="flam_attn_conv", kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+    attn = Add()([inputs, attn])
+    attn = QBatchNormalization(name="flam_bn")(attn)
+
+    out = attn
+    return out
+
+def CAB(inputs, filters):
+    """CGRA4ML-Compatible Context Aggregation Block (CAB) - QAT version only"""
+    gap = GlobalAveragePooling2D()(inputs)
+    gap = Reshape((1, 1, inputs.shape[-1]))(gap)
+    # QAT version only
+    mix = QConv2D(filters, 1, padding='same', activation=qr, name="cab_mix1", kernel_quantizer=kq, bias_quantizer=bq)(gap)
+    mix = QConv2D(filters, 1, padding='same', activation='sigmoid', name="cab_mix2", kernel_quantizer=kq, bias_quantizer=bq)(mix)
+    out = Multiply()([inputs, mix])
+    return out
+
+
+def improved_flatten_transformer(inputs, num_heads=8, key_dim=64, dropout_rate=0.1):
+    """Improved Flatten Transformer: FLAM + CAB + CC"""
+    filters = inputs.shape[-1]
+    # FLAM: local/global attention
+    x = FLAM(inputs, num_heads=num_heads, key_dim=key_dim, dropout_rate=dropout_rate)
+    # CAB: context aggregation
+    x = CAB(x, filters, )
+    # CC: channel-wise convolution
+    x = CC(x, filters, name_prefix="ift_cc")
+    return x
+
+# Segmentation Head (SegHead)
+def seghead(inputs, num_classes, config=MODEL_CONFIG_LMIA):
+    """Segmentation Head with multi-scale fusion, following the paper's design."""
+    # 1. Upsample and Concatenate features
+    high_res_feature = inputs[-1]
+    target_shape = high_res_feature.shape
+    target_height, target_width = target_shape[1], target_shape[2]
+
+    fused_features = []
+    for feature in inputs:
+        feature_shape = feature.shape
+        if feature_shape[1] != target_height or feature_shape[2] != target_width:
+            scale_height = target_height // feature_shape[1]
+            scale_width = target_width // feature_shape[2]
+            upsampled = UpSampling2D(size=(scale_height, scale_width), interpolation='nearest')(feature)
+            fused_features.append(upsampled)
+        else:
+            fused_features.append(feature)
+    
+    x = Concatenate(axis=-1)(fused_features)
+    
+    # Final 1x1 convolution to map concatenated features to num_classes
+
+    x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="seghead_final_conv")(x)
+    output = Activation('softmax', name="output_softmax")(x)
+
+    return output
+
+# Encoder Block (initial block, downsampling, LFIB, FE)
+def encoder(inputs, filters, name="enc"):
+    """Encoder Block with LFIB and FE - QAT version only"""
+    # QAT version only
+    x = QConv2D(filters, (3, 3), strides=2, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_conv')(inputs)
+    x = QActivation(qr, name=f'{name}_act')(x)
+    x = lfib(x, filters, f'{name}_lfib')
+    x = feature_enhancement(x, filters, f'{name}_fe')
+    return x
+
+# Decoder Block (upsampling, LFIB, FE)
+def decoder(inputs, skip_connection, filters, name="dec"):
+    """Decoder Block with UpSampling, optional skip concat, and FE - QAT version only.
+
+    Expects skip_connection to have same HxW as upsampled inputs. If None, skips concat.
+    """
+    # First upsample the decoder input
+    x = UpSampling2D(size=(2, 2), interpolation='nearest', name=f'{name}_upsample')(inputs)
+
+    # Concatenate with skip if provided
+    if skip_connection is not None:
+        x = Concatenate(axis=-1, name=f'{name}_concat')([x, skip_connection])
+
+    x = feature_enhancement(x, filters, f'{name}_fe')
+    # Spatial refinement (DW+PW) to smooth blocky upsampling artifacts - QAT version only
+    x = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_refine_dw', depthwise_quantizer=kq, bias_quantizer=bq)(x)
+    x = QActivation(qr, name=f'{name}_refine_dw_act')(x)
+    x = QConv2D(filters, 1, padding='same', name=f'{name}_refine_pw', kernel_quantizer=kq, bias_quantizer=bq)(x)
+    x = QActivation(qr, name=f'{name}_refine_pw_act')(x)
+
+    return x
+
+# LMIINet Model
+def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, config=MODEL_CONFIG_LMIA, aux_out=True, inference_mode=False):
     inputs = Input(shape=input_shape, name="input_image")
 
     # Initial downsampling stem
-    if use_quantization:
-        stem = QConv2D(config['encoder_filters'][0], (3, 3), strides=2, padding='same', name='stem_conv', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
-        stem = QActivation(qr, name='stem_act')(stem)
-    else:
-        stem = Conv2D(config['encoder_filters'][0], (3, 3), strides=2, padding='same', name='stem_conv')(inputs)
-        stem = Activation('relu', name='stem_act')(stem)
+    stem = QConv2D(config['encoder_filters'][0], (3, 3), strides=2, padding='same', name='stem_conv', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
+    stem = QActivation(qr, name='stem_act')(stem)
+
 
     # Encoder
     enc = stem
     encoder_outputs = [enc] # Start with stem output
     for i, f in enumerate(config['encoder_filters'][1:]): # Start from the second filter size
-        enc = encoder(enc, f, use_quantization, name=f'enc{i+1}')
+        enc = encoder(enc, f, name=f'enc{i+1}')
         encoder_outputs.append(enc)
 
     # Transformer
     transformer_output = improved_flatten_transformer(
         enc,
-        config,
-        use_quantization,
-        name='transformer'
+        num_heads=config.get('transformer_heads', 8),
+        key_dim=config.get('transformer_key_dim', 64),
+        dropout_rate=config.get('transformer_dropout', 0.1)
     )
 
-    # Decoder with skip connections
+    # Decoder
     dec = transformer_output
+    decoder_features = []
     for i, f in enumerate(config['decoder_filters']):
-        skip_idx = len(encoder_outputs) - 2 - i  # Get corresponding encoder output
-        if skip_idx >= 0:
-            skip = encoder_outputs[skip_idx]
-            dec = decoder(dec, skip, f, use_quantization, name=f'dec{i+1}')
-        else:
-            # No more skip connections, just upsample
-            if use_quantization:
-                dec = QConv2DTranspose(f, 3, strides=2, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f'dec{i+1}_up')(dec)
-                dec = QActivation(qr, name=f'dec{i+1}_up_act')(dec)
-            else:
-                dec = Conv2DTranspose(f, 3, strides=2, padding='same', name=f'dec{i+1}_up')(dec)
-                dec = Activation('relu', name=f'dec{i+1}_up_act')(dec)
+        # Align skip connections to the spatial size AFTER upsampling:
+        # dec (1/16) -> upsample (1/8) should use encoder 1/8 (index -2), etc.
+        skip_idx = -(i + 2)
+        skip_connection = encoder_outputs[skip_idx] if abs(skip_idx) <= len(encoder_outputs) else None
+        dec = decoder(dec, skip_connection, f, name=f'dec{i}')
+        decoder_features.append(dec)
 
-    # Final segmentation head
-    main_output = segmentation_head(dec, num_classes, use_quantization, name='main_seg')
+    # Main SegHead
+    seg_output = seghead(decoder_features[-3:], num_classes, config=config)
     
-    # Create model
-    if aux_out and not inference_mode:
-        # Auxiliary output from transformer for training
-        aux_output = segmentation_head(
-            UpSampling2D(size=(8, 8), name='aux_upsample')(transformer_output),
-            num_classes, 
-            use_quantization, 
-            name='aux_seg'
-        )
-        model = keras.Model(inputs=inputs, outputs=[main_output, aux_output], name="LMIINet")
-    else:
-        model = keras.Model(inputs=inputs, outputs=main_output, name="LMIINet")
+    # Auxiliary segmentation head applied to encoder output (enc)
+        # Single output model (no auxiliary loss)
+    model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML_Paper_Accurate")
     
     return model

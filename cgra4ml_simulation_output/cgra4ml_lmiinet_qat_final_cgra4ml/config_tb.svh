@@ -1,6 +1,0 @@
-
-`define VALID_PROB 1000000 
-`define READY_PROB 1000000 
-`define CLK_PERIOD 5.0 
-`define INPUT_DELAY_NS  1.0ns
-`define OUTPUT_DELAY_NS 1.0ns
