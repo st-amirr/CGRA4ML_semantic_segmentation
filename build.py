@@ -447,19 +447,19 @@ def setup_verilator_environment():
     print("Setting up Verilator environment for Docker...")
     
     # Set correct Verilator environment variables for Docker
-    os.environ['VERILATOR_ROOT'] = '/usr/share/verilator'
-    os.environ['PATH'] = '/usr/bin:' + os.environ.get('PATH', '')
+    os.environ['VERILATOR_ROOT'] = '/usr/local/share/verilator'
+    os.environ['PATH'] = '/usr/local/bin:' + os.environ.get('PATH', '')
     
-    # Check if Verilator is available
+    # Check if Verilator is available - prefer new version first
     try:
-        result = subprocess.run(['verilator', '--version'], 
+        result = subprocess.run(['/usr/local/bin/verilator', '--version'], 
                               capture_output=True, text=True, check=True)
         version_line = result.stdout.split('\n')[0]
         print(f"✓ Verilator found: {version_line}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         # Try alternative paths
-        for verilator_path in ['/usr/local/bin/verilator', '/opt/verilator/bin/verilator']:
+        for verilator_path in ['verilator', '/usr/bin/verilator', '/opt/verilator/bin/verilator']:
             try:
                 result = subprocess.run([verilator_path, '--version'], 
                                       capture_output=True, text=True, check=True)
