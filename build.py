@@ -241,19 +241,19 @@ class LMIINetCGRA4ML(XModel):
         
         # Upsampling layers wrapped in XBundle
         self.upsample1 = XBundle(
-            core=XUpSample(size=(2, 2))
+            core=XUpSample(size=(2, 2), act=XActivation(sys_bits=sys_bits, o_int_bits=0, type='relu'))
         )
         
         self.upsample2 = XBundle(
-            core=XUpSample(size=(2, 2))
+            core=XUpSample(size=(2, 2), act=XActivation(sys_bits=sys_bits, o_int_bits=0, type='relu'))
         )
         
         self.upsample3 = XBundle(
-            core=XUpSample(size=(2, 2))
+            core=XUpSample(size=(2, 2), act=XActivation(sys_bits=sys_bits, o_int_bits=0, type='relu'))
         )
         
         self.upsample4 = XBundle(
-            core=XUpSample(size=(2, 2))
+            core=XUpSample(size=(2, 2), act=XActivation(sys_bits=sys_bits, o_int_bits=0, type='relu'))
         )
         
         # Segmentation head
@@ -620,118 +620,8 @@ def build_cgra4ml_model(args):
     # Step 2: Create CGRA4ML model using native components that match the QKeras architecture
     sys_bits = SYS_BITS(x=args.bits_input, k=args.bits_weights, b=args.bits_bias)
     
-    class LMIINetCGRA4ML(XModel):
-        def __init__(self, sys_bits, x_int_bits, *args, **kwargs):
-            super().__init__(sys_bits, x_int_bits, *args, **kwargs)
-            
-            # Build the model using CGRA4ML native XBundle components
-            # Architecture matches the original LMIINet more closely
-            
-            # Stem (initial downsampling) - matches stem_conv
-            self.stem = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['encoder_filters'][0], 
-                    kernel_size=3, strides=2,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            # Encoder stages - matches enc1_conv, enc2_conv, enc3_conv
-            self.enc1 = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['encoder_filters'][1],
-                    kernel_size=3, strides=2,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            self.enc2 = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['encoder_filters'][2],
-                    kernel_size=3, strides=2,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            self.enc3 = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['encoder_filters'][3],
-                    kernel_size=3, strides=2,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            # Decoder stages - matches dec0_refine_pw, dec1_refine_pw, etc.
-            self.dec1 = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['decoder_filters'][0],
-                    kernel_size=3, strides=1,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            self.dec2 = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['decoder_filters'][1],
-                    kernel_size=3, strides=1,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            self.dec3 = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['decoder_filters'][2],
-                    kernel_size=3, strides=1,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            self.dec4 = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=MODEL_CONFIG_LMIA['decoder_filters'][3],
-                    kernel_size=3, strides=1,
-                    act=XActivation(sys_bits, 0, type='relu')
-                )
-            )
-            
-            # Segmentation head - matches seghead_final_conv
-            self.seghead = XBundle(
-                core=XConvBN(
-                    k_int_bits=0, b_int_bits=0,
-                    filters=NUM_CLASSES, kernel_size=1, strides=1,
-                    act=XActivation(sys_bits, 0, type=None)
-                )
-            )
-            
-        def call(self, x):
-            # Forward pass using CGRA4ML XBundle components
-            # Architecture follows the LMIINet encoder-decoder pattern
-            x = self.input_quant_layer(x)
-            
-            # Encoder path (downsampling)
-            x = stem_out = self.stem(x)      # 256x512x24
-            x = enc1_out = self.enc1(x)      # 128x256x48
-            x = enc2_out = self.enc2(x)      # 64x128x96
-            x = enc3_out = self.enc3(x)      # 32x64x128
-            
-            # Decoder path (upsampling) - simplified without skip connections for CGRA4ML
-            x = self.dec1(x)                 # 32x64x128
-            x = self.dec2(x)                 # 32x64x96 (would need upsampling in real implementation)
-            x = self.dec3(x)                 # 32x64x48
-            x = self.dec4(x)                 # 32x64x24
-            
-            # Segmentation head
-            x = self.seghead(x)              # 32x64x19
-            
-            return x
+    # Use the correct model definition with upsampling layers (defined earlier in the file)
+    # The LMIINetCGRA4ML class is already defined above with proper upsampling layers
     
     # Create the CGRA4ML model
     cgra4ml_model = LMIINetCGRA4ML(sys_bits, 0)
