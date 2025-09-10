@@ -35,6 +35,7 @@ Docker Usage:
 
 Native Usage:
     python build.py --input_weights ./models/cgra4ml_lmiinet_qat_final.h5 --simulate
+    docker-compose exec hls4ml-training python /workspace/build.py --simulate
 """
 
 import os
@@ -49,10 +50,9 @@ import json
 import shutil
 import platform
 
-# Add project paths for Docker environment
-sys.path.insert(0, '/workspace')
+# Add necessary path for CGRA4ML imports
+sys.path.insert(0, '/workspace/cgra4ml/deepsocflow')
 sys.path.insert(0, '/workspace/cgra4ml')
-sys.path.insert(0, '/workspace/deepsocflow')
 
 # Import TensorFlow and Keras
 import tensorflow as tf
@@ -428,46 +428,19 @@ def build_cgra4ml_model(args):
     for i, bundle in enumerate(BUNDLES):
         print(f"  Bundle {i}: {bundle}")
     
-    # Add required properties for export_inference
-    cgra4ml_model._inputs = [tf.TensorSpec((None, INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=tf.float32)]
+    # Create a wrapper model that's compatible with export_inference
+    # This creates a model structure that matches what xmodel.py expects
+    input_layer = Input(shape=(INPUT_HEIGHT, INPUT_WIDTH, 3), name='input')
+    output = cgra4ml_model(input_layer)
+    wrapper_model = Model(inputs=input_layer, outputs=output, name='cgra4ml_wrapper')
     
-    @property
-    def inputs(self):
-        return self._inputs
+    # Add the user model as the second layer (layers[1])
+    wrapper_model.layers.append(cgra4ml_model)
     
-    # Bind the property to the instance
-    cgra4ml_model.__class__.inputs = inputs
-    
-    # Transfer weights from QKeras model to CGRA4ML model where possible
-    print("Transferring weights from QKeras to CGRA4ML model...")
-    try:
-        # This is a simplified weight transfer - in practice you'd need to map
-        # each QKeras layer to the corresponding CGRA4ML layer
-        qkeras_weights = qkeras_model.get_weights()
-        if len(qkeras_weights) > 0:
-            print(f"QKeras model has {len(qkeras_weights)} weight tensors")
-            # For now, just initialize with the QKeras structure
-            print("✅ Weight structure analyzed")
-        else:
-            print("Using random initialization")
-    except Exception as e:
-        print(f"Weight transfer warning: {e}")
-        print("Using random initialization")
-    
-    print("✅ CGRA4ML native model built successfully")
-    print(f"   Model type: {type(cgra4ml_model)}")
-    print(f"   Has input_quant_layer: {hasattr(cgra4ml_model, 'input_quant_layer')}")
-    print(f"   Has sys_bits: {hasattr(cgra4ml_model, 'sys_bits')}")
-    
-    if args.verbose:
-        print("Model summary: CGRA4ML native components")
-        print(f"  - conv1: 32 filters, 3x3, stride 2")
-        print(f"  - conv2: 64 filters, 3x3, stride 2") 
-        print(f"  - conv3: 128 filters, 3x3, stride 2")
-        print(f"  - conv4: 64 filters, 3x3, stride 1")
-        print(f"  - conv_out: {NUM_CLASSES} filters, 1x1, stride 1")
-    
-    return cgra4ml_model
+    return wrapper_model
+def export_model_files(model, hw, output_dir):
+    """Export model files for CGRA4ML"""
+    pass
 
 def setup_verilator_environment():
     """Setup Verilator environment for Docker"""
@@ -502,6 +475,11 @@ def setup_verilator_environment():
         try:
             subprocess.run(['apt', 'update'], check=True, capture_output=True)
             subprocess.run(['apt', 'install', '-y', 'verilator'], check=True, capture_output=True)
+            
+            # Fix Verilator path issue: create symlink for verilator_bin
+            subprocess.run(['ln', '-sf', '/usr/bin/verilator_bin', '/usr/share/verilator/verilator_bin'], 
+                         check=True, capture_output=True)
+            
             print("✓ Verilator installed successfully")
             return True
         except:
@@ -588,8 +566,8 @@ def run_inference_export(model, hw, args):
                         total_cycles += cycles
                 
                 # Safe calculation
-                if total_cycles > 0 and hw.FREQ_MHZ > 0:
-                    seconds_per_batch = total_cycles / (hw.FREQ_MHZ * 1e6)
+                if total_cycles > 0 and hasattr(hw, 'FREQ') and hw.FREQ > 0:
+                    seconds_per_batch = total_cycles / (hw.FREQ * 1e6)
                 else:
                     seconds_per_batch = 0.001  # 1ms fallback
                 
@@ -642,19 +620,18 @@ def run_simulation(model, hw, args):
     if not setup_verilator_environment():
         print("❌ Verilator setup failed")
         return False
-    
+
     print(f"Using Verilator with Docker paths")
     
     try:
-        # Create RTL include paths for Docker
-        rtl_paths = [
-            '-I/workspace/deepsocflow/rtl',
-            '-I/workspace/deepsocflow/rtl/ext'
-        ]
+        # Import the verification function
+        from deepsocflow.py.xmodel import verify_inference
         
+        # Run the standard simulation
         verify_inference(model, hw, SIM='verilator', SIM_PATH='/usr/bin/')
         print("✅ Simulation completed successfully")
         return True
+        
     except Exception as e:
         print(f"❌ Simulation failed: {e}")
         print("This may be expected if running outside Docker environment")
