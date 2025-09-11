@@ -111,81 +111,69 @@ class ZoomToSignsAndLights(DualTransform):
 
     def __init__(
         self,
-        target_classes=[4, 5, 6, 7, 11],  # fence, pole, traffic light, traffic sign, person
-        zoom_scale=2.0,  # Fixed zoom scale (2048/1024 = 2.0)
-        min_object_size=5,  # Minimum size of objects to consider for zooming
-        target_size=(1024, 512),  # Target size to crop to (width, height)
-        p=0.20,  # Probability of applying this augmentation
+        target_classes=[4, 5, 6, 7, 11],
+        zoom_scale=2.0,
+        min_object_size=5,
+        target_size=(1024, 512),
+        p=0.20,
         always_apply=False,
     ):
         super(ZoomToSignsAndLights, self).__init__(always_apply, p)
         self.target_classes = target_classes
-        self.zoom_scale = zoom_scale  # Fixed zoom scale
+        self.zoom_scale = zoom_scale
         self.min_object_size = min_object_size
-        self.target_size = target_size  # (width, height)
+        self.target_size = target_size
     
     def apply(self, img, center_x=0, center_y=0, **params):
-        """Apply fixed zoom transformation to image and crop to target size"""
         h, w = img.shape[:2]
         target_w, target_h = self.target_size
         
-        # Calculate crop size based on fixed zoom scale
         crop_w = int(target_w * self.zoom_scale)
         crop_h = int(target_h * self.zoom_scale)
         
-        # Calculate crop boundaries centered on the target
         x1 = max(0, center_x - crop_w // 2)
         y1 = max(0, center_y - crop_h // 2)
         x2 = min(w, x1 + crop_w)
         y2 = min(h, y1 + crop_h)
         
-        # Adjust if we hit boundaries
         if x2 - x1 < crop_w:
             x1 = max(0, x2 - crop_w)
         if y2 - y1 < crop_h:
             y1 = max(0, y2 - crop_h)
         
-        # Crop the image
         cropped = img[y1:y2, x1:x2]
         
-        # Resize to target size
         resized = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
         
         return resized
     
     def apply_to_mask(self, mask, center_x=0, center_y=0, **params):
-        """Apply the same transformation to mask"""
         h, w = mask.shape[:2]
         target_w, target_h = self.target_size
         
-        # Calculate crop size based on fixed zoom scale
         crop_w = int(target_w * self.zoom_scale)
         crop_h = int(target_h * self.zoom_scale)
         
-        # Calculate crop boundaries centered on the target
         x1 = max(0, center_x - crop_w // 2)
         y1 = max(0, center_y - crop_h // 2)
         x2 = min(w, x1 + crop_w)
         y2 = min(h, y1 + crop_h)
         
-        # Adjust if we hit boundaries
         if x2 - x1 < crop_w:
             x1 = max(0, x2 - crop_w)
         if y2 - y1 < crop_h:
             y1 = max(0, y2 - crop_h)
         
-        # Crop the mask
         cropped = mask[y1:y2, x1:x2]
         
-        # Resize to target size
         resized = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
         
         return resized
     
     def get_params(self):
         return {
-            "center_x": 0,  # Will be set in apply_detection
-            "center_y": 0,  # Will be set in apply_detection
+            "center_x": 0,
+            "center_y": 0,
         }
     
     def apply_detection(self, img, mask, **params):
@@ -193,17 +181,14 @@ class ZoomToSignsAndLights(DualTransform):
         target_objects = []
         
         for class_id in self.target_classes:
-            # Find pixels belonging to this class
             class_mask = (mask == class_id)
             
             if np.any(class_mask):
-                # Find connected components
                 num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
                     class_mask.astype(np.uint8), connectivity=8
                 )
                 
-                # Check each component
-                for i in range(1, num_labels):  # Skip background (label 0)
+                for i in range(1, num_labels):
                     area = stats[i, cv2.CC_STAT_AREA]
                     if area >= self.min_object_size:
                         center_x = int(centroids[i][0])
@@ -211,11 +196,9 @@ class ZoomToSignsAndLights(DualTransform):
                         target_objects.append((center_x, center_y, area))
         
         if not target_objects:
-            # No target objects found, return center crop of original size
             h, w = img.shape[:2]
             target_w, target_h = self.target_size
             
-            # Center crop to target size
             x1 = (w - target_w) // 2
             y1 = (h - target_h) // 2
             x2 = x1 + target_w
@@ -226,33 +209,26 @@ class ZoomToSignsAndLights(DualTransform):
             
             return img_cropped, mask_cropped
         
-        # Select a random target object
         center_x, center_y, area = target_objects[np.random.randint(len(target_objects))]
         
-        # Apply fixed zoom to image
         img_zoomed = self.apply(img, center_x=center_x, center_y=center_y)
         
-        # Apply fixed zoom to mask
         mask_zoomed = self.apply_to_mask(mask, center_x=center_x, center_y=center_y)
         
         return img_zoomed, mask_zoomed
     
     def __call__(self, force_apply=False, **kwargs):
-        """Override the call method to use our custom detection logic"""
         if self.replay_mode:
             raise NotImplementedError("Replay mode is not supported for this transform")
         
         if force_apply or self.apply_with_params(self.params, **kwargs):
-            # Use our custom detection-based zoom
             if 'image' in kwargs and 'mask' in kwargs:
                 kwargs['image'], kwargs['mask'] = self.apply_detection(kwargs['image'], kwargs['mask'])
             else:
-                # Fallback to center crop if no mask provided
                 img = kwargs['image']
                 h, w = img.shape[:2]
                 target_w, target_h = self.target_size
                 
-                # Center crop to target size
                 x1 = (w - target_w) // 2
                 y1 = (h - target_h) // 2
                 x2 = x1 + target_w
@@ -263,43 +239,27 @@ class ZoomToSignsAndLights(DualTransform):
         return kwargs
 
 
-# We'll use KerasTuner to search quantizer bit-widths for weights and activations.
-# The tuner build function is defined below and used only when a search is requested.
 
-# CGRA4ML-Compatible Channel Shuffle Implementation
 def cgra4ml_channel_shuffle(inputs, groups=2, name="shuffle"):
-    """
-    CGRA4ML-compatible channel shuffle using only supported operations.
-    Simulates channel shuffle effect using slice and concatenate operations.
-    """
    
-    # Split channels into groups using slicing (CGRA4ML compatible)
     group_1 = inputs[:, :, :, :inputs.shape[-1] // groups]
     group_2 = inputs[:, :, :, inputs.shape[-1] // groups:]
     
-    # Interleave groups by concatenating in reverse order
-    # This creates a shuffle-like effect
     shuffled = Concatenate(axis=-1, name=f'{name}_concat')([group_2, group_1])
     
     return shuffled
 
-# Helper function for Feature Enhancement (FE) block
 def feature_enhancement(inputs, filters, name, use_quantization=True):
-    """CGRA4ML-Compatible Feature Enhancement Block"""
     
-    # t.Mean: Apply Global Average Pooling (GAP)
     gap = GlobalAveragePooling2D()(inputs)
     gap = Reshape((1, 1, inputs.shape[-1]))(gap)
 
-    # t.Max: Apply Global Max Pooling (GMP)
     gmp = GlobalMaxPooling2D()(inputs)
     gmp = Reshape((1, 1, inputs.shape[-1]))(gmp)
 
-    # Concatenate GAP and GMP along the channel axis (axis=-1)
     x = Concatenate(axis=-1)([gap, gmp])
 
     if use_quantization:
-        # QAT branch
         x = QConv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3', kernel_quantizer=kq, bias_quantizer=bq)(x)
         x = QBatchNormalization(name=f'{name}_bn')(x)
         a = QActivation('sigmoid', name=f'{name}_sigmoid')(x)
@@ -319,7 +279,6 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
         output = Add()([a2, b2])
         return output
     else:
-        # Float32 branch
         x = Conv2D(filters, (3, 3), padding='same', use_bias=True, name=f'{name}_conv_3x3')(x)
         x = BatchNormalization(name=f'{name}_bn', renorm=True)(x)
         a = Activation('sigmoid', name=f'{name}_sigmoid')(x)
@@ -339,11 +298,8 @@ def feature_enhancement(inputs, filters, name, use_quantization=True):
         output = Add()([a2, b2])
         return output
 
-# Helper function for Lightweight Feature Interaction Bottleneck (LFIB)
 def lfib(inputs, filters, name, use_quantization=True):
-    """Lightweight Feature Interaction Bottleneck (LFIB) - Paper Accurate"""
     
-    # Initial 1x1 convolution
     if use_quantization:
         f1 = QConv2D(filters, 1, padding='same', name=f'{name}_f1_conv', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
         f1 = QActivation(qr, name=f'{name}_f1_act')(f1)
@@ -351,15 +307,12 @@ def lfib(inputs, filters, name, use_quantization=True):
         f1 = Conv2D(filters, 1, padding='same', name=f'{name}_f1_conv')(inputs)
         f1 = Activation('relu', name=f'{name}_f1_act')(f1)
 
-    # Channel split
     f21 = f1[:, :, :, :filters//2]
     f22 = f1[:, :, :, filters//2:]
 
-    # CC modules
     CC1 = CC(f22, filters // 2, name_prefix=f'{name}_CC1')
     CC2 = CC(f21, filters // 2, name_prefix=f'{name}_CC2')
 
-    # Left branch
     left_branch_input = Add(name=f'{name}_left_add')([f21, CC1])
     if use_quantization:
         left_out = QConv2D(filters // 2, (3, 1), padding='same', name=f'{name}_left_3x1', kernel_quantizer=kq, bias_quantizer=bq)(left_branch_input)
@@ -372,7 +325,6 @@ def lfib(inputs, filters, name, use_quantization=True):
         left_out = Conv2D(filters // 2, (1, 3), padding='same', name=f'{name}_left_1x3')(left_out)
         left_out = Activation('relu', name=f'{name}_left_1x3_act')(left_out)
 
-    # Right branch
     right_branch_input = Add(name=f'{name}_right_add')([f22, CC2])
     if use_quantization:
         right_out = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_right_dw', depthwise_quantizer=kq, bias_quantizer=bq)(right_branch_input)
@@ -385,15 +337,12 @@ def lfib(inputs, filters, name, use_quantization=True):
         right_out = Conv2D(filters // 2, 1, padding='same', name=f'{name}_right_pw')(right_out)
         right_out = Activation('relu', name=f'{name}_right_pw_act')(right_out)
 
-    # Fusion
     f2 = Concatenate(name=f'{name}_concat_branches')([left_out, right_out])
     cru_out = cru_block(f1, filters, f'{name}_cru', use_quantization=use_quantization)
     f2_plus_cru = Add(name=f'{name}_add_cru')([f2, cru_out])
 
-    # Residual connection
     residual = Add(name=f'{name}_add_residual')([inputs, f2_plus_cru])
 
-    # Final DW Conv + Channel Shuffle
     if use_quantization:
         final_out = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_final_dw', depthwise_quantizer=kq, bias_quantizer=bq)(residual)
         final_out = QActivation(qr, name=f'{name}_final_dw_act')(final_out)
@@ -406,20 +355,15 @@ def lfib(inputs, filters, name, use_quantization=True):
     return shuffled_out
 
 def CC(inputs, filters, name_prefix):
-    """Combination Coefficient Learning (CC) - CGRA4ML Compatible"""
-    # Global Average Pooling
     gap = GlobalAveragePooling2D(name=f'{name_prefix}_gap')(inputs)
     gap = Reshape((1, 1, inputs.shape[-1]), name=f'{name_prefix}_gap_reshape')(gap)
 
-    # Use Dense layers to learn channel-wise attention
     sdp = Dense(filters, activation='relu', name=f'{name_prefix}_sdp_dense1')(gap)
     sdp = Dense(filters, activation='sigmoid', name=f'{name_prefix}_sdp_dense2')(sdp)
 
     return Multiply(name=f'{name_prefix}_multiply')([inputs, sdp])
 
-# Channel Reconstruction Unit (CRU)
 def cru_block(x, filters, name, use_quantization=True):
-    """CGRA4ML-Compatible Channel Reconstruction Unit (CRU)"""
 
     global_context = GlobalAveragePooling2D(name=f'{name}_gap')(x)
     global_context = Reshape((1, 1, x.shape[-1]))(global_context)
@@ -431,9 +375,7 @@ def cru_block(x, filters, name, use_quantization=True):
     refined_x = Multiply()([x, global_context])
     return refined_x
 
-# Improved Flatten Transformer (IFT)
 def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1, use_quantization=True):
-    """CGRA4ML-Compatible Flattened Local Attention Module (FLAM)"""
     channels = inputs.shape[-1]
     if use_quantization:
         attn = QConv2D(filters=channels, kernel_size=(3, 3), padding='same', dilation_rate=(2, 2), activation=qr, name="flam_attn_conv", kernel_quantizer=kq, bias_quantizer=bq)(inputs)
@@ -449,7 +391,6 @@ def FLAM(inputs, num_heads=8, key_dim=64, window_size=7, dropout_rate=0.1, use_q
     return out
 
 def CAB(inputs, filters, use_quantization=True):
-    """CGRA4ML-Compatible Context Aggregation Block (CAB)"""
     gap = GlobalAveragePooling2D()(inputs)
     gap = Reshape((1, 1, inputs.shape[-1]))(gap)
     if use_quantization:
@@ -465,20 +406,13 @@ def CAB(inputs, filters, use_quantization=True):
 
 
 def improved_flatten_transformer(inputs, num_heads=8, key_dim=64, dropout_rate=0.1, use_quantization=True):
-    """Improved Flatten Transformer: FLAM + CAB + CC"""
     filters = inputs.shape[-1]
-    # FLAM: local/global attention
     x = FLAM(inputs, num_heads=num_heads, key_dim=key_dim, dropout_rate=dropout_rate, use_quantization=use_quantization)
-    # CAB: context aggregation
     x = CAB(x, filters, use_quantization=use_quantization)
-    # CC: channel-wise convolution
     x = CC(x, filters, name_prefix="ift_cc")
     return x
 
-# Segmentation Head (SegHead)
 def seghead(inputs, num_classes, use_quantization=True, config=MODEL_CONFIG_LMIA):
-    """Segmentation Head with multi-scale fusion, following the paper's design."""
-    # 1. Upsample and Concatenate features
     high_res_feature = inputs[-1]
     target_shape = high_res_feature.shape
     target_height, target_width = target_shape[1], target_shape[2]
@@ -496,7 +430,6 @@ def seghead(inputs, num_classes, use_quantization=True, config=MODEL_CONFIG_LMIA
     
     x = Concatenate(axis=-1)(fused_features)
     
-    # Final 1x1 convolution to map concatenated features to num_classes
     if use_quantization:
         x = QConv2D(num_classes, 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="seghead_final_conv")(x)
         output = Activation('softmax', name="output_softmax")(x)
@@ -506,9 +439,7 @@ def seghead(inputs, num_classes, use_quantization=True, config=MODEL_CONFIG_LMIA
     
     return output
 
-# Encoder Block (initial block, downsampling, LFIB, FE)
 def encoder(inputs, filters, use_quantization=True, name="enc"):
-    """Encoder Block with LFIB and FE"""
     if use_quantization:
         x = QConv2D(filters, (3, 3), strides=2, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name=f'{name}_conv')(inputs)
         x = QActivation(qr, name=f'{name}_act')(x)
@@ -523,21 +454,13 @@ def encoder(inputs, filters, use_quantization=True, name="enc"):
     x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
     return x
 
-# Decoder Block (upsampling, LFIB, FE)
 def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec"):
-    """Decoder Block with UpSampling, optional skip concat, and FE.
-
-    Expects skip_connection to have same HxW as upsampled inputs. If None, skips concat.
-    """
-    # First upsample the decoder input
     x = UpSampling2D(size=(2, 2), interpolation='nearest', name=f'{name}_upsample')(inputs)
 
-    # Concatenate with skip if provided
     if skip_connection is not None:
         x = Concatenate(axis=-1, name=f'{name}_concat')([x, skip_connection])
 
     x = feature_enhancement(x, filters, f'{name}_fe', use_quantization=use_quantization)
-    # Spatial refinement (DW+PW) to smooth blocky upsampling artifacts
     if use_quantization:
         x = QDepthwiseConv2D((3, 3), padding='same', name=f'{name}_refine_dw', depthwise_quantizer=kq, bias_quantizer=bq)(x)
         x = QActivation(qr, name=f'{name}_refine_dw_act')(x)
@@ -553,11 +476,9 @@ def decoder(inputs, skip_connection, filters, use_quantization=True, name="dec")
         x = Dropout(MODEL_CONFIG_LMIA['transformer_dropout'])(x)
     return x
 
-# LMIINet Model
 def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=True, config=MODEL_CONFIG_LMIA, aux_out=True, inference_mode=False):
     inputs = Input(shape=input_shape, name="input_image")
 
-    # Initial downsampling stem
     if use_quantization:
         stem = QConv2D(config['encoder_filters'][0], (3, 3), strides=2, padding='same', name='stem_conv', kernel_quantizer=kq, bias_quantizer=bq)(inputs)
         stem = QActivation(qr, name='stem_act')(stem)
@@ -565,14 +486,12 @@ def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=
         stem = Conv2D(config['encoder_filters'][0], (3, 3), strides=2, padding='same', name='stem_conv')(inputs)
         stem = Activation('relu', name='stem_act')(stem)
 
-    # Encoder
     enc = stem
-    encoder_outputs = [enc] # Start with stem output
-    for i, f in enumerate(config['encoder_filters'][1:]): # Start from the second filter size
+    encoder_outputs = [enc]
+    for i, f in enumerate(config['encoder_filters'][1:]):
         enc = encoder(enc, f, use_quantization, name=f'enc{i+1}')
         encoder_outputs.append(enc)
 
-    # Transformer
     transformer_output = improved_flatten_transformer(
         enc,
         num_heads=config.get('transformer_heads', 8),
@@ -581,21 +500,16 @@ def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=
         use_quantization=use_quantization
     )
 
-    # Decoder
     dec = transformer_output
     decoder_features = []
     for i, f in enumerate(config['decoder_filters']):
-        # Align skip connections to the spatial size AFTER upsampling:
-        # dec (1/16) -> upsample (1/8) should use encoder 1/8 (index -2), etc.
         skip_idx = -(i + 2)
         skip_connection = encoder_outputs[skip_idx] if abs(skip_idx) <= len(encoder_outputs) else None
         dec = decoder(dec, skip_connection, f, use_quantization, name=f'dec{i}')
         decoder_features.append(dec)
 
-    # Main SegHead
     seg_output = seghead(decoder_features[-3:], num_classes, use_quantization, config=config)
     
-    # Auxiliary segmentation head applied to encoder output (enc)
     if aux_out:
         if use_quantization:
             aux_conv = QConv2D(config.get('seghead_filters', 64), 1, padding='same', kernel_quantizer=kq, bias_quantizer=bq, name="aux_seghead_conv1")(enc)
@@ -610,7 +524,6 @@ def create_lmiinet(input_shape=(512, 1024, 3), num_classes=19, use_quantization=
         
         model = Model(inputs=inputs, outputs=[seg_output, aux_output], name="LMIINet_CGRA4ML_Paper_Accurate_With_Aux")
     else:
-        # Single output model (no auxiliary loss)
         model = Model(inputs=inputs, outputs=seg_output, name="LMIINet_CGRA4ML_Paper_Accurate")
     
     return model
@@ -632,7 +545,7 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         prefetch_batches=8,
         **kwargs
     ):
-        super().__init__(**kwargs)  # Call parent constructor to fix PyDataset warning
+        super().__init__(**kwargs)
         self.image_dir = Path(image_dir)
         self.mask_dir = Path(mask_dir)
         self.batch_size = batch_size
@@ -643,7 +556,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
         self.num_workers = num_workers
         self.prefetch_batches = prefetch_batches
 
-        # Get all image paths
         self.image_paths = list(self.image_dir.glob("**/*.png"))
         if subset_ratio < 1.0:
             subset_size = int(len(self.image_paths) * subset_ratio)
@@ -698,7 +610,6 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
                     A.RandomShadow(
                         shadow_roi=(0, 0.5, 1, 1), shadow_dimension=5, p=0.1
                     ),
-                    # Occlusion and masking
                     A.CoarseDropout(
                         num_holes_range=(1, 8),
                         hole_height_range=(2, 16),
@@ -791,44 +702,32 @@ class CityscapesDataGenerator(tf.keras.utils.Sequence):
 
         batch_images = []
         batch_masks = []
-        # Load sequentially; parallelism will come from model.fit(workers=...)
         for path in batch_paths:
             image, mask = self.load_and_preprocess_image(path)
             if image is None or mask is None:
                 continue
-            # Main mask: [INPUT_HEIGHT, INPUT_WIDTH]
             mask_main = cv2.resize(mask, (self.target_width, self.target_height), interpolation=cv2.INTER_NEAREST)
             batch_images.append(image)
             batch_masks.append(mask_main)
 
         batch_images = np.array(batch_images)
         batch_masks = np.array(batch_masks)
-        # Downsample mask for auxiliary output (1/16 scale)
         aux_height = batch_masks.shape[1] // 16
         aux_width = batch_masks.shape[2] // 16
         batch_masks_aux = np.array([cv2.resize(m, (aux_width, aux_height), interpolation=cv2.INTER_NEAREST) for m in batch_masks])
-        # Return data suitable for both single output and multi-output models
-        # For multi-output models, main output uses full mask, aux output uses downsampled mask
         return batch_images, [batch_masks, batch_masks_aux]
 
 def dice_loss(y_true, y_pred, smooth=1e-7):
-    """
-    Dice loss for categorical segmentation with ignore index support.
-    """
-    # Handle case where y_true is a list from generator
+
     if isinstance(y_true, list):
-        y_true = y_true[0]  # Use main ground truth for metrics
-        
-    # Flatten spatial dimensions
+        y_true = y_true[0]  
     y_true_flat = tf.reshape(y_true, [-1])
     y_pred_flat = tf.reshape(y_pred, [-1, NUM_CLASSES])
 
-    # Mask out ignore pixels (255)
     mask = tf.not_equal(y_true_flat, 255)
     y_true_masked = tf.boolean_mask(y_true_flat, mask)
     y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
 
-    # One-hot encode the valid pixels only
     y_true_oh = tf.one_hot(tf.cast(y_true_masked, tf.int32), NUM_CLASSES)
     y_pred_masked = tf.cast(y_pred_masked, tf.float32)
 
@@ -838,16 +737,7 @@ def dice_loss(y_true, y_pred, smooth=1e-7):
     return 1. - dice
 
 def auxiliary_loss(y_true, y_pred_aux, lambda_weight=0.3):
-    """
-    Auxiliary loss function for multi-scale supervision as described in LMIINet paper.
-    This adds supervision to intermediate decoder outputs at 1/8 scale.
-    
-    Args:
-        y_true: Ground truth labels, shape (batch, height, width)
-        y_pred_aux: Auxiliary predictions from decoder at 1/8 scale
-        lambda_weight: Weight for auxiliary loss (default 0.3 as per paper)
-    """
-    # Resize ground truth to match auxiliary prediction size
+
     y_true_resized = tf.image.resize(
         tf.expand_dims(tf.cast(y_true, tf.float32), -1),
         tf.shape(y_pred_aux)[1:3],
@@ -855,10 +745,8 @@ def auxiliary_loss(y_true, y_pred_aux, lambda_weight=0.3):
     )
     y_true_resized = tf.cast(tf.squeeze(y_true_resized, -1), tf.int32)
     
-    # Compute auxiliary dice loss
     aux_dice = dice_loss(y_true_resized, y_pred_aux)
     
-    # Compute auxiliary cross-entropy loss
     y_true_flat = tf.reshape(y_true_resized, [-1])
     y_pred_flat = tf.reshape(y_pred_aux, [-1, NUM_CLASSES])
     mask = tf.not_equal(y_true_flat, 255)
@@ -870,25 +758,10 @@ def auxiliary_loss(y_true, y_pred_aux, lambda_weight=0.3):
     return lambda_weight * (aux_dice + aux_ce)
 
 def combined_loss(y_true, y_pred):
-    """
-    Combined loss function implementing the LMIINet paper's approach:
-    loss = loss_main + λ × loss_aux
-    
-    For compatibility with your existing training setup, this function handles
-    both single output (main only) and multiple outputs (main + auxiliary).
-    
-    Args:
-        y_true: Ground truth labels - always [y_true_main, y_true_aux] from generator
-        y_pred: Model predictions (for multi-output: [y_pred_main, y_pred_aux])
-    """
-    # Check if we have multiple outputs (main + auxiliary)
     if isinstance(y_pred, list) and len(y_pred) == 2:
-        # Multi-output case: main + auxiliary
         y_pred_main, y_pred_aux = y_pred
-        # y_true is always a list from the generator: [y_true_main, y_true_aux]
         y_true_main, y_true_aux = y_true
         
-        # Main loss
         dice_main = dice_loss(y_true_main, y_pred_main)
         y_true_flat = tf.reshape(y_true_main, [-1])
         y_pred_flat = tf.reshape(y_pred_main, [-1, NUM_CLASSES])
@@ -896,16 +769,12 @@ def combined_loss(y_true, y_pred):
         y_true_masked = tf.boolean_mask(y_true_flat, mask)
         y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
         ce_main = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
-        # ce_main = tf.reduce_mean(ce_main)
         loss_main =  ce_main + dice_main 
 
-        # Auxiliary loss
         aux_loss = auxiliary_loss(y_true_aux, y_pred_aux, lambda_weight=0.3)
         
         return loss_main + aux_loss
     else:
-        # Single output case: main prediction only
-        # In this case, y_true might still be a list from generator, so take first element
         if isinstance(y_true, list):
             y_true = y_true[0]  # Use main ground truth
             
@@ -916,19 +785,14 @@ def combined_loss(y_true, y_pred):
         y_true_masked = tf.boolean_mask(y_true_flat, mask)
         y_pred_masked = tf.boolean_mask(y_pred_flat, mask)
         ce = tf.keras.losses.sparse_categorical_crossentropy(y_true_masked, y_pred_masked)
-        # ce = tf.reduce_mean(ce)
         loss_main =  ce + dice 
         return loss_main
 
 def mean_iou(y_true, y_pred):
-    """
-    Mean IoU metric for semantic segmentation - ignores class 255.
-    """
-    # Handle case where y_true is a list from generator
+
     if isinstance(y_true, list):
         y_true = y_true[0]  # Use main ground truth for metrics
         
-    # Mask out ignore pixels (255)
     mask = tf.not_equal(y_true, 255)
     y_true_masked = tf.boolean_mask(y_true, mask)
     
@@ -946,7 +810,6 @@ def mean_iou(y_true, y_pred):
         intersection = tf.reduce_sum(tf.cast(tf.logical_and(true_mask, pred_mask), tf.float32))
         union = tf.reduce_sum(tf.cast(tf.logical_or(true_mask, pred_mask), tf.float32))
         
-        # Only compute IoU if class is present in ground truth
         class_present = tf.reduce_sum(tf.cast(true_mask, tf.float32)) > 0
         iou = tf.where(tf.logical_and(union > 0, class_present), intersection / union, tf.constant(float('nan')))
         ious.append(iou)
@@ -957,19 +820,9 @@ def mean_iou(y_true, y_pred):
     return result
 
 def accuracy(y_true, y_pred):
-    """
-    Computes pixel-wise accuracy, ignoring pixels with label 255 (ignore class).
-    Args:
-        y_true: ground truth labels, shape (batch, height, width) or list from generator
-        y_pred: predicted logits or probabilities, shape (batch, height, width, num_classes)
-    Returns:
-        Scalar accuracy value (float32)
-    """
-    # Handle case where y_true is a list from generator
     if isinstance(y_true, list):
         y_true = y_true[0]  # Use main ground truth for metrics
         
-    # If y_pred is logits, convert to predicted class
     y_pred = tf.argmax(y_pred, axis=-1)
     y_true = tf.cast(y_true, tf.int64)
     mask = tf.not_equal(y_true, 255)
@@ -977,7 +830,6 @@ def accuracy(y_true, y_pred):
     matches = tf.logical_and(matches, mask)
     matches = tf.cast(matches, tf.float32)
     mask = tf.cast(mask, tf.float32)
-    # Avoid division by zero
     acc = tf.reduce_sum(matches) / (tf.reduce_sum(mask) + 1e-6)
     return acc
 
@@ -985,29 +837,22 @@ class DecoderFreezeCallback(tf.keras.callbacks.Callback):
     def __init__(self, freeze_dec):
         super().__init__()
         self.freeze_dec = freeze_dec
-        self.cycle_length = 10  # 5 epochs freeze + 5 epochs unfreeze = 10 epoch cycle
+        self.cycle_length = 10
 
     def on_epoch_begin(self, epoch, logs=None):
         if self.freeze_dec:
-            # Determine if we should freeze or unfreeze based on the cycle
-            # Epochs 0-4: freeze, Epochs 5-9: unfreeze, Epochs 10-14: freeze, etc.
             cycle_position = epoch % self.cycle_length
-            should_freeze = cycle_position < 7  # First 7 epochs of each cycle are frozen
+            should_freeze = cycle_position < 7
             
-            # Only freeze decoder and layers after transformer_output
             decoder_prefixes = [
                 'dec', 'seghead_', 'output_softmax'
             ]
             for layer in self.model.layers:
-                # Do NOT freeze input, stem, or encoder layers
                 if layer.name.startswith('input_image') or layer.name.startswith('stem') or layer.name.startswith('enc'):
                     continue
                 if any(layer.name.startswith(prefix) for prefix in decoder_prefixes):
                     layer.trainable = not should_freeze
             
-            if should_freeze:
-            else:
-
 class BatchNormFreezeCallback(tf.keras.callbacks.Callback):
     def __init__(self, freeze_bn):
         super().__init__()
@@ -1015,24 +860,19 @@ class BatchNormFreezeCallback(tf.keras.callbacks.Callback):
 
     def on_epoch_begin(self, epoch, logs=None):
         if self.freeze_bn:
-            # Unfreeze every 5th epoch (epoch numbers are 0-based)
             unfreeze = ((epoch) % 10 == 0)
             for layer in self.model.layers:
                 if 'batchnorm' in layer.name.lower() or 'bn' in layer.name.lower():
                     layer.trainable = not self.freeze_bn or unfreeze
-            if unfreeze:
-            else:
-
 class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
     def __init__(self, val_generator, save_dir, num_samples=4, save_frequency=5):
         super().__init__()
         self.val_generator = val_generator
         self.save_dir = save_dir
         self.num_samples = num_samples
-        self.save_frequency = save_frequency  # Save every N epochs
+        self.save_frequency = save_frequency
         os.makedirs(save_dir, exist_ok=True)
         
-        # Palette for official 19 trainIds (0..18) following Cityscapes standard
         self.trainids_colors = [
             [128, 64, 128],   # 0: road
             [244, 35, 232],   # 1: sidewalk
@@ -1057,7 +897,6 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
         self.ignore_color = [0, 0, 0]
     
     def colorize_mask(self, mask):
-        """Convert trainIds mask (0..18, 255 ignore) to RGB colors"""
         h, w = mask.shape
         colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
         train_ids = mask.astype(np.uint8)
@@ -1068,104 +907,36 @@ class PredictionVisualizationCallback(tf.keras.callbacks.Callback):
             elif 0 <= tid < len(self.trainids_colors):
                 colored_mask[train_ids == tid] = self.trainids_colors[tid]
         return colored_mask
-
-    def on_epoch_begin(self, epoch, logs=None):
         
     def on_epoch_end(self, epoch, logs=None):
         if (epoch + 1) <= 5 or ((epoch + 1) % self.save_frequency == 0):
-            try:
-                saved = 0
-                batch_idx = 0
-                max_batches = min(8, len(self.val_generator))
+            tf.config.experimental.disable_jit()
+            saved = 0
+            for batch_idx in range(min(8, len(self.val_generator))):
+                if saved >= self.num_samples:
+                    break
+                batch = self.val_generator[batch_idx]
+                batch_images, batch_masks = batch[0], batch[1][0] if isinstance(batch[1], list) else batch[1]
+                batch_images, batch_masks = batch_images[:2], batch_masks[:2]
                 
-                tf.config.experimental.disable_jit()
+                with tf.device('/CPU:0'):
+                    predictions = self.model(batch_images, training=False)
+                    predictions = predictions[0] if isinstance(predictions, list) else predictions
+                    predictions = predictions.numpy()
                 
-                while saved < self.num_samples and batch_idx < max_batches:
-                    try:
-                        # Fetch a small validation batch
-                        batch = self.val_generator[batch_idx]
-                        # Handle multiple output format from generator
-                        if isinstance(batch, tuple) and len(batch) == 2:
-                            batch_images = batch[0]
-                            batch_masks_list = batch[1]
-                            # Extract main masks (first in the list for multi-output)
-                            if isinstance(batch_masks_list, list):
-                                batch_masks = batch_masks_list[0]  # Use main output masks
-                            else:
-                                batch_masks = batch_masks_list
-                            batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
-                        elif len(batch) == 3:
-                            batch_images, batch_masks, batch_weights = batch
-                        else:
-                            batch_images, batch_masks = batch
-                            batch_weights = np.ones(batch_masks.shape[:3], dtype=np.float32)
+                for i in range(min(self.num_samples - saved, len(batch_images))):
+                    os.makedirs(os.path.join(self.save_dir, f'sample_{saved + 1}'), exist_ok=True)
+                    original_img = (batch_images[i] * 255).astype(np.uint8)
+                    gt_mask = np.argmax(batch_masks[i], axis=-1) if batch_masks[i].ndim == 3 else batch_masks[i]
+                    pred_mask = np.argmax(predictions[i], axis=-1) if predictions[i].ndim == 3 else predictions[i]
+                    gt_colored = self.colorize_mask(gt_mask)
+                    pred_colored = self.colorize_mask(pred_mask)
+                    combined = np.hstack([original_img, gt_colored, pred_colored])
+                    cv2.imwrite(os.path.join(self.save_dir, f'sample_{saved + 1}', f'epoch_{epoch+1:03d}.png'), 
+                               cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+                    saved += 1
+            tf.config.experimental.enable_jit()
 
-                        # Use a smaller batch size for prediction to avoid memory issues
-                        if batch_images.shape[0] > 2:
-                            batch_images = batch_images[:2]
-                            batch_masks = batch_masks[:2]
-                            batch_weights = batch_weights[:2] if batch_weights is not None else None
-                        
-                        # Use eager execution for prediction to avoid XLA compilation
-                        with tf.device('/CPU:0'):  # Force CPU execution for prediction
-                            predictions = self.model(batch_images, training=False)
-                            if isinstance(predictions, list):
-                                predictions = predictions[0]  # Use main output
-                            predictions = predictions.numpy()
-
-                        take = min(self.num_samples - saved, batch_images.shape[0])
-                        for i in range(take):
-                            try:
-                                sample_dir = os.path.join(self.save_dir, f'sample_{saved + 1}')
-                                os.makedirs(sample_dir, exist_ok=True)
-
-                                original_img = (batch_images[i] * 255).astype(np.uint8)
-
-
-
-
-                                gt_mask_arr = batch_masks[i]
-                                pred_arr = predictions[i]
-                                if gt_mask_arr.ndim < 2 or pred_arr.ndim < 2:
-                                    continue
-                                if gt_mask_arr.ndim == 3 and gt_mask_arr.shape[-1] == len(self.trainids_colors):
-                                    gt_mask = np.argmax(gt_mask_arr, axis=-1)
-                                elif gt_mask_arr.ndim == 2:
-                                    gt_mask = gt_mask_arr
-                                else:
-                                    continue
-                                if pred_arr.ndim == 3 and pred_arr.shape[-1] == len(self.trainids_colors):
-                                    pred_mask = np.argmax(pred_arr, axis=-1)
-                                elif pred_arr.ndim == 2:
-                                    pred_mask = pred_arr
-                                else:
-                                    continue
-                                if batch_weights is not None and batch_weights[i].shape == gt_mask.shape:
-                                    ignore_mask = batch_weights[i] < 0.5
-                                    gt_mask_vis = gt_mask.copy()
-                                    gt_mask_vis[ignore_mask] = 255
-                                else:
-                                    gt_mask_vis = gt_mask
-                                gt_colored = self.colorize_mask(gt_mask_vis)
-                                pred_colored = self.colorize_mask(pred_mask)
-                                if original_img.ndim != 3 or gt_colored.ndim != 3 or pred_colored.ndim != 3:
-                                    continue
-                                combined = np.hstack([original_img, gt_colored, pred_colored])
-                                save_path = os.path.join(sample_dir, f'epoch_{epoch+1:03d}.png')
-                                success = cv2.imwrite(save_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
-                                if success:
-                                    saved += 1
-
-                    except Exception as batch_error:
-                        batch_idx += 1
-                        continue
-
-                    batch_idx += 1
-
-                if saved > 0:
-
-            finally:
-                tf.config.experimental.enable_jit()
 
 class DetailedMetricsCallback(tf.keras.callbacks.Callback):
     def __init__(self, val_generator, num_classes=NUM_CLASSES, save_frequency=5):
@@ -1197,11 +968,10 @@ def create_callbacks(model_name, val_generator):
     )
     callbacks.append(checkpoint_callback)
 
-    
-    # Learning rate reduction with polynomial decay (as mentioned in paper)
+
     def poly_decay(epoch):
         max_epochs = EPOCHS
-        return LEARNING_RATE * (1 - epoch / max_epochs) ** 0.9
+        return LEARNING_RATE * (1 - epoch / max_epochs)
     
     lr_scheduler = tf.keras.callbacks.LearningRateScheduler(poly_decay, verbose=1)
     callbacks.append(lr_scheduler)
@@ -1244,9 +1014,6 @@ def create_callbacks(model_name, val_generator):
     )
     callbacks.append(tensorboard_callback)
     
-    # Memory cleanup callback
-    # memory_callback = MemoryCleanupCallback()
-    # callbacks.append(memory_callback)
     
     # Add BN freeze callback if requested
     if FREEZE_BN:
@@ -1275,7 +1042,6 @@ def convert_float32_to_qat(float32_model, config=MODEL_CONFIG_LMIA):
     
     # Store names of layers whose weights have been set
     processed_layers = set()
-    print(f"Starting weight transfer for {len(float32_model.layers)} float layers -> {len(qat_model.layers)} QAT layers.")
 
     for i, layer in enumerate(float32_model.layers):
         if layer.name in processed_layers:
@@ -1293,7 +1059,6 @@ def convert_float32_to_qat(float32_model, config=MODEL_CONFIG_LMIA):
             q_bn_layer = q_layers.get(bn_layer.name)
 
             if not q_conv_layer or not q_bn_layer:
-                print(f"Warning: Could not find matching Q-layer for {conv_layer.name} or {bn_layer.name}. Skipping.")
                 continue
 
             # Extract weights for folding
@@ -1325,7 +1090,6 @@ def convert_float32_to_qat(float32_model, config=MODEL_CONFIG_LMIA):
 
             processed_layers.add(conv_layer.name)
             processed_layers.add(bn_layer.name)
-            # print(f"Folded BN '{bn_layer.name}' into Conv '{conv_layer.name}'")
 
         # Handle standalone layers (like Dense or Conv without a subsequent BN)
         elif layer.name in q_layers:
@@ -1418,7 +1182,6 @@ def main():
         )
     else:
         # Single output model (backward compatibility)
-        print("Detected single-output model - using standard loss")
         model.compile(
             optimizer=optimizer,
             loss=combined_loss,
@@ -1433,7 +1196,6 @@ def main():
     callbacks = create_callbacks(model_name, val_generator)
 
     # Train model
-    print("\nStarting training...")
     history = model.fit(
         train_generator,
         epochs=EPOCHS,
@@ -1446,7 +1208,6 @@ def main():
     )
 
     # Create final inference model (no dropout, no auxiliary output)
-    print("\nCreating final inference model (no dropout, no auxiliary output)...")
     
     # Temporarily disable dropout for inference model creation
     original_dropout_setting = USE_DROPOUT_DURING_TRAINING
