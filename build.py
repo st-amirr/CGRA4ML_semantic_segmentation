@@ -327,9 +327,9 @@ def create_hardware_config(args):
         max_image_size=max(INPUT_HEIGHT, INPUT_WIDTH),  # Full resolution output
         max_n_bundles=32,
         ram_weights_depth=256,
-        ram_edges_depth=32768,        # Increase from 4096 to 32768 to handle 16384 edges
+        ram_edges_depth=32768,        # 32768 to handle 16384 edges
         axi_width=128,
-        header_width=64,              # Increase from 32 to 64 to handle 51-bit packed data
+        header_width=64,              # 64 to handle 51-bit packed data
         config_baseaddr="B0000000",
         axi_max_burst_len=16,
         target_cpu_int_bits=32,
@@ -771,11 +771,13 @@ def run_inference_export(model, hw, args):
                 
                 # Calculate basic performance metrics from BUNDLES
                 for bundle in BUNDLES:
-                    if hasattr(bundle, 'r') and hasattr(bundle.r, 'NHWC'):
-                        ops = bundle.r.NHWC if hasattr(bundle.r, 'NHWC') else 1000
-                        cycles = ops // max(hw.ROWS * hw.COLS, 1)
-                        total_ops += ops
-                        total_cycles += cycles
+                    if hasattr(bundle, 'r') and bundle.r is not None:
+                        # Calculate operations based on runtime parameters
+                        if hasattr(bundle.r, 'XN') and hasattr(bundle.r, 'XH') and hasattr(bundle.r, 'XW') and hasattr(bundle.r, 'CI') and hasattr(bundle.r, 'CO'):
+                            ops = bundle.r.XN * bundle.r.XH * bundle.r.XW * bundle.r.CI * bundle.r.CO
+                            cycles = ops // max(hw.ROWS * hw.COLS, 1)
+                            total_ops += ops
+                            total_cycles += cycles
                 
                 # Safe calculation
                 if total_cycles > 0 and hasattr(hw, 'FREQ') and hw.FREQ > 0:
