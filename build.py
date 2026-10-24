@@ -140,7 +140,8 @@ class LMIINetCGRA4ML(XModel):
         
         self.config = config or MODEL_CONFIG_LMIA
         
-        # Encoder blocks
+        # Encoder blocks 
+        # BUNDLES ONLY CONSIST OF SINGLE XConvBN LAYERS !
         self.stem = XBundle(
             core=XConvBN(
                 k_int_bits=0, b_int_bits=0, 
@@ -1066,8 +1067,8 @@ def main():
         # Step 2: Build CGRA4ML model
         model = build_cgra4ml_model(args)
         
-        # Step 3: Export model files
-        model_path = export_model_files(model, hw, ".")
+        # # Step 3: Export model files
+        # model_path = export_model_files(model, hw, ".")
         
         # Step 4: Export inference vectors
         inference_success = run_inference_export(model, hw, args)

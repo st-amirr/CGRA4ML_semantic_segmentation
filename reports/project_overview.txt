@@ -1,63 +1,105 @@
-Project Overview and Objectives — UPDATED September 7, 2025
-==========================================================
+Project Overview and Objectives - UPDATED August 8, 2025
+============================================================
 
-1) Primary goal
-- Train and deploy a lightweight semantic segmentation model (LMIINet) with Quantization-Aware Training (QAT) for efficient CGRA4ML acceleration on FPGA/ASIC.
-- Maintain low parameters/GFLOPs while maximizing mIoU on Cityscapes (512×1024 input).
+1. **Primary Goal:**
+   - Train a semantic segmentation model for FPGA implementation using hls4ml and QKeras with Quantization-Aware Training (QAT).
+   - Maximize segmentation accuracy while ensuring the model fits and runs efficiently on high-end FPGAs (e.g., Xilinx VCU118).
 
-2) Training code (trainQAT_CGRA4ML.py)
-- Model: LMIINet (CGRA4ML-friendly)
-   - Encoder/decoder with Lightweight Feature Interaction Bottlenecks (LFIB), channel attention (CC), Channel Reconstruction Unit (CRU), and a compact transformer surrogate (FLAM + CAB + CC) for context.
-   - Depthwise+pointwise convs, streamlined skip connections, memory-efficient feature fusion, channel shuffle via slice/concat.
-   - Auxiliary supervision: an aux head (softmax) with λ=0.3 combined with the main head.
-   - Segmentation head fuses top decoder features and outputs 19 Cityscapes trainIds.
-- Quantization (QKeras):
-   - 8-bit quantized weights/activations/biases via QConv2D, QDepthwiseConv2D, QBatchNormalization, quantized_relu.
-   - Baseline float32 and QAT modes supported; conversion utility folds BN into Conv before transferring to QAT.
-- Losses/metrics:
-   - Combined loss: main (sparse CE + dice) + λ × aux (sparse CE + dice); ignore index 255 respected.
-   - Metrics: pixel accuracy (ignore 255) and mean IoU.
-- Data pipeline:
-   - Cityscapes loader with robust labelIds→trainIds mapping, ignore=255, albumentations-based augmentations (crop/flip/affine/brightness-contrast/color jitter/HueSatVal/gamma/noise/blur/shadow/rain, etc.).
-   - Generator yields full-res mask for main and 1/16-res for aux automatically.
-- Training control & callbacks:
-   - Polynomial LR decay scheduler; per-epoch weight checkpoints (weights-only); TensorBoard; validation visualizations with Cityscapes palette.
-   - Optional BN freeze cycle and decoder freeze cycle to stabilize QAT.
-   - Final inference model exported without auxiliary output and with training-time dropout disabled.
-- TF runtime:
-   - Safe threading, GPU memory growth, optional XLA JIT, CPU prediction in visualization callback to avoid XLA compile overhead.
-- CLI flags:
-   - --trainQAT, --epochs, --batch_size, --use_dropout, --subset_ratio, --LR, --load_model, --freeze_dec, --use_autokeras (reserved), --freeze_bn, --aug.
+2. **Technical Context:**
+   - **Training Strategy:** Two-phase approach following hls4ml best practices:
+     * Phase 1: Float32 baseline training for optimal convergence (50-100 epochs)
+     * Phase 2: QAT fine-tuning using trained float32 weights (15-30 epochs)
+   - **Frameworks:** TensorFlow/Keras for model definition and training; QKeras for quantization; hls4ml for FPGA conversion.
+   - **Enhanced Quantization:** Data-driven multi-precision quantization based on actual trained model analysis with latest enhancements:
+     * 8-bit: Input/output layers - 4 integer bits, 4 fractional bits (range: [-16, 15.9375])
+     * 16-bit: Encoder/decoder layers - 4 integer bits, 12 fractional bits (range: [-16, 15.999756])
+     * 32-bit: Bridge/critical layers - 3 integer bits, 29 fractional bits (range: [-8, 7.999999999])
+     * NEW: Layer-wise quantization with stochastic rounding for enhanced QAT performance
+    - **Model Architecture:**
+      - U-Net encoder-decoder with skip connections, attention blocks, and optimized multi-precision quantization
+      - NEW: Symmetric decoder mirrors encoder: conv + SE attention in mid/deep stages (dec3/dec2), no attention at shallow stage (dec1)
+     - FPGA-compatible design (no MaxPooling2D, optimized for hls4ml synthesis)
+     - Input size: 512x1024x3, output: 512x1024x20 (Cityscapes: 19 trainIds + 1 void)
+     - Configurable dropout layers (automatically removed for HLS4ML export)
+      - NEW: Depthwise separable convolutions in encoder/decoder blocks for FPGA efficiency
+      - NEW: Feature Pyramid Fusion to combine multi-scale features from skips and bridge
+      - NEW: Bilinear upsampling instead of transposed convolutions for hardware compatibility
+   - **Data Pipeline:**
+     - Efficient `CityscapesDataGenerator` with enhanced Albumentations augmentation
+     - Configurable dataset subset ratios for testing (0.1-1.0)
+     - Optimized batch processing with prefetch buffer
+     - NEW: Enhanced augmentation including RandomCrop, RandomGamma, and ImageNet normalization
+   - **Training Environment:**
+     - Docker container with GPU support and comprehensive dependency management
+     - GPU utilization optimizations (mixed precision, memory growth management)
+     - TensorBoard integration for real-time monitoring with comprehensive metrics
+     - NEW: ExponentialDecay learning rate scheduler for stable training progression
+   - **Monitoring & Visualization:**
+     - Real-time TensorBoard logging with organized metric groups
+     - Custom prediction visualizations with Cityscapes color coding
+     - Learning rate tracking and IoU metrics per class
+     - Weight histogram analysis and distribution monitoring
+     - Automatic checkpoint resumption and progress persistence
 
-3) CGRA4ML build (build_cgra4ml_model.py)
-- Purpose:
-   - Load trained Keras/QKeras .h5 models, analyze topology/skip connections, create a minimal CGRA4ML config, export hardware configs/TCL, and optionally synthesize/simulate.
-- Flow:
-   1. Load QAT model with custom_objects (QKeras layers).
-   2. Verify shapes (expected 512×1024×3 → 512×1024×19) and analyze skip connections.
-   3. Create CGRA4ML config (clock, PE rows/cols, data width, skip strategy).
-   4. Convert/export: instantiate Hardware, export config_hw.svh and Vivado TCL, export inference vectors. Optional verification.
-   5. Predict performance using DeepSoCFlow (fallback rough estimate if unavailable).
-   6. Generate performance report JSON and deployment guide.
-   7. Update deepsocflow/rtl/defines.svh and tcl/fpga/zcu104.tcl to reference the latest model build directory and config_hw.svh path.
-   8. Optional: synthesis (Vivado) and simulation (verilator/xsim); update report with sim results.
-- Defaults:
-   - Part: xczu7ev-ffvc1156-2-e (ZCU104), freq 200 MHz, PE grid 16×64, bits_input/weights=8; Windows-friendly (no bash requirement).
-- Key artifacts:
-   - cgra4ml_models/lmiinet_cgra4ml_<timestamp>/ with config files, TCL, performance report (cgra4ml_performance_report.json), and a deployment guide.
+3. **Key Technical Features:**
+   - **Data-Driven Quantization:** Optimized based on actual model weight analysis from epoch 70
+   - **Automatic Weight Transfer:** Seamless conversion from float32 to QAT models
+   - **Smart Training Resume:** Automatic detection and resumption from latest checkpoints
+   - **Comprehensive Monitoring:** TensorBoard scalars, images, weight histograms, and custom visualizations
+   - **HLS4ML Export Ready:** Clean models automatically generated without dropout layers
+   - **Resource Optimization:** Configurable batch sizes, subset ratios, and worker processes
+   - **NEW: ExponentialDecay Scheduler:** Proactive learning rate reduction for stable training
+   - **NEW: Layer-wise Quantization:** Different precision for different layer types with stochastic rounding
+   - **NEW: Enhanced Augmentation:** Comprehensive data transformation pipeline for improved robustness
+   - **NEW: FPGA Architecture:** Hardware-specific optimizations for efficient deployment
+   - **NEW: Dilated Convolutions:** Strategic placement for better context understanding and larger receptive fields
 
-4) Datasets & environment
-- Cityscapes (19-class trainIds) with ignore label 255; docker-compose based training/evaluation; TensorBoard logs under /workspace/models/tb_logs.
+4. **Performance Achievements:**
+   - **Phase 1 (Float32):** Successfully achieved IoU improvement with comprehensive monitoring
+   - **Weight Analysis:** Completed detailed analysis of trained model (epoch 70) revealing optimal quantization settings
+   - **Quantization Optimization:** Integer bits optimized from generic 4/8/8 to data-driven 4/4/3 configuration
+   - **Training Time:** ~6-8 hours Phase 1 + 2-3 hours Phase 2 = ~9-11 hours total
+   - **NEW: Enhanced Training:** ExponentialDecay scheduler for predictable progression
+   - **NEW: QAT Enhancement:** Layer-wise quantization with stochastic rounding for better performance
+   - **NEW: Hardware Efficiency:** FPGA-optimized architecture reducing computational complexity
 
-5) Current status (code capabilities)
-- Baseline and QAT training paths supported with resume-from-checkpoint.
-- Visualization and metrics integrated; auxiliary supervision wired into training.
-- Build pipeline converts trained .h5 models into a CGRA4ML project with optional synth/sim and performance reporting.
+5. **Current Status - Recent Achievements:**
+   - **Completed 80 epochs of float32 training** with comprehensive monitoring
+   - **Analyzed actual model weights** from epoch 70 checkpoint to determine optimal quantization parameters
+   - **Updated quantization configuration** based on data-driven analysis:
+     * Input/output layers: Range [-6.52, 1.82] → 4 integer bits needed
+     * Encoder/decoder layers: Range [-2.92, 6.66] → 4 integer bits needed  
+     * Bridge/critical layers: Range [-2.13, 2.55] → 3 integer bits needed
+   - **Optimized fractional precision** providing up to 32x better precision in 16-bit layers
+   - **Memory management improvements** addressing GPU OOM issues
+   - **NEW: Implemented ExponentialDecay scheduler** replacing ReduceLROnPlateau for stable training
+   - **NEW: Enhanced data augmentation** with RandomCrop, RandomGamma, and ImageNet normalization
+   - **NEW: Layer-wise quantization** with stochastic rounding for enhanced QAT performance
+   - **NEW: FPGA-optimized architecture** with depthwise separable convolutions and bilinear upsampling
+   - **NEW: Dilated convolutions** strategically placed for better context understanding and boundary detection
 
-6) Next steps
-- Run float32 pretraining then QAT fine-tuning with BN/decoder freeze where helpful.
-- Validate mIoU and resource/throughput on ZCU104 via build pipeline; iterate PE grid/frequency if needed.
-- Optionally experiment with head variants (e.g., Lite-ASPP-style) within CGRA4ML op set, keeping params/GFLOPs budget.
+6. **Dataset & Environment:**
+   - Cityscapes dataset with standard directory structure (34 classes)
+   - Docker-based training with volume mounting for data persistence
+   - TensorBoard accessible at localhost:6006 for real-time monitoring
 
-Notes
-- See reports/cgra4ml_compatibility_report.txt for a broader framework overview and migration considerations.
+7. **FPGA Deployment Pipeline:**
+   - Trained models automatically export HLS4ML-compatible quantized weights
+   - Clean model architecture without training-specific layers (dropout)
+   - Optimized multi-precision quantization based on actual weight distributions
+   - Target: Xilinx VCU118 or similar high-end FPGA platforms
+   - Quantization parameters precisely tuned for FPGA resource efficiency
+   - NEW: Hardware-optimized architecture with depthwise separable convolutions
+   - NEW: Bilinear upsampling for FPGA compatibility
+
+8. **Next Steps:**
+   - Apply enhanced quantization configuration in QAT training phase
+   - Validate improved performance with data-driven quantization settings and latest enhancements
+   - Export final optimized models for HLS4ML synthesis
+   - Conduct FPGA implementation and performance validation
+   - Monitor ExponentialDecay scheduler performance and layer-wise quantization effectiveness
+   - Evaluate FPGA-optimized architecture efficiency
+
+---
+
+**This file serves as a persistent reference documenting the evolution from initial architecture through data-driven quantization optimization based on actual trained model analysis, enhanced with the latest improvements including ExponentialDecay scheduler, layer-wise quantization, enhanced augmentation, and FPGA-specific optimizations.**
